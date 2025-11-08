@@ -46,6 +46,11 @@ impl MemoryMap {
         let page_count = self.page_count();
         page..page + page_count
     }
+
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        // SAFETY: repr(C)
+        unsafe { std::slice::from_raw_parts(std::ptr::from_ref(self).cast(), size_of::<Self>()) }
+    }
 }
 
 impl ProcMaps {

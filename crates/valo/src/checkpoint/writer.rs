@@ -51,23 +51,13 @@ pub fn write_all_areas() -> Result<()> {
 
         // todo more skip?
         let skip = skip(&area);
-        writer.snapshot_meta.write_all(unsafe {
-            std::slice::from_raw_parts(
-                std::ptr::from_ref(&area).cast(),
-                std::mem::size_of::<MemoryMap>(),
-            )
-        })?;
+        writer.snapshot_meta.write_all(area.as_bytes())?;
         let meta = AreaMeta {
             skip,
             uncommitted,
             page_data_offset,
         };
-        writer.snapshot_meta.write_all(unsafe {
-            std::slice::from_raw_parts(
-                std::ptr::from_ref(&meta).cast(),
-                std::mem::size_of::<AreaMeta>(),
-            )
-        })?;
+        writer.snapshot_meta.write_all(meta.as_bytes())?;
 
         eprint!("{}", area);
         eprintln!(" skipped={}", skip);
