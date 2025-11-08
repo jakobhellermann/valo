@@ -185,6 +185,7 @@ impl ProcPagemap {
     }
 
     pub fn read(&mut self, page_flags: &mut [PageFlags]) -> Result<()> {
+        // SAFETY: purely relaxing alignment just page_flags
         let page_flags = unsafe {
             std::slice::from_raw_parts_mut(
                 page_flags.as_mut_ptr().cast::<u8>(),

@@ -24,6 +24,7 @@ impl SnapshotMetaWriter {
     }
 }
 
+#[allow(clippy::undocumented_unsafe_blocks)]
 pub fn write_all_areas() -> Result<()> {
     let mut writer = SnapshotMetaWriter::new()?;
 
@@ -99,7 +100,7 @@ pub fn write_all_areas() -> Result<()> {
         page_map.seek(area.page())?;
 
         for page in area.pages() {
-            let addr = page * PAGE_SIZE;
+            let addr = std::ptr::with_exposed_provenance(page * PAGE_SIZE);
             let page_flags = page_map.read_single()?; // TODO buffer
 
             if page_flags.contains(PageFlags::SWAP) {
@@ -150,7 +151,7 @@ pub fn write_all_areas() -> Result<()> {
                 todo!();
             } else {
                 // todo: queue + bigger reads
-                let page_data = unsafe { std::slice::from_raw_parts(addr as *const _, PAGE_SIZE) };
+                let page_data = unsafe { std::slice::from_raw_parts(addr, PAGE_SIZE) };
                 writer.snapshot_pages.write_all(page_data)?;
 
                 stats.full += 1;

@@ -1,5 +1,5 @@
 use crate::global_state::GlobalState;
-use crate::utils::SendSync;
+use crate::utils::UnsafeSendSync;
 
 use std::cell::SyncUnsafeCell;
 use std::mem::MaybeUninit;
@@ -8,7 +8,7 @@ use libc::{sigaltstack, stack_t};
 
 type Result<T, E = std::io::Error> = std::result::Result<T, E>;
 
-static OSS: SyncUnsafeCell<MaybeUninit<SendSync<stack_t>>> =
+static OSS: SyncUnsafeCell<MaybeUninit<UnsafeSendSync<stack_t>>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 
 pub const ALT_STACK_SIZE: usize = 5 * 1024 * 1024;
@@ -30,7 +30,7 @@ fn sigaltstack_get() -> Result<stack_t, i32> {
 pub unsafe fn save_stack() -> Result<()> {
     let prev_altstack = sigaltstack_get().map_err(std::io::Error::from_raw_os_error)?;
     // SAFETY: function precondition
-    unsafe { (*OSS.get()).write(SendSync(prev_altstack)) };
+    unsafe { (*OSS.get()).write(UnsafeSendSync(prev_altstack)) };
     Ok(())
 }
 

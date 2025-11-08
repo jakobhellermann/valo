@@ -41,23 +41,33 @@ pub struct Header {
     area_count: u64,
 }
 
+// # Safety
+// - Must not be called concurrently
 unsafe fn snapshot_create(ucontext: *const libc::ucontext_t) -> Result<()> {
+    // SAFETY: same preconditions
     unsafe { ucontext::save(ucontext) };
     writer::write_all_areas()?;
 
     Ok(())
 }
 
+// # Safety
+// - Must not be called concurrently
+// - `snapshot_create` must have been called prior
 unsafe fn snapshot_restore(ucontext: *const libc::ucontext_t) -> Result<()> {
     reader::read_all_areas()?;
 
     GlobalState::get().set_restore_in_progress(true);
 
-    unsafe { ucontext::restore(&mut *ucontext.cast_mut(), ucontext) };
+    // SAFETY: same preconditions
+    unsafe { ucontext::restore(&mut *ucontext.cast_mut(), &*ucontext) };
 
     Ok(())
 }
 
+// # Safety
+// - Must not be called concurrently
+// - globalstate.restore_in_progress must be false/true for create/restore
 pub fn checkpoint_handler_inner(ucontext: *const ucontext_t) -> Result<()> {
     let state = GlobalState::get();
 
@@ -65,9 +75,11 @@ pub fn checkpoint_handler_inner(ucontext: *const ucontext_t) -> Result<()> {
 
     if !state.restore_in_progress() {
         eprintln!("-- CREATE SAVESTATE --");
+        // SAFETY: same precondition
         unsafe { snapshot_create(ucontext)? }
     } else {
         eprintln!("-- LOAD SAVESTATE --");
+        // SAFETY: same precondition
         unsafe { snapshot_restore(ucontext)? };
     }
 

@@ -26,13 +26,18 @@ impl SnapshotMetaReader {
             flags_remaining: 0,
             header: Header { area_count: 0 },
         };
+        // SAFETY: assume layout
         reader.header = unsafe { reader.read_data::<Header>()? };
         Ok(reader)
     }
+    // SAFETY:
+    // - A (POD) value of `T` mut be stored at the current position
     unsafe fn read_data<T>(&mut self) -> Result<T> {
         let mut data = MaybeUninit::<T>::zeroed();
-        self.snapshot_meta
-            .read_exact(unsafe { data.as_bytes_mut().assume_init_mut() })?;
+        // SAFETY: zeroed
+        let buf = unsafe { data.as_bytes_mut().assume_init_mut() };
+        self.snapshot_meta.read_exact(buf)?;
+        // SAFETY: read-exact read full, assume precondition
         let data = unsafe { data.assume_init() };
         Ok(data)
     }
@@ -49,7 +54,9 @@ impl SnapshotMetaReader {
                 .seek_relative(self.flags_remaining as i64 * size_of::<PageFlag>() as i64)?;
         }
 
+        // SAFETY: assume layout
         let map = unsafe { self.read_data::<MemoryMap>()? };
+        // SAFETY: assume layout
         let meta = unsafe { self.read_data::<AreaMeta>()? };
 
         self.flags_remaining = if meta.skip || meta.uncommitted {
@@ -65,6 +72,7 @@ impl SnapshotMetaReader {
         if self.flags_remaining > 0 {
             self.flags_remaining -= 1;
 
+            // SAFETY: assume layout, PageFlag is just u8
             unsafe { self.read_data::<PageFlag>() }
         } else {
             todo!()
@@ -156,6 +164,7 @@ pub fn read_all_areas() -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::undocumented_unsafe_blocks)]
 fn read_area(
     saved_area: &MemoryMap,
     meta: &AreaMeta,
@@ -334,9 +343,10 @@ fn reallocate_area(saved_area: &mut MemoryMap, current_area: &mut MemoryMap) -> 
         if saved_area.address.start > current_area.address.start {
             eprintln!("[realloc] unmap");
             // unmap
+            // SAFETY: address is aligned
             unsafe {
                 mm::munmap(
-                    current_area.address.start as *mut _,
+                    std::ptr::with_exposed_provenance_mut(current_area.address.start as usize),
                     (current_area.address.end - current_area.address.start) as usize,
                 )?;
             };

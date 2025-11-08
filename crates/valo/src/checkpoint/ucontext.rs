@@ -3,34 +3,42 @@ use std::mem::MaybeUninit;
 
 use libc::ucontext_t;
 
-use crate::utils::SendSync;
+use crate::utils::UnsafeSendSync;
 
-static SS_UCONTEXT: SyncUnsafeCell<MaybeUninit<SendSync<ucontext_t>>> =
+static SS_UCONTEXT: SyncUnsafeCell<MaybeUninit<UnsafeSendSync<ucontext_t>>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 static SS_FPREGSET: SyncUnsafeCell<MaybeUninit<_xstate>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 
-pub unsafe fn restore(into: &mut ucontext_t, no_ucontext: *const ucontext_t) {
+// # Safety
+// - Must not be called concurrently
+// - `save` must have been called prior
+pub unsafe fn restore(into: &mut ucontext_t, no_ucontext: &ucontext_t) {
+    // SAFETY:
+    // - save was called before so everything is initialized
     unsafe {
         let ss_ucontext = &mut (*SS_UCONTEXT.get()).assume_init_mut().0;
         let ss_fpregset = &mut *SS_FPREGSET.get();
 
-        ss_ucontext.uc_mcontext.fpregs = (*no_ucontext).uc_mcontext.fpregs;
+        ss_ucontext.uc_mcontext.fpregs = no_ucontext.uc_mcontext.fpregs;
         if ss_ucontext.uc_flags & UC_FP_XSTATE != 0 {
             *ss_ucontext.uc_mcontext.fpregs.cast::<_xstate>() = ss_fpregset.assume_init_read();
         } else {
             *ss_ucontext.uc_mcontext.fpregs = (*ss_fpregset.as_mut_ptr()).fpstate;
         }
 
-        if (*no_ucontext).uc_flags & UC_FP_XSTATE != 0 {
-            (*SS_FPREGSET.get()).write(*(*no_ucontext).uc_mcontext.fpregs.cast::<_xstate>());
+        if no_ucontext.uc_flags & UC_FP_XSTATE != 0 {
+            (*SS_FPREGSET.get()).write(*no_ucontext.uc_mcontext.fpregs.cast::<_xstate>());
         }
 
         *into = *ss_ucontext;
     }
 }
 
+// # Safety
+// Must not be called concurrently
 pub unsafe fn save(no_ucontext: *const ucontext_t) {
+    // SAFETY: can access as per precondition
     // TODO: only up to __fpregs_mem
     unsafe {
         let ss_ucontext = SS_UCONTEXT.get().cast::<MaybeUninit<ucontext_t>>();
