@@ -85,12 +85,17 @@ pub fn init_thread() -> Result<()> {
     Ok(())
 }
 
-pub fn checkpoint() -> Result<()> {
+// # Safety
+// Must not be called concurrently
+pub unsafe fn checkpoint() -> Result<()> {
     GlobalState::get().set_restore_in_progress(false);
 
-    alt_stack::save_stack()?;
+    // Safety: function precondition
+    unsafe { alt_stack::save_stack()? };
 
     alt_stack::prepare_altstack()?;
+
+    // SAFETY: no preconditions
     unsafe { libc::raise(SIG_CHECKPOINT) };
 
     alt_stack::restore_stack()?;
@@ -98,11 +103,14 @@ pub fn checkpoint() -> Result<()> {
     Ok(())
 }
 
-pub fn restore() -> Result<()> {
+// # Safety
+// Must not be called concurrently
+pub unsafe fn restore() -> Result<()> {
     GlobalState::get().set_restore_in_progress(true);
 
     alt_stack::prepare_altstack()?;
 
+    // SAFETY: no preconditions
     unsafe { libc::raise(SIG_CHECKPOINT) };
 
     Ok(())

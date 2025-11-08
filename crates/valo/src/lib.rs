@@ -43,14 +43,16 @@ fn init() -> Result<()> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn valo_checkpoint() {
-    if let Err(e) = checkpoint::checkpoint() {
+    // SAFETY: same precondition
+    if let Err(e) = unsafe { checkpoint::checkpoint() } {
         eprintln!("{}", e);
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn valo_restore() {
-    if let Err(e) = checkpoint::restore() {
+    // SAFETY: same precondition
+    if let Err(e) = unsafe { checkpoint::restore() } {
         eprintln!("{}", e);
     }
 }
