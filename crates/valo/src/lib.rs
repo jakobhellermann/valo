@@ -8,7 +8,9 @@
 
 mod alt_stack;
 mod checkpoint;
+mod frame;
 mod global_state;
+mod hooks;
 mod procfs_maps;
 mod stackio;
 mod sys;
