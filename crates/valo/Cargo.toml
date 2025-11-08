@@ -1,0 +1,19 @@
+[package]
+name = "valo"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+default = ["assert-no-alloc"]
+assert-no-alloc = ["dep:assert_no_alloc"]
+
+[dependencies]
+assert_no_alloc = { version = "1.1", default-features = false, optional = true }
+bitflags = "2.10"
+heapless = "0.9"
+libc = "0.2"
+memchr = "2.7"
+rustix = { version = "1.1", features = ["mm"] }
