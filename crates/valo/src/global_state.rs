@@ -2,6 +2,7 @@ use std::cell::SyncUnsafeCell;
 use std::mem::MaybeUninit;
 use std::ops::Range;
 use std::ptr::addr_of_mut;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rustix::mm;
 
@@ -15,6 +16,7 @@ static GLOBAL_STATE: SyncUnsafeCell<MaybeUninit<GlobalState>> =
 #[derive(Default)]
 pub struct GlobalState {
     pub reserved: *mut ReservedMemory,
+    pub restore_in_progress: AtomicBool,
 }
 // SAFETY: only access through `GlobalState::get`
 unsafe impl Send for GlobalState {}
@@ -34,6 +36,14 @@ impl GlobalState {
         // SAFETY: Since `set` was called in the .init_array, this will be initialized afterwards
         // Only immutable references are handed out.
         unsafe { (*GLOBAL_STATE.get()).assume_init_mut() }
+    }
+
+    pub fn set_restore_in_progress(&self, value: bool) {
+        self.restore_in_progress.store(value, Ordering::SeqCst);
+    }
+
+    pub fn restore_in_progress(&self) -> bool {
+        self.restore_in_progress.load(Ordering::SeqCst)
     }
 }
 
@@ -70,6 +80,7 @@ impl GlobalState {
         };
         Ok(GlobalState {
             reserved: reserved.cast(),
+            restore_in_progress: AtomicBool::new(false),
         })
     }
 

@@ -2,8 +2,6 @@ pub mod reader;
 pub mod ucontext;
 pub mod writer;
 
-use std::cell::SyncUnsafeCell;
-
 use libc::{siginfo_t, ucontext_t};
 
 use crate::global_state::GlobalState;
@@ -12,8 +10,6 @@ use crate::{Result, alt_stack, sys, utils};
 const SIG_CHECKPOINT: i32 = libc::SIGSYS;
 const SNAPSHOT_PATH_META: &str = "/tmp/valo-snapshot-areas";
 const SNAPSHOT_PATH_PAGEDATA: &str = "/tmp/valo-snapshot-pages";
-
-static RESTORE_IN_PROGRESS: SyncUnsafeCell<bool> = SyncUnsafeCell::new(false);
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug)]
@@ -48,7 +44,8 @@ unsafe fn snapshot_create(ucontext: *const libc::ucontext_t) -> Result<()> {
 
 unsafe fn snapshot_restore(ucontext: *const libc::ucontext_t) -> Result<()> {
     reader::read_all_areas()?;
-    unsafe { *RESTORE_IN_PROGRESS.get() = true };
+
+    GlobalState::get().set_restore_in_progress(true);
 
     unsafe { ucontext::restore(&mut *ucontext.cast_mut(), ucontext) };
 
@@ -60,8 +57,7 @@ pub fn checkpoint_handler_inner(ucontext: *const ucontext_t) -> Result<()> {
 
     utils::assert_stack_in_range(state.alt_stack_memory());
 
-    let is_loading = unsafe { *RESTORE_IN_PROGRESS.get() };
-    if !is_loading {
+    if !state.restore_in_progress() {
         eprintln!("-- CREATE SAVESTATE --");
         unsafe { snapshot_create(ucontext)? }
     } else {
@@ -90,7 +86,7 @@ pub fn init_thread() -> Result<()> {
 }
 
 pub fn checkpoint() -> Result<()> {
-    unsafe { *RESTORE_IN_PROGRESS.get() = false };
+    GlobalState::get().set_restore_in_progress(false);
 
     alt_stack::save_stack()?;
 
@@ -103,7 +99,7 @@ pub fn checkpoint() -> Result<()> {
 }
 
 pub fn restore() -> Result<()> {
-    unsafe { *RESTORE_IN_PROGRESS.get() = true };
+    GlobalState::get().set_restore_in_progress(true);
 
     alt_stack::prepare_altstack()?;
 
