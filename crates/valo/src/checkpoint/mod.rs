@@ -6,7 +6,8 @@ use std::cell::SyncUnsafeCell;
 
 use libc::{siginfo_t, ucontext_t};
 
-use crate::{Result, alt_stack, global_state, sys, utils};
+use crate::global_state::GlobalState;
+use crate::{Result, alt_stack, sys, utils};
 
 const SIG_CHECKPOINT: i32 = libc::SIGSYS;
 const SNAPSHOT_PATH_META: &str = "/tmp/valo-snapshot-areas";
@@ -55,7 +56,7 @@ unsafe fn snapshot_restore(ucontext: *const libc::ucontext_t) -> Result<()> {
 }
 
 pub fn checkpoint_handler_inner(ucontext: *const ucontext_t) -> Result<()> {
-    let state = unsafe { global_state::get_global_state() };
+    let state = GlobalState::get();
 
     utils::assert_stack_in_range(state.alt_stack_memory());
 

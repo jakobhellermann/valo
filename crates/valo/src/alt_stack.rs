@@ -1,4 +1,4 @@
-use crate::global_state;
+use crate::global_state::GlobalState;
 use crate::utils::SendSync;
 
 use std::cell::SyncUnsafeCell;
@@ -30,7 +30,7 @@ pub fn save_stack() -> Result<()> {
 }
 
 pub fn prepare_altstack() -> Result<(), std::io::Error> {
-    let global_state = unsafe { global_state::get_global_state() };
+    let global_state = GlobalState::get();
     unsafe {
         let alt_stack = &raw mut (*global_state.reserved).alt_stack;
 

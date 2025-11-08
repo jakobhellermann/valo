@@ -1,13 +1,13 @@
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 
+use crate::Result;
 use crate::checkpoint::{AreaMeta, Header, PageFlag};
-use crate::global_state::ReservedMemory;
+use crate::global_state::{GlobalState, ReservedMemory};
 use crate::procfs_maps::{
     MMapPath, MemoryMap, MemoryMapPermissions, PageFlags, ProcMaps, ProcPagemap,
 };
 use crate::utils::PAGE_SIZE;
-use crate::{Result, global_state};
 
 pub struct SnapshotMetaWriter {
     // todo: stack buffered?
@@ -228,8 +228,7 @@ fn skip(area: &MemoryMap) -> bool {
         MMapPath::Vsyscall | MMapPath::Vdso | MMapPath::Vvar => return true,
         // todo: memfd => false,
         MMapPath::Anonymous => {
-            let reserved_addr =
-                unsafe { global_state::get_global_state().reserved as usize as u64 };
+            let reserved_addr = GlobalState::get().reserved as usize as u64;
 
             if area.address.start == reserved_addr && size == size_of::<ReservedMemory>() as u64 {
                 return true;

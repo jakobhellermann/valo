@@ -3,7 +3,7 @@ use std::mem::MaybeUninit;
 
 use libc::ucontext_t;
 
-use crate::SendSync;
+use crate::utils::SendSync;
 
 static SS_UCONTEXT: SyncUnsafeCell<MaybeUninit<SendSync<ucontext_t>>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
