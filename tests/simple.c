@@ -6,16 +6,11 @@
 
 #define VALO
 
-void valo_init();
 void valo_checkpoint();
 void valo_restore();
 
 int main() {
   pid_t pid = getpid();
-
-#ifdef VALO
-  valo_init();
-#endif
 
   for (int i = 0; i < 15; i++) {
     usleep(1000 * 20);

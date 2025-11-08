@@ -23,19 +23,21 @@ pub type Result<T, E = std::io::Error> = std::result::Result<T, E>;
 #[global_allocator]
 static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
+#[used]
+#[cfg_attr(target_os = "linux", unsafe(link_section = ".init_array"))]
+static INIT: extern "C" fn() = _init;
+
+extern "C" fn _init() {
+    if let Err(e) = init() {
+        panic!("Failed to initialize valo: {e}");
+    }
+}
+
 fn init() -> Result<()> {
     unsafe { global_state::set_global_state(GlobalState::new()?) };
-
     checkpoint::init_thread()?;
 
     Ok(())
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn valo_init() {
-    if let Err(e) = init() {
-        eprintln!("{}", e);
-    }
 }
 
 #[unsafe(no_mangle)]
