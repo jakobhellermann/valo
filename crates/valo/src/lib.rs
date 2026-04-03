@@ -1,10 +1,5 @@
 #![warn(clippy::undocumented_unsafe_blocks)]
-#![feature(
-    sync_unsafe_cell,
-    io_const_error,
-    maybe_uninit_as_bytes,
-    maybe_uninit_slice
-)]
+#![feature(sync_unsafe_cell, io_const_error, maybe_uninit_as_bytes)]
 
 mod alt_stack;
 mod checkpoint;
