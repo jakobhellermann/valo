@@ -20,5 +20,8 @@ memchr = "2.7"
 rustix = { version = "1.1", features = ["fs", "mm"] }
 valo-ipc = { path = "../valo-ipc" }
 
+[build-dependencies]
+cc = "1"
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(coverage_nightly)'] }
