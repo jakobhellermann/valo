@@ -125,7 +125,21 @@ pub unsafe fn checkpoint() -> Result<()> {
 // # Safety
 // Must not be called concurrently
 pub unsafe fn restore() -> Result<()> {
-    GlobalState::get().set_restore_in_progress(true);
+    let state = GlobalState::get();
+    if state.max_restores > 0 {
+        // SAFETY: reserved is valid and restore_count is in the excluded region
+        let count = unsafe { &(*state.reserved).restore_count }
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if count >= state.max_restores {
+            eprintln!(
+                "-- VALO_MAX_RESTORES={} reached, exiting --",
+                state.max_restores
+            );
+            std::process::exit(0);
+        }
+    }
+
+    state.set_restore_in_progress(true);
 
     alt_stack::prepare_altstack()?;
 

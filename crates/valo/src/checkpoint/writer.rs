@@ -289,8 +289,9 @@ fn skip(area: &MemoryMap) -> bool {
         // todo: memfd => false,
         MMapPath::Anonymous => {
             let reserved_addr = GlobalState::get().reserved as usize as u64;
+            let reserved_len = size_of::<ReservedMemory>().next_multiple_of(PAGE_SIZE) as u64;
 
-            if area.address.start == reserved_addr && size == size_of::<ReservedMemory>() as u64 {
+            if area.address.start == reserved_addr && size == reserved_len {
                 return true;
             }
 

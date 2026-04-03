@@ -1,3 +1,5 @@
+use std::ffi::CStr;
+
 use std::cell::SyncUnsafeCell;
 use std::mem::MaybeUninit;
 use std::ops::Range;
@@ -7,6 +9,17 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use rustix::mm;
 
 use crate::Result;
+
+fn parse_env_u64(name: &CStr) -> u64 {
+    // SAFETY: name is a valid C string, and we don't modify the environment
+    let ptr = unsafe { libc::getenv(name.as_ptr()) };
+    if ptr.is_null() {
+        return 0;
+    }
+    // SAFETY: getenv returns a valid C string if non-null
+    let s = unsafe { CStr::from_ptr(ptr) };
+    s.to_str().ok().and_then(|s| s.parse().ok()).unwrap_or(0)
+}
 use crate::alt_stack::ALT_STACK_SIZE;
 use crate::utils::PAGE_SIZE;
 
@@ -19,6 +32,8 @@ pub struct GlobalState {
     pub restore_in_progress: AtomicBool,
 
     pub frame_count: AtomicU64,
+    /// 0 means unlimited
+    pub max_restores: u64,
 }
 // SAFETY: only access through `GlobalState::get`
 unsafe impl Send for GlobalState {}
@@ -52,7 +67,9 @@ impl GlobalState {
 #[repr(C)]
 pub struct ReservedMemory {
     pub alt_stack: [u8; ALT_STACK_SIZE],
+    pub restore_count: AtomicU64,
 }
+const _: () = assert!(size_of::<ReservedMemory>().div_ceil(PAGE_SIZE) == 1280);
 
 impl GlobalState {
     pub fn new() -> Result<GlobalState> {
@@ -80,10 +97,13 @@ impl GlobalState {
             }
             inner
         };
+        let max_restores = parse_env_u64(c"VALO_MAX_RESTORES");
+
         Ok(GlobalState {
             reserved: reserved.cast(),
             restore_in_progress: AtomicBool::new(false),
             frame_count: AtomicU64::new(0),
+            max_restores,
         })
     }
 
