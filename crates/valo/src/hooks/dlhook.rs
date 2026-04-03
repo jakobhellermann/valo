@@ -1,30 +1,49 @@
-use std::ffi::{CStr, c_char};
+use std::ffi::{CStr, c_char, c_void};
 use std::os::raw::c_int;
+use std::sync::LazyLock;
 
 use crate::override_sym;
 
-override_sym!(dlopen(file: *const c_char, mode: c_int) {
+override_sym!(dlopen(file: *const c_char, mode: c_int) -> *mut c_void |real| {
     let _name = match file.is_null() {
         true => <&CStr>::default(),
         false => unsafe { CStr::from_ptr(file) }
     };
-
-    // dbg!(name);
+    real(file, mode)
 });
 
-/*#[unsafe(no_mangle)]
-pub extern "C" fn dlopen(file: *const c_char, mode: c_int) -> *const () {
-    let ptr = crate::sym!(c"dlopen");
-    let fn_ptr = unsafe {
-        std::mem::transmute::<*mut (), extern "C" fn(*const c_char, c_int) -> *const ()>(ptr)
-    };
+fn find_real_dlsym() -> unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void {
+    // SAFETY: dlvsym won't recurse into our hook
+    unsafe {
+        let ptr = libc::dlvsym(libc::RTLD_NEXT, c"dlsym".as_ptr(), c"GLIBC_2.2.5".as_ptr());
+        std::mem::transmute(ptr)
+    }
+}
 
-    let name = if file.is_null() {
-        None
-    } else {
-        Some(unsafe { CStr::from_ptr(file) })
-    };
-    dbg!(name.unwrap_or_default());
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void {
+    static REAL_DLSYM: LazyLock<unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void> =
+        LazyLock::new(find_real_dlsym);
 
-    fn_ptr(file, mode)
-} */
+    if super::is_native() {
+        return unsafe { REAL_DLSYM(handle, symbol) };
+    }
+
+    // SAFETY: forwarding to the real dlsym
+    let resolved = unsafe { REAL_DLSYM(handle, symbol) };
+    if resolved.is_null() {
+        return resolved;
+    }
+
+    if !symbol.is_null() {
+        // SAFETY: symbol is a valid C string from the caller
+        let name = unsafe { CStr::from_ptr(symbol) };
+
+        // TODO: don't hardcode here
+        if name == c"XOpenDisplay" {
+            return crate::hooks::xlib::xdisplay::XOpenDisplay as *mut c_void;
+        }
+    }
+
+    resolved
+}

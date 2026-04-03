@@ -1,6 +1,10 @@
 #![allow(clippy::undocumented_unsafe_blocks)]
 
 use std::cell::Cell;
+use std::ffi::c_void;
+use std::sync::atomic::{AtomicPtr, Ordering};
+
+use libc::c_char;
 
 mod dlhook;
 mod sdl;
@@ -20,69 +24,68 @@ fn run_native<T>(f: impl FnOnce() -> T) -> T {
     ret
 }
 
-/// Resolves the next definition of a symbol in the dynamic linker's load order
-/// via `dlsym(RTLD_NEXT, ...)`, caching the result.
-///
-/// # Example
-///
-/// ```ignore
-/// #[unsafe(no_mangle)]
-/// pub extern "C" fn SDL_RenderPresent(renderer: *const ()) {
-///     let ptr = crate::sym!(c"SDL_RenderPresent");
-///     let fn_ptr = unsafe { std::mem::transmute::<*mut (), extern "C" fn(*const ())>(ptr) };
-///     fn_ptr(renderer);
-/// }
-/// ```
-///
-/// For the common case of a passthrough override, prefer [`override_sym!`](crate::override_sym),
-/// which expands to the boilerplate above.
-#[macro_export]
-macro_rules! sym {
-    ($cstr:expr) => {{
-        #[allow(clippy::undocumented_unsafe_blocks)]
-        static SYM: std::sync::LazyLock<$crate::utils::UnsafeSendSync<*mut ()>> =
-            std::sync::LazyLock::new(|| {
-                $crate::debug!(
-                    Hooks,
-                    "hooking '{}'",
-                    $cstr.to_str().unwrap_or("invalid utf8")
-                );
-                let sym: *const i8 = $cstr.as_ptr().cast();
-                let res = unsafe { libc::dlsym(libc::RTLD_NEXT, sym) };
-                $crate::utils::UnsafeSendSync(res.cast())
-            });
+pub(crate) fn link_function(
+    orig: &AtomicPtr<c_void>,
+    source: *const c_char,
+) -> Option<*mut c_void> {
+    let real = orig.load(Ordering::SeqCst);
 
-        SYM.0
-    }};
+    if !real.is_null() {
+        return Some(real);
+    }
+
+    // SAFETY: `source` is a nul-terminated C string passed in from the macro.
+    let name = unsafe { std::ffi::CStr::from_ptr(source) };
+    crate::debug!(
+        Hooks,
+        "hooking '{}'",
+        name.to_str().unwrap_or("invalid utf8")
+    );
+
+    let real = run_native(|| unsafe { libc::dlsym(libc::RTLD_NEXT, source) });
+    if !real.is_null() {
+        orig.store(real, Ordering::SeqCst);
+        return Some(real);
+    }
+
+    None
 }
 
-/// Defines an `extern "C"` function that overrides a symbol via `LD_PRELOAD`,
-/// runs an optional block, then forwards to the original via [`sym!`](crate::sym).
+/// Defines an `extern "C"` function that overrides a symbol via `LD_PRELOAD`.
+/// The original is resolved lazily (cached) and bound to the `|real|`
+/// identifier for use inside the body.
 ///
 /// # Example
 ///
 /// ```ignore
-/// override_sym!(XOpenDisplay(name: *const c_char) {
-///     debug!(Hooks, "XOpenDisplay called");
+/// override_sym!(SDL_RenderPresent(renderer: *const ()) |real| {
+///     crate::frame::frame_boundary(move || real(renderer));
+/// });
+///
+/// override_sym!(XOpenDisplay(name: *const c_char) -> *const () |real| {
+///     real(name)
 /// });
 /// ```
 #[macro_export]
 macro_rules! override_sym {
-    ($fn:ident ($($param:ident: $ty:ty),*) $($block:block)?) => {
+    ($fn:ident ($($param:ident: $ty:ty),*) $(-> $ret_ty:ty)? |$real:ident| $($block:block)?) => {
         #[unsafe(no_mangle)]
-        pub extern "C" fn $fn($($param: $ty),*) -> *const () {
-            // SAFETY: static lifetime and nul terminated
-            const NAME: &std::ffi::CStr = unsafe {CStr::from_ptr(concat!(stringify!($fn), "\0").as_ptr().cast())};
-            let ptr = $crate::sym!(NAME);
+        pub extern "C" fn $fn($($param: $ty),*) $(-> $ret_ty)? {
+            const NAME: &[u8] = concat!(stringify!($fn), "\0").as_bytes();
+            static SYM: std::sync::atomic::AtomicPtr<std::ffi::c_void> =
+                std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+            let fn_ptr = $crate::hooks::link_function(&SYM, NAME.as_ptr().cast());
             let fn_ptr = unsafe {
-                std::mem::transmute::<*mut (), extern "C" fn($($ty),*) -> *const ()>(
-                    ptr,
+                std::mem::transmute::<*mut _, extern "C" fn($($ty),*) $(-> $ret_ty)?>(
+                    fn_ptr.unwrap()
                 )
             };
 
+            let $real = fn_ptr;
+
             $($block)?
 
-            fn_ptr($($param),*)
         }
     };
 }
