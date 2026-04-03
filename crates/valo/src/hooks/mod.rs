@@ -1,8 +1,24 @@
 #![allow(clippy::undocumented_unsafe_blocks)]
 
+use std::cell::Cell;
+
 mod dlhook;
 mod sdl;
 mod xlib;
+
+thread_local! {
+    static IS_NATIVE: Cell<u32> = const { Cell::new(0) };
+}
+
+fn is_native() -> bool {
+    IS_NATIVE.get() > 0
+}
+fn run_native<T>(f: impl FnOnce() -> T) -> T {
+    IS_NATIVE.with(|cell| cell.update(|count| count + 1));
+    let ret = f();
+    IS_NATIVE.with(|cell| cell.update(|count| count - 1));
+    ret
+}
 
 /// Resolves the next definition of a symbol in the dynamic linker's load order
 /// via `dlsym(RTLD_NEXT, ...)`, caching the result.
