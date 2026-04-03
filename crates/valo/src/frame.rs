@@ -4,6 +4,13 @@ use crate::global_state::GlobalState;
 
 pub fn frame_boundary(draw: impl FnOnce()) {
     let global = GlobalState::get();
-    global.frame_count.fetch_add(1, Ordering::SeqCst);
+    let frame = global.frame_count.fetch_add(1, Ordering::SeqCst);
+
+    if global.checkpoint_frame > 0 && frame == global.checkpoint_frame {
+        crate::valo_checkpoint();
+    } else if global.restore_frame > 0 && frame == global.restore_frame {
+        crate::valo_restore();
+    }
+
     draw();
 }

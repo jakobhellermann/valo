@@ -34,6 +34,10 @@ pub struct GlobalState {
     pub frame_count: AtomicU64,
     /// 0 means unlimited
     pub max_restores: u64,
+    /// 0 means disabled
+    pub checkpoint_frame: u64,
+    /// 0 means disabled
+    pub restore_frame: u64,
 }
 // SAFETY: only access through `GlobalState::get`
 unsafe impl Send for GlobalState {}
@@ -98,12 +102,16 @@ impl GlobalState {
             inner
         };
         let max_restores = parse_env_u64(c"VALO_MAX_RESTORES");
+        let checkpoint_frame = parse_env_u64(c"VALO_CHECKPOINT_FRAME");
+        let restore_frame = parse_env_u64(c"VALO_RESTORE_FRAME");
 
         Ok(GlobalState {
             reserved: reserved.cast(),
             restore_in_progress: AtomicBool::new(false),
             frame_count: AtomicU64::new(0),
             max_restores,
+            checkpoint_frame,
+            restore_frame,
         })
     }
 
