@@ -1,0 +1,5 @@
+pre: p0=aa p5=bb p8=00 p15=cc
+post: p0=aa p5=bb p8=00 p15=cc
+overwritten
+post: p0=aa p5=bb p8=00 p15=cc
+overwritten
