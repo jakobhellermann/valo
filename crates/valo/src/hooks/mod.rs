@@ -8,7 +8,7 @@ use libc::c_char;
 
 mod dlhook;
 mod sdl;
-mod xlib;
+pub(crate) mod xlib;
 
 thread_local! {
     static IS_NATIVE: Cell<u32> = const { Cell::new(0) };

@@ -55,7 +55,14 @@ unsafe fn snapshot_create(ucontext: *const libc::ucontext_t) -> Result<()> {
 // - Must not be called concurrently
 // - `snapshot_create` must have been called prior
 unsafe fn snapshot_restore(ucontext: *const libc::ucontext_t) -> Result<()> {
+    // Save current X11 connection state before restore overwrites it
+    let x11_state = crate::hooks::xlib::xfixup::X11SavedState::save()?;
+
     reader::read_all_areas()?;
+
+    // Restore X11 connection state (sequence numbers, xcb connection)
+    // Must happen after read_all_areas but before ucontext::restore
+    x11_state.restore()?;
 
     GlobalState::get().set_restore_in_progress(true);
 
