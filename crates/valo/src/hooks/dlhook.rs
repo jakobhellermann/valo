@@ -43,6 +43,9 @@ pub unsafe extern "C" fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *m
         if name == c"XOpenDisplay" {
             return crate::hooks::xlib::xdisplay::XOpenDisplay as *mut c_void;
         }
+        if name == c"XCloseDisplay" {
+            return crate::hooks::xlib::xdisplay::XCloseDisplay as *mut c_void;
+        }
     }
 
     resolved
