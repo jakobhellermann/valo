@@ -1,0 +1,2 @@
+[alias]
+valo = "run --package valo-harness -q --"
