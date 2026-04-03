@@ -1,1 +1,1 @@
-mod xdisplay;
+pub mod xdisplay;
