@@ -2,9 +2,12 @@ use std::fmt::Write;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::ops::Range;
+use std::os::fd::OwnedFd;
 use std::str::FromStr;
 
 type Result<T, E = std::io::Error> = std::result::Result<T, E>;
+
+use rustix::fs::{Mode, OFlags};
 
 use crate::PAGE_SIZE;
 use crate::stackio::StackBufReader;
@@ -29,8 +32,13 @@ impl std::fmt::Display for MemoryMap {
         let page_count = (self.address.end - self.address.start) as usize / PAGE_SIZE;
         write!(
             f,
-            "{:x}..{:x} {} ({}) {:?}",
-            self.address.start, self.address.end, self.perms, page_count, self.pathname
+            "{:x}-{:x} {} ({}) {:?}",
+            self.address.start,
+            self.address.end,
+            self.perms,
+            page_count,
+            // self.offset,
+            self.pathname
         )
     }
 }
@@ -47,9 +55,45 @@ impl MemoryMap {
         page..page + page_count
     }
 
+    pub fn len(&self) -> usize {
+        (self.address.end - self.address.start) as usize
+    }
+
+    fn map_file_path(&self) -> heapless::String<46> {
+        let mut buf = heapless::String::<46>::new();
+        write!(
+            &mut buf,
+            "/proc/self/map_files/{:x}-{:x}",
+            self.address.start, self.address.end
+        )
+        .unwrap();
+        buf
+    }
+
+    pub(crate) fn open_file(&self) -> Result<OwnedFd, rustix::io::Errno> {
+        let fd = rustix::fs::open(self.pathname.as_str(), OFlags::RDONLY, Mode::empty());
+        fd.or_else(|_| {
+            let map_file = self.map_file_path();
+            rustix::fs::open(map_file.as_str(), OFlags::RDONLY, Mode::empty())
+        })
+    }
+
     pub(crate) fn as_bytes(&self) -> &[u8] {
         // SAFETY: repr(C)
         unsafe { std::slice::from_raw_parts(std::ptr::from_ref(self).cast(), size_of::<Self>()) }
+    }
+
+    pub(crate) fn unmap(&self) -> Result<(), rustix::io::Errno> {
+        // SAFETY:
+        // - ptr is aligned to page size
+        // - the range covered by len is mapped
+        // - provenance: shrug
+        unsafe {
+            rustix::mm::munmap(
+                std::ptr::with_exposed_provenance_mut(self.address.start as usize),
+                self.len(),
+            )
+        }
     }
 }
 
@@ -59,11 +103,13 @@ impl ProcMaps {
     }
 
     pub fn new_self_copy() -> Result<Self> {
+        const TMP_COPY_FILEPATH: &str = "/tmp/tmp-valo-maps";
+
         let mut maps = File::open("/proc/self/maps")?;
-        let mut copy = File::create("/tmp/valo-maps").unwrap();
+        let mut copy = File::create(TMP_COPY_FILEPATH).unwrap();
         std::io::copy(&mut maps, &mut copy)?;
 
-        Ok(ProcMaps::new(File::open("/tmp/valo-maps")?))
+        Ok(ProcMaps::new(File::open(TMP_COPY_FILEPATH)?))
     }
 
     #[allow(dead_code)]
@@ -141,6 +187,10 @@ pub enum MMapPath {
     Vsys(i32),
     /// Some other pseudo-path
     Other,
+    /// memfd:
+    MemFd,
+    /// /dev/shm
+    Shm,
 }
 
 fn classify_path(path: &str) -> Option<MMapPath> {
@@ -159,9 +209,10 @@ fn classify_path(path: &str) -> Option<MMapPath> {
         }
         x if x.starts_with('[') && x.ends_with(']') => MMapPath::Other,
         x if x.starts_with("/SYSV") => {
-            // 32bits signed hex. /SYSVaabbccdd (deleted)if x.starts_with("/SYSV") => {
             MMapPath::Vsys(u32::from_str_radix(&x[5..13], 16).ok()? as i32)
         }
+        x if x.starts_with("/memfd:") => MMapPath::MemFd,
+        x if x.starts_with("/dev/shm/") => MMapPath::Shm,
         _ => MMapPath::Path,
     })
 }

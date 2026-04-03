@@ -3,8 +3,6 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::mem::MaybeUninit;
 
-use rustix::mm;
-
 use crate::checkpoint::{AreaMeta, Header, PageFlag, Result};
 use crate::procfs_maps::{
     MMapPath, MemoryMap, MemoryMapPermissions, PageFlags, ProcMaps, ProcPagemap,
@@ -342,14 +340,7 @@ fn reallocate_area(saved_area: &mut MemoryMap, current_area: &mut MemoryMap) -> 
         // todo: or saved is none
         if saved_area.address.start > current_area.address.start {
             eprintln!("[realloc] unmap");
-            // unmap
-            // SAFETY: address is aligned
-            unsafe {
-                mm::munmap(
-                    std::ptr::with_exposed_provenance_mut(current_area.address.start as usize),
-                    (current_area.address.end - current_area.address.start) as usize,
-                )?;
-            };
+            current_area.unmap()?;
             return Ok(Ordering::Greater);
         }
 
