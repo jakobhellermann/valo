@@ -1,5 +1,6 @@
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
+use std::os::fd::OwnedFd;
 
 use crate::Result;
 use crate::checkpoint::{AreaMeta, Header, PageFlag};
@@ -28,6 +29,13 @@ impl SnapshotMetaWriter {
 pub fn write_all_areas() -> Result<()> {
     let mut writer = SnapshotMetaWriter::new()?;
 
+    let mut maps = File::open("/proc/self/maps")?;
+    let mut copy = File::create("/tmp/test-a").unwrap();
+    std::io::copy(&mut maps, &mut copy)?;
+    let mut maps = File::open("/proc/self/maps")?;
+    let mut copy = File::create("/tmp/test-b").unwrap();
+    std::io::copy(&mut maps, &mut copy)?;
+
     // TODO proc.clear_refs(ClearRefs::SoftDirty)?;
 
     let mut maps = ProcMaps::new_self_copy()?;
@@ -45,129 +53,7 @@ pub fn write_all_areas() -> Result<()> {
     while let Some(area) = maps.next()? {
         header.area_count += 1;
 
-        // mprotect read
-
-        let page_data_offset = writer.snapshot_pages.stream_position()?;
-        let uncommitted = area_is_uncommmited(&area, &mut page_map)?;
-
-        // todo more skip?
-        let skip = skip(&area);
-        writer.snapshot_meta.write_all(area.as_bytes())?;
-        let meta = AreaMeta {
-            skip,
-            uncommitted,
-            page_data_offset,
-        };
-        writer.snapshot_meta.write_all(meta.as_bytes())?;
-
-        eprint!("{}", area);
-        eprintln!(" skipped={}", skip);
-
-        if skip || uncommitted {
-            // mprotect?
-            continue;
-        }
-
-        debug_assert!(area.address.start % PAGE_SIZE as u64 == 0);
-
-        if area.perms.contains(MemoryMapPermissions::SHARED) {
-            todo!()
-        }
-
-        #[derive(Debug)]
-        struct Stats {
-            unmapped: usize,
-            zero_or_file: usize,
-            full: usize,
-
-            modified: usize,
-        }
-        let mut stats = Stats {
-            unmapped: 0,
-            zero_or_file: 0,
-            full: 0,
-            modified: 0,
-        };
-
-        let mut flags_written = 0;
-        let mut save_page_flags = |snapshot_meta: &mut File, flag: PageFlag| {
-            // todo buffer
-            flags_written += 1;
-            snapshot_meta.write_all(&[flag as u8])
-            // snapshot_meta.write_all(&[])
-        };
-
-        page_map.seek(area.page())?;
-
-        for page in area.pages() {
-            let addr = std::ptr::with_exposed_provenance(page * PAGE_SIZE);
-            let page_flags = page_map.read_single()?; // TODO buffer
-
-            if page_flags.contains(PageFlags::SWAP) {
-                todo!();
-            }
-
-            let page_present = page_flags.contains(PageFlags::PRESENT);
-            let page_file = page_flags.contains(PageFlags::FILE);
-            let page_softdirty = page_flags.contains(PageFlags::SOFT_DIRTY);
-            let page_guard_region = page_flags.bits() & (1 << 58) != 0;
-
-            if page_guard_region {
-                save_page_flags(&mut writer.snapshot_meta, PageFlag::Guard)?;
-                todo!();
-            }
-
-            if area.perms.contains(MemoryMapPermissions::PRIVATE) {
-                if let MMapPath::Anonymous = area.path_kind
-                    && !page_present
-                {
-                    stats.unmapped += 1;
-                    save_page_flags(&mut writer.snapshot_meta, PageFlag::No)?;
-                    continue;
-                }
-
-                // TODO: is zero page
-
-                if let MMapPath::Path = &area.path_kind
-                    && (!page_present || page_file)
-                {
-                    stats.zero_or_file += 1;
-                    // debug assert eq
-                    save_page_flags(&mut writer.snapshot_meta, PageFlag::File)?;
-                    continue;
-                }
-            }
-
-            if area.perms.contains(MemoryMapPermissions::SHARED) {
-                todo!();
-            }
-
-            if page_softdirty {
-                stats.modified += 1;
-            }
-
-            #[allow(clippy::overly_complex_bool_expr)]
-            if !page_softdirty && false {
-                todo!();
-            } else {
-                // todo: queue + bigger reads
-                let page_data = unsafe { std::slice::from_raw_parts(addr, PAGE_SIZE) };
-                writer.snapshot_pages.write_all(page_data)?;
-
-                stats.full += 1;
-                save_page_flags(&mut writer.snapshot_meta, PageFlag::Full)?;
-                continue;
-            }
-        }
-
-        debug_assert_eq!(flags_written, area.page_count());
-
-        if false {
-            eprintln!(
-                "  unmapped={} zero_or_file={} full={} softdirty={}",
-                stats.unmapped, stats.zero_or_file, stats.full, stats.modified,
-            );
-        }
+        write_area(&mut writer, &area, &mut page_map)?;
     }
 
     writer.snapshot_meta.seek(SeekFrom::Start(header_pos))?;
@@ -176,6 +62,189 @@ pub fn write_all_areas() -> Result<()> {
     })?;
 
     // postcard::to_io(&maps, snapshot_area)?;
+
+    Ok(())
+}
+
+#[allow(clippy::undocumented_unsafe_blocks)]
+fn write_area(
+    writer: &mut SnapshotMetaWriter,
+    area: &MemoryMap,
+    page_map: &mut ProcPagemap,
+) -> Result<()> {
+    // mprotect read
+
+    let page_data_offset = writer.snapshot_pages.stream_position()?;
+    let uncommitted = area_is_uncommmited(area, page_map)?;
+
+    // todo more skip?
+    let skip = skip(area);
+    writer.snapshot_meta.write_all(area.as_bytes())?;
+    let meta = AreaMeta {
+        skip,
+        uncommitted,
+        page_data_offset,
+    };
+    writer.snapshot_meta.write_all(meta.as_bytes())?;
+
+    /*eprint!("{}", area);
+    if skip {
+        eprint!(" skipped");
+    }
+    eprintln!();*/
+
+    if skip || uncommitted {
+        // mprotect?
+        return Ok(());
+    }
+
+    let mut shared_fd: Option<(OwnedFd, u64, u64)> = None;
+
+    if area.perms.contains(MemoryMapPermissions::SHARED) {
+        let fd = area.open_file().ok();
+
+        if let Some(fd) = fd {
+            match rustix::fs::seek(&fd, rustix::fs::SeekFrom::Hole(area.offset)) {
+                Err(_) => std::mem::drop(fd),
+                #[allow(unused)]
+                Ok(mut next_off_hole) => {
+                    let mut next_off_data =
+                        rustix::fs::seek(&fd, rustix::fs::SeekFrom::Data(area.offset))
+                            .unwrap_or(u64::MAX);
+                    next_off_hole &= !(PAGE_SIZE as u64 - 1);
+                    next_off_data &= !(PAGE_SIZE as u64 - 1);
+                    shared_fd = Some((fd, next_off_hole, next_off_data));
+                }
+            }
+        } else {
+            // eprintln!("Could not open shared map file for save {}", area.pathname)
+        }
+    }
+
+    #[derive(Debug)]
+    struct Stats {
+        unmapped: usize,
+        zero_or_file: usize,
+        full: usize,
+
+        modified: usize,
+    }
+    let mut stats = Stats {
+        unmapped: 0,
+        zero_or_file: 0,
+        full: 0,
+        modified: 0,
+    };
+
+    let mut flags_written = 0;
+    let mut save_page_flags = |snapshot_meta: &mut File, flag: PageFlag| {
+        // todo buffer
+        flags_written += 1;
+        snapshot_meta.write_all(&[flag as u8])
+        // snapshot_meta.write_all(&[])
+    };
+
+    page_map.seek(area.page())?;
+
+    for page in area.pages() {
+        let addr = std::ptr::with_exposed_provenance(page * PAGE_SIZE);
+        let page_flags = page_map.read_single()?; // TODO buffer
+
+        /*if page_flags.contains(PageFlags::SWAP) {
+            todo!("swap: {page_flags:?}");
+        }*/
+
+        let page_present = page_flags.contains(PageFlags::PRESENT);
+        let page_file = page_flags.contains(PageFlags::FILE);
+        let page_softdirty = page_flags.contains(PageFlags::SOFT_DIRTY);
+        let page_guard_region = page_flags.bits() & (1 << 58) != 0;
+
+        if page_guard_region {
+            save_page_flags(&mut writer.snapshot_meta, PageFlag::Guard)?;
+            continue;
+        }
+
+        if area.perms.contains(MemoryMapPermissions::PRIVATE) {
+            if let MMapPath::Anonymous = area.path_kind
+                && !page_present
+            {
+                stats.unmapped += 1;
+                save_page_flags(&mut writer.snapshot_meta, PageFlag::No)?;
+                continue;
+            }
+
+            // TODO: is zero page
+
+            if let MMapPath::Path = &area.path_kind
+                && (!page_present || page_file)
+            {
+                stats.zero_or_file += 1;
+                // debug assert eq
+                save_page_flags(&mut writer.snapshot_meta, PageFlag::File)?;
+                continue;
+            }
+        }
+
+        if area.perms.contains(MemoryMapPermissions::SHARED) {
+            if let Some((ref shared_fd, mut next_off_hole, mut next_off_data)) = shared_fd {
+                let current_off = area.offset;
+                if current_off > next_off_data && current_off > next_off_hole {
+                    next_off_data =
+                        rustix::fs::seek(shared_fd, rustix::fs::SeekFrom::Data(current_off))?;
+                    next_off_data &= !(PAGE_SIZE as u64 - 1);
+                    next_off_hole =
+                        rustix::fs::seek(shared_fd, rustix::fs::SeekFrom::Hole(current_off))?;
+                    next_off_hole &= !(PAGE_SIZE as u64 - 1);
+                }
+
+                if current_off == next_off_data || current_off < next_off_hole {
+                    // current page is data
+                } else if current_off == next_off_hole || current_off < next_off_data {
+                    save_page_flags(&mut writer.snapshot_meta, PageFlag::No)?;
+                    stats.unmapped += 1;
+                } else {
+                    todo!();
+                }
+            }
+
+            if !page_present {
+                stats.zero_or_file += 1;
+                save_page_flags(&mut writer.snapshot_meta, PageFlag::File)?;
+                continue;
+            }
+            if is_zero_page() {
+                stats.zero_or_file += 1;
+                save_page_flags(&mut writer.snapshot_meta, PageFlag::Zero)?;
+                continue;
+            }
+        }
+
+        if page_softdirty {
+            stats.modified += 1;
+        }
+
+        #[allow(clippy::overly_complex_bool_expr)]
+        if !page_softdirty && false {
+            todo!();
+        } else {
+            // todo: queue + bigger reads
+            let page_data = unsafe { std::slice::from_raw_parts(addr, PAGE_SIZE) };
+            writer.snapshot_pages.write_all(page_data)?;
+
+            stats.full += 1;
+            save_page_flags(&mut writer.snapshot_meta, PageFlag::Full)?;
+            continue;
+        }
+    }
+
+    debug_assert_eq!(flags_written, area.page_count());
+
+    if false {
+        eprintln!(
+            "  unmapped={} zero_or_file={} full={} softdirty={}",
+            stats.unmapped, stats.zero_or_file, stats.full, stats.modified,
+        );
+    }
 
     Ok(())
 }
@@ -235,4 +304,8 @@ fn skip(area: &MemoryMap) -> bool {
     }
 
     true
+}
+
+fn is_zero_page() -> bool {
+    false // TODO
 }

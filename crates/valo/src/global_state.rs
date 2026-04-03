@@ -2,7 +2,7 @@ use std::cell::SyncUnsafeCell;
 use std::mem::MaybeUninit;
 use std::ops::Range;
 use std::ptr::addr_of_mut;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use rustix::mm;
 
@@ -17,6 +17,8 @@ static GLOBAL_STATE: SyncUnsafeCell<MaybeUninit<GlobalState>> =
 pub struct GlobalState {
     pub reserved: *mut ReservedMemory,
     pub restore_in_progress: AtomicBool,
+
+    pub frame_count: AtomicU64,
 }
 // SAFETY: only access through `GlobalState::get`
 unsafe impl Send for GlobalState {}
@@ -81,6 +83,7 @@ impl GlobalState {
         Ok(GlobalState {
             reserved: reserved.cast(),
             restore_in_progress: AtomicBool::new(false),
+            frame_count: AtomicU64::new(0),
         })
     }
 

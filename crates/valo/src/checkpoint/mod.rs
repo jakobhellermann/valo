@@ -81,6 +81,7 @@ pub fn checkpoint_handler_inner(ucontext: *const ucontext_t) -> Result<()> {
         eprintln!("-- LOAD SAVESTATE --");
         // SAFETY: same precondition
         unsafe { snapshot_restore(ucontext)? };
+        eprintln!("-- LOAD SAVESTATE DONE --");
     }
 
     Ok(())

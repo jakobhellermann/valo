@@ -3,6 +3,8 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::mem::MaybeUninit;
 
+use rustix::mm::{self, MapFlags, MprotectFlags, ProtFlags};
+
 use crate::checkpoint::{AreaMeta, Header, PageFlag, Result};
 use crate::procfs_maps::{
     MMapPath, MemoryMap, MemoryMapPermissions, PageFlags, ProcMaps, ProcPagemap,
@@ -133,12 +135,10 @@ pub fn read_all_areas() -> Result<()> {
     structured::events::reallocate_areas_begin();
 
     while _saved_area.is_some() || _current_area.is_some() {
-        let (saved_area, current_area) = match (_saved_area.as_mut(), _current_area.as_mut()) {
-            (Some(a), Some(b)) => (a, b),
-            _ => todo!(),
-        };
-
-        let order = reallocate_area(&mut saved_area.0, current_area)?;
+        let order = reallocate_area(
+            _saved_area.as_mut().map(|x| &mut x.0),
+            _current_area.as_mut(),
+        )?;
 
         match order {
             Ordering::Less => _saved_area = saved_maps_iter.next(),
@@ -151,6 +151,7 @@ pub fn read_all_areas() -> Result<()> {
     }
     structured::events::reallocate_areas_end();
 
+    eprintln!("Finished reallocating areas");
     reader.restart()?;
 
     for _ in 0..reader.header.area_count {
@@ -158,6 +159,7 @@ pub fn read_all_areas() -> Result<()> {
 
         read_area(&area, &meta, &mut reader, &mut page_map)?;
     }
+    eprintln!("Finished reading areas");
 
     Ok(())
 }
@@ -180,17 +182,35 @@ fn read_area(
         return Ok(());
     }
 
-    // mprotect read
+    // todo: mprotect read
 
     let page_idx = saved_area.page();
     current_pagemap.seek(page_idx)?;
     let page_count = saved_area.page_count();
 
-    if saved_area.perms.contains(MemoryMapPermissions::SHARED) {
-        todo!();
-    }
-
     // eprintln!("restore {}", saved_area);
+
+    let shared_fd;
+
+    if saved_area.perms.contains(MemoryMapPermissions::SHARED) {
+        let fd = saved_area.open_file().ok();
+        shared_fd = fd.and_then(|fd| {
+            let mut next_off_hole =
+                rustix::fs::seek(&fd, rustix::fs::SeekFrom::Hole(saved_area.offset)).ok()?;
+            let mut next_off_data =
+                rustix::fs::seek(&fd, rustix::fs::SeekFrom::Data(saved_area.offset))
+                    .unwrap_or(u64::MAX);
+            next_off_hole &= !(PAGE_SIZE as u64 - 1);
+            next_off_data &= !(PAGE_SIZE as u64 - 1);
+            Some((fd, next_off_hole, next_off_data))
+        });
+        if shared_fd.is_none() {
+            /*eprintln!(
+                "Could not open shared map file for restore {}",
+                saved_area.pathname
+            );*/
+        }
+    }
 
     reader
         .snapshot_page_data
@@ -198,13 +218,33 @@ fn read_area(
 
     struct Stats {
         full: usize,
+        skip: usize,
+        zero_or_file: usize,
     }
-    let mut stats = Stats { full: 0 };
+    let mut stats = Stats {
+        full: 0,
+        skip: 0,
+        zero_or_file: 0,
+    };
 
     for page_idx in page_idx..page_idx + page_count {
         let current_pageflag = current_pagemap.read_at_single(page_idx)?; // TODO buffer
 
-        let page_addr = page_idx * PAGE_SIZE;
+        let page_addr = std::ptr::with_exposed_provenance_mut::<u8>(page_idx * PAGE_SIZE);
+
+        let page_mprotect_with = |extra_flags: MprotectFlags| unsafe {
+            // SAFETY: todo
+            mm::mprotect(
+                page_addr.cast(),
+                PAGE_SIZE,
+                permission_to_mprotect(saved_area.perms) | extra_flags,
+            )
+        };
+        let page_memset0 = || {
+            // SAFETY: todo
+            let page = unsafe { std::slice::from_raw_parts_mut(page_addr, PAGE_SIZE) };
+            page.fill(0);
+        };
 
         let flag = if meta.uncommitted {
             PageFlag::No
@@ -212,26 +252,37 @@ fn read_area(
             reader.read_pageflag()?
         };
 
-        if current_pageflag.contains(PageFlags::SWAP) {
+        /*if current_pageflag.contains(PageFlags::SWAP) {
             todo!();
-        }
+        }*/
 
         let page_present = current_pageflag.contains(PageFlags::PRESENT);
-        let _page_file = current_pageflag.contains(PageFlags::FILE);
+        let page_file = current_pageflag.contains(PageFlags::FILE);
         let _page_softdirty = current_pageflag.contains(PageFlags::SOFT_DIRTY);
         let page_guard_region = current_pageflag.bits() & (1 << 58) != 0;
 
         if let PageFlag::Guard = flag {
-            todo!();
+            stats.skip += 1;
+            if !page_guard_region {
+                todo!();
+            }
+            continue;
         } else if page_guard_region {
             todo!()
         }
 
+        page_mprotect_with(MprotectFlags::READ)?;
+
         if let PageFlag::No = flag {
             if saved_area.perms.contains(MemoryMapPermissions::PRIVATE) {
                 if page_present && !is_zero_page() {
-                    // mprotect + memset
-                    todo!();
+                    if !saved_area.perms.contains(MemoryMapPermissions::WRITE) {
+                        page_mprotect_with(MprotectFlags::WRITE)?;
+                    }
+                    page_memset0();
+                    stats.zero_or_file += 1;
+                } else {
+                    stats.skip += 1;
                 }
             } else {
                 todo!();
@@ -240,40 +291,64 @@ fn read_area(
         }
 
         if let PageFlag::Zero = flag {
-            // todo soft-dirty
+            // todo incremental savestates
+
             if !is_zero_page() {
-                // mprotect + memset 0
-                todo!();
+                if !saved_area.perms.contains(MemoryMapPermissions::WRITE) {
+                    page_mprotect_with(MprotectFlags::WRITE)?;
+                }
+                page_memset0();
+                stats.zero_or_file += 1;
+            } else {
+                stats.skip += 1;
             }
+            continue;
         }
 
         if let PageFlag::File = flag {
-            todo!();
+            if page_present && !page_file {
+                todo!()
+            } else {
+                stats.skip += 1;
+            }
+            continue;
         }
 
-        // todo: mprotect write
+        if !saved_area.perms.contains(MemoryMapPermissions::WRITE) {
+            page_mprotect_with(MprotectFlags::WRITE)?;
+        }
+
         // todo: base page
+
         {
-            // queue page load
-            if let PageFlag::Full = flag {
-                stats.full += 1;
-                let mut dst =
-                    unsafe { std::slice::from_raw_parts_mut(page_addr as *mut u8, PAGE_SIZE) };
-                std::io::copy(
-                    &mut (&mut reader.snapshot_page_data).take(PAGE_SIZE as u64),
-                    &mut dst,
-                )?;
-            } else {
-                unreachable!("{:?}", flag);
-            }
+            stats.full += 1;
+            queue_page_load(reader, page_addr, flag)?;
         }
 
         // todo recover permission
     }
     if false {
-        eprintln!("  full={}", stats.full);
+        eprintln!("  full={} skip={}", stats.full, stats.skip);
     }
 
+    Ok(())
+}
+
+fn queue_page_load(
+    reader: &mut SnapshotMetaReader,
+    page_addr: *mut u8,
+    flag: PageFlag,
+) -> Result<(), std::io::Error> {
+    if let PageFlag::Full = flag {
+        // SAFETY: todo
+        let mut dst = unsafe { std::slice::from_raw_parts_mut(page_addr, PAGE_SIZE) };
+        std::io::copy(
+            &mut (&mut reader.snapshot_page_data).take(PAGE_SIZE as u64),
+            &mut dst,
+        )?;
+    } else {
+        unreachable!("{:?}", flag);
+    }
     Ok(())
 }
 
@@ -281,25 +356,41 @@ fn is_zero_page() -> bool {
     false // TODO
 }
 
-fn reallocate_area(saved_area: &mut MemoryMap, current_area: &mut MemoryMap) -> Result<Ordering> {
-    /*eprintln!("Saved/Current:");
-    eprintln!("{}", saved_area);
-    eprintln!("{}", current_area);
-    eprintln!();*/
+// eq -> advance both
+// greater -> advance current
+// less -> advance saved
+fn reallocate_area(
+    mut saved_area: Option<&mut MemoryMap>,
+    mut current_area: Option<&mut MemoryMap>,
+) -> Result<Ordering> {
+    /*eprintln!("\nSaved/Current:");
+    eprintln!(
+        "{}",
+        saved_area
+            .as_ref()
+            .map(|x| x.to_string())
+            .unwrap_or_else(|| "<none>".into())
+    );
+    eprintln!(
+        "{}",
+        current_area
+            .as_ref()
+            .map(|x| x.to_string())
+            .unwrap_or_else(|| "<none>".into())
+    );*/
 
-    //eprintln!("{:?} -> {:?}", saved_area, current_area);
+    // eprintln!("{:?} -> {:?}", saved_area, current_area);
 
-    // same start addr
-    if saved_area.address.start == current_area.address.start {
+    let current_eq_saved = |saved_area: &mut MemoryMap, current_area: &mut MemoryMap| {
         // not the same area, unmap
         if saved_area.pathname != current_area.pathname || saved_area.perms != current_area.perms {
-            // unmap
-            todo!();
+            eprintln!("[realloc] unmapping {}", current_area);
+            current_area.unmap()?;
+            return Ok(Ordering::Greater);
         }
         let saved_area_size = saved_area.address.end - saved_area.address.start;
         let current_area_size = current_area.address.end - current_area.address.start;
 
-        let copy_size = std::cmp::max(saved_area_size, current_area_size);
         if saved_area_size != current_area_size {
             if let MMapPath::Stack = saved_area.path_kind {
                 todo!();
@@ -307,7 +398,6 @@ fn reallocate_area(saved_area: &mut MemoryMap, current_area: &mut MemoryMap) -> 
             if let MMapPath::Heap = saved_area.path_kind {
                 todo!();
             }
-            todo!();
         }
 
         if saved_area.perms != current_area.perms {
@@ -316,53 +406,131 @@ fn reallocate_area(saved_area: &mut MemoryMap, current_area: &mut MemoryMap) -> 
         }
 
         let is_special_section = match saved_area.path_kind {
-                MMapPath::Anonymous |
-                MMapPath::Vsys(_)| // TODO?
-                MMapPath::Path => false,
-                _ => true,
-            };
+                                            MMapPath::Anonymous |
+                                            MMapPath::Vsys(_)| // TODO?
+                                            MMapPath::Path => false,
+                                            _ => true,
+                                        };
         if saved_area.address.end == current_area.address.end || is_special_section {
             Ok(Ordering::Equal)
         } else if saved_area.address.end > current_area.address.end {
+            eprintln!("[realloc] [eq] saved ends after current");
             saved_area.address.start = current_area.address.end;
-            saved_area.address.end -= copy_size;
             Ok(Ordering::Greater)
         } else if saved_area.address.end < current_area.address.end {
+            eprintln!("[realloc] [eq] saved ends before current");
             current_area.address.start = saved_area.address.end;
-            current_area.address.end -= copy_size;
-            Ok(Ordering::Greater)
+            Ok(Ordering::Less)
         } else {
             unreachable!()
         }
-    } else {
-        // not same start addr
+    };
+    let current_before_saved = |current_area: &MemoryMap| {
+        eprintln!("[realloc] current before saved, unmapping");
+        current_area.unmap()?;
+        Ok(Ordering::Greater)
+    };
+    let current_after_saved = |saved_area: &MemoryMap| {
+        eprintln!("[realloc] current after saved");
 
-        // todo: or saved is none
-        if saved_area.address.start > current_area.address.start {
-            eprintln!("[realloc] unmap");
+        // must be allocated
+        if let MMapPath::Path = saved_area.path_kind {
+            todo!("realloc path {}", saved_area.pathname);
+        }
+
+        /*if let MMapPath::Anonymous = saved_area.path_kind {
+            todo!("anon {}", saved_area.pathname);
+        } else {
+            todo!("non-anon {}", saved_area.pathname);
+        }*/
+
+        // SAFETY: todo
+        unsafe {
+            // TODO: fd if necessary
+            rustix::mm::mmap_anonymous(
+                saved_area.address.start as *mut _,
+                saved_area.len(),
+                permission_to_prot(saved_area.perms),
+                permission_to_mapflags(saved_area.perms),
+            )?;
+
+            // TODO close fd if necessary
+
+            Ok(Ordering::Less)
+        }
+    };
+
+    if let Some(saved_area) = saved_area.as_deref_mut()
+        && let Some(current_area) = current_area.as_deref_mut()
+        && saved_area.address.start == current_area.address.start
+    {
+        return current_eq_saved(saved_area, current_area);
+    }
+
+    if saved_area.is_none() {
+        return current_before_saved(current_area.unwrap());
+    }
+    if let Some(saved_area) = saved_area.as_deref()
+        && let Some(current_area) = current_area.as_deref()
+        && saved_area.address.start > current_area.address.start
+    {
+        return current_before_saved(current_area);
+    }
+
+    if current_area.is_none() {
+        return current_after_saved(saved_area.unwrap());
+    }
+    if let Some(ref mut saved_area) = saved_area
+        && let Some(ref mut current_area) = current_area
+        && saved_area.address.start < current_area.address.start
+    {
+        if saved_area.address.end > current_area.address.start {
+            eprintln!("[realloc] regions are overlapping, must unmap");
             current_area.unmap()?;
             return Ok(Ordering::Greater);
         }
 
-        // todo: or current is none
-        if saved_area.address.start < current_area.address.start {
-            // todo: if current not none
-            if saved_area.address.end > current_area.address.start {
-                // overlap
-                // unmap
-                todo!();
-                // return Ok(Ordering::Greater);
-            }
-
-            // must be allocated
-            if let MMapPath::Path = saved_area.path_kind {
-                todo!("realloc path {}", saved_area.pathname);
-            }
-
-            // create memory map
-            todo!();
-        }
-
-        unreachable!()
+        return current_after_saved(saved_area);
     }
+
+    unreachable!()
+}
+
+fn permission_to_prot(perms: MemoryMapPermissions) -> ProtFlags {
+    let mut prot = ProtFlags::empty();
+    if perms.contains(MemoryMapPermissions::READ) {
+        prot.insert(ProtFlags::READ);
+    }
+    if perms.contains(MemoryMapPermissions::WRITE) {
+        prot.insert(ProtFlags::WRITE);
+    }
+    if perms.contains(MemoryMapPermissions::EXECUTE) {
+        prot.insert(ProtFlags::EXEC);
+    }
+    prot
+}
+
+fn permission_to_mapflags(perms: MemoryMapPermissions) -> MapFlags {
+    let mut flags = MapFlags::empty();
+    if perms.contains(MemoryMapPermissions::SHARED) {
+        flags.insert(MapFlags::SHARED);
+    }
+    if perms.contains(MemoryMapPermissions::PRIVATE) {
+        flags.insert(MapFlags::PRIVATE);
+    }
+    flags
+}
+
+fn permission_to_mprotect(perms: MemoryMapPermissions) -> MprotectFlags {
+    let mut prot = MprotectFlags::empty();
+    if perms.contains(MemoryMapPermissions::READ) {
+        prot.insert(MprotectFlags::READ);
+    }
+    if perms.contains(MemoryMapPermissions::WRITE) {
+        prot.insert(MprotectFlags::WRITE);
+    }
+    if perms.contains(MemoryMapPermissions::EXECUTE) {
+        prot.insert(MprotectFlags::EXEC);
+    }
+    prot
 }
