@@ -10,6 +10,7 @@ use crate::procfs_maps::{
     MMapPath, MemoryMap, MemoryMapPermissions, PageFlags, ProcMaps, ProcPagemap,
 };
 use crate::utils::PAGE_SIZE;
+use crate::{debug, trace, warn};
 
 pub struct SnapshotMetaReader {
     snapshot_meta: File,
@@ -82,6 +83,9 @@ impl SnapshotMetaReader {
 
 pub fn read_all_areas() -> Result<()> {
     let mut reader = SnapshotMetaReader::new()?;
+
+    debug!(Restore, "Restoring {} areas", reader.header.area_count);
+
     let saved_maps = (0..reader.header.area_count).map(|_| reader.read());
 
     /*let mut snapshot_area_vec = std::fs::read(SNAPSHOT_PATH_META)?;
@@ -115,16 +119,16 @@ pub fn read_all_areas() -> Result<()> {
     let mut maps = ProcMaps::new_self_copy()?;
     let mut page_map = ProcPagemap::new_self()?;
 
-    /*eprintln!("Saved: ");
+    /*debug!("Saved: ");
     for (area, meta, flags) in &saved_maps {
-        eprintln!("{}", area);
+        debug!("{}", area);
     }
-    eprintln!();
-    eprintln!("Current: ");
+    debug!();
+    debug!("Current: ");
     while let Some(area) = maps.next()? {
-       eprintln!("{}", area);
+       debug!("{}", area);
     }
-    eprintln!();
+    debug!();
     maps.reset()?;*/
 
     let mut saved_maps_iter = saved_maps.map(Result::unwrap);
@@ -151,7 +155,7 @@ pub fn read_all_areas() -> Result<()> {
     }
     structured::events::reallocate_areas_end();
 
-    eprintln!("Finished reallocating areas");
+    debug!(Restore, "finished reallocating areas");
     reader.restart()?;
 
     for _ in 0..reader.header.area_count {
@@ -159,7 +163,7 @@ pub fn read_all_areas() -> Result<()> {
 
         read_area(&area, &meta, &mut reader, &mut page_map)?;
     }
-    eprintln!("Finished reading areas");
+    debug!(Restore, "finished reading areas");
 
     Ok(())
 }
@@ -188,7 +192,7 @@ fn read_area(
     current_pagemap.seek(page_idx)?;
     let page_count = saved_area.page_count();
 
-    // eprintln!("restore {}", saved_area);
+    debug!(Restore, "restore {}", saved_area);
 
     let shared_fd;
 
@@ -205,10 +209,10 @@ fn read_area(
             Some((fd, next_off_hole, next_off_data))
         });
         if shared_fd.is_none() {
-            /*eprintln!(
-                "Could not open shared map file for restore {}",
-                saved_area.pathname
-            );*/
+            warn!(
+                Checkpoint,
+                "Could not open shared map file for restore {}", saved_area.pathname
+            );
         }
     }
 
@@ -327,9 +331,10 @@ fn read_area(
 
         // todo recover permission
     }
-    if false {
-        eprintln!("  full={} skip={}", stats.full, stats.skip);
-    }
+    debug!(
+        Restore,
+        "stats: full={} zero_or_file={} skip={}", stats.full, stats.zero_or_file, stats.skip,
+    );
 
     Ok(())
 }
@@ -363,15 +368,15 @@ fn reallocate_area(
     mut saved_area: Option<&mut MemoryMap>,
     mut current_area: Option<&mut MemoryMap>,
 ) -> Result<Ordering> {
-    /*eprintln!("\nSaved/Current:");
-    eprintln!(
+    /*debug!("\nSaved/Current:");
+    debug!(
         "{}",
         saved_area
             .as_ref()
             .map(|x| x.to_string())
             .unwrap_or_else(|| "<none>".into())
     );
-    eprintln!(
+    debug!(
         "{}",
         current_area
             .as_ref()
@@ -379,12 +384,12 @@ fn reallocate_area(
             .unwrap_or_else(|| "<none>".into())
     );*/
 
-    // eprintln!("{:?} -> {:?}", saved_area, current_area);
+    // debug!("{:?} -> {:?}", saved_area, current_area);
 
     let current_eq_saved = |saved_area: &mut MemoryMap, current_area: &mut MemoryMap| {
         // not the same area, unmap
         if saved_area.pathname != current_area.pathname || saved_area.perms != current_area.perms {
-            eprintln!("[realloc] unmapping {}", current_area);
+            trace!(Restore, "realloc: unmapping {}", current_area);
             current_area.unmap()?;
             return Ok(Ordering::Greater);
         }
@@ -406,19 +411,19 @@ fn reallocate_area(
         }
 
         let is_special_section = match saved_area.path_kind {
-                                            MMapPath::Anonymous |
-                                            MMapPath::Vsys(_)| // TODO?
-                                            MMapPath::Path => false,
-                                            _ => true,
-                                        };
+            MMapPath::Anonymous |
+            MMapPath::Vsys(_)| // TODO?
+            MMapPath::Path => false,
+            _ => true,
+        };
         if saved_area.address.end == current_area.address.end || is_special_section {
             Ok(Ordering::Equal)
         } else if saved_area.address.end > current_area.address.end {
-            eprintln!("[realloc] [eq] saved ends after current");
+            trace!(Restore, "realloc eq: saved ends after current");
             saved_area.address.start = current_area.address.end;
             Ok(Ordering::Greater)
         } else if saved_area.address.end < current_area.address.end {
-            eprintln!("[realloc] [eq] saved ends before current");
+            trace!(Restore, "realloc eq: saved ends before current");
             current_area.address.start = saved_area.address.end;
             Ok(Ordering::Less)
         } else {
@@ -426,12 +431,12 @@ fn reallocate_area(
         }
     };
     let current_before_saved = |current_area: &MemoryMap| {
-        eprintln!("[realloc] current before saved, unmapping");
+        trace!(Restore, "realloc: current before saved, unmapping");
         current_area.unmap()?;
         Ok(Ordering::Greater)
     };
     let current_after_saved = |saved_area: &MemoryMap| {
-        eprintln!("[realloc] current after saved");
+        trace!(Restore, "realloc: current after saved");
 
         // must be allocated
         if let MMapPath::Path = saved_area.path_kind {
@@ -485,7 +490,7 @@ fn reallocate_area(
         && saved_area.address.start < current_area.address.start
     {
         if saved_area.address.end > current_area.address.start {
-            eprintln!("[realloc] regions are overlapping, must unmap");
+            trace!(Restore, "realloc: regions are overlapping, must unmap");
             current_area.unmap()?;
             return Ok(Ordering::Greater);
         }

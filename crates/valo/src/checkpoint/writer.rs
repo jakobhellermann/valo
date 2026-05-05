@@ -2,13 +2,13 @@ use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 use std::os::fd::OwnedFd;
 
-use crate::Result;
 use crate::checkpoint::{AreaMeta, Header, PageFlag};
 use crate::global_state::{GlobalState, ReservedMemory};
 use crate::procfs_maps::{
     MMapPath, MemoryMap, MemoryMapPermissions, PageFlags, ProcMaps, ProcPagemap,
 };
 use crate::utils::PAGE_SIZE;
+use crate::{Result, debug, warn};
 
 pub struct SnapshotMetaWriter {
     // todo: stack buffered?
@@ -87,16 +87,12 @@ fn write_area(
     };
     writer.snapshot_meta.write_all(meta.as_bytes())?;
 
-    /*eprint!("{}", area);
-    if skip {
-        eprint!(" skipped");
-    }
-    eprintln!();*/
-
     if skip || uncommitted {
+        debug!(Checkpoint, "Skip   {}", area);
         // mprotect?
         return Ok(());
     }
+    debug!(Checkpoint, "Saving {}", area);
 
     let mut shared_fd: Option<(OwnedFd, u64, u64)> = None;
 
@@ -117,7 +113,10 @@ fn write_area(
                 }
             }
         } else {
-            // eprintln!("Could not open shared map file for save {}", area.pathname)
+            warn!(
+                Restore,
+                "Could not open shared map file for save {}", area.pathname
+            )
         }
     }
 
@@ -239,12 +238,14 @@ fn write_area(
 
     debug_assert_eq!(flags_written, area.page_count());
 
-    if false {
-        eprintln!(
-            "  unmapped={} zero_or_file={} full={} softdirty={}",
-            stats.unmapped, stats.zero_or_file, stats.full, stats.modified,
-        );
-    }
+    debug!(
+        Checkpoint,
+        "stats: unmapped={} zero_or_file={} full={} softdirty={}",
+        stats.unmapped,
+        stats.zero_or_file,
+        stats.full,
+        stats.modified,
+    );
 
     Ok(())
 }
