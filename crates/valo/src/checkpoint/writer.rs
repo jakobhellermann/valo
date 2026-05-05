@@ -283,6 +283,15 @@ fn skip(area: &MemoryMap) -> bool {
         return true;
     }
 
+    // When built with -C instrument-coverage, the LLVM profile counters live in
+    // writable mapped pages of libvalo.so. Snapshotting them would cause restore
+    // to wipe counter increments made during the signal handler that performs
+    // the restore itself. Skip the area covering those pages so the counters
+    // accumulate across restores.
+    if covers_coverage_counters(area) {
+        return true;
+    }
+
     match area.path_kind {
         // vectors
         MMapPath::Vsyscall | MMapPath::Vdso | MMapPath::Vvar => return true,
@@ -305,6 +314,30 @@ fn skip(area: &MemoryMap) -> bool {
     }
 
     true
+}
+
+#[cfg(coverage)]
+fn covers_coverage_counters(area: &MemoryMap) -> bool {
+    unsafe extern "C" {
+        // Stubs in compiler-rt's profiling runtime that return the bounds of the
+        // __llvm_prf_cnts section. They are tiny `mov rax, &section; ret` thunks —
+        // they must be called, not interpreted as the addresses themselves.
+        fn __llvm_profile_begin_counters() -> *const u8;
+        fn __llvm_profile_end_counters() -> *const u8;
+    }
+    // SAFETY: simple address-returning thunks, no preconditions
+    let (begin, end) = unsafe {
+        (
+            __llvm_profile_begin_counters() as u64,
+            __llvm_profile_end_counters() as u64,
+        )
+    };
+    area.address.start < end && begin < area.address.end
+}
+
+#[cfg(not(coverage))]
+fn covers_coverage_counters(_area: &MemoryMap) -> bool {
+    false
 }
 
 fn is_zero_page() -> bool {

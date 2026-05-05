@@ -13,4 +13,5 @@ Goals:
 
 ```sh
 cargo valo test # run tests in ./tests
+cargo valo test --coverage
 ```

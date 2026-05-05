@@ -17,3 +17,6 @@ heapless = "0.9"
 libc = "0.2"
 memchr = "2.7"
 rustix = { version = "1.1", features = ["fs", "mm"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(coverage_nightly)'] }

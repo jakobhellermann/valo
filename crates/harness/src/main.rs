@@ -28,6 +28,9 @@ struct TestArgs {
     /// Show stderr even for passing tests
     #[arg(long)]
     nocapture: bool,
+    /// Rebuild libvalo.so with -C instrument-coverage, run tests, generate HTML report
+    #[arg(long)]
+    coverage: bool,
     /// Filter tests by name
     filter: Option<String>,
 }
@@ -294,20 +297,17 @@ fn main() {
     }
 }
 
-fn build_libvalo(root: &Path) -> Result<()> {
-    let status = Command::new("cargo")
-        .args([
-            "build",
-            "--release",
-            "-Zunstable-options",
-            "--artifact-dir",
-            "out",
-            "-p",
-            "valo",
-        ])
-        .current_dir(root)
-        .status()
-        .context("failed to spawn cargo build")?;
+fn build_libvalo(root: &Path, artifact_dir: &Path, release: bool) -> Result<()> {
+    let mut cmd = Command::new("cargo");
+    cmd.arg("build");
+    if release {
+        cmd.arg("--release");
+    }
+    cmd.args(["-Zunstable-options", "--artifact-dir"])
+        .arg(artifact_dir)
+        .args(["-p", "valo"])
+        .current_dir(root);
+    let status = cmd.status().context("failed to spawn cargo build")?;
     if !status.success() {
         bail!("cargo build exited with {status}");
     }
@@ -320,13 +320,29 @@ fn run_test_command(args: TestArgs) {
     let tests_out_dir = out_dir.join("tests");
     let tests_dir = root.join("tests");
 
+    // Under --coverage we build & run against an instrumented libvalo in
+    // out/coverage/ so the regular out/libvalo.so isn't replaced (a stale
+    // instrumented dylib would leak default_*.profraw files into cwd on later
+    // non-coverage runs).
+    let out_dir = if args.coverage {
+        let cov_out = root.join("out").join("coverage");
+        if let Err(e) = setup_coverage(&root, &cov_out) {
+            eprintln!("ERROR: failed to set up coverage: {e:#}");
+            std::process::exit(1);
+        }
+        cov_out
+    } else {
+        root.join("out")
+    };
+
     let lib = out_dir.join("libvalo.so");
-    if let Err(e) = build_libvalo(&root) {
+    // Coverage builds debug + instrumented; normal runs use release.
+    if let Err(e) = build_libvalo(&root, &out_dir, !args.coverage) {
         eprintln!("ERROR: failed to build libvalo.so: {e}");
         std::process::exit(1);
     }
     if !lib.exists() {
-        eprintln!("ERROR: out/libvalo.so not found after build.");
+        eprintln!("ERROR: {} not found after build.", lib.display());
         std::process::exit(1);
     }
     if let Err(e) = fs::create_dir_all(&tests_out_dir) {
@@ -382,7 +398,109 @@ fn run_test_command(args: TestArgs) {
     }
 
     eprintln!("\n{passed} passed, {failed} failed");
+
+    if args.coverage
+        && let Err(e) = generate_coverage_report(&root)
+    {
+        eprintln!("ERROR: failed to generate coverage report: {e:#}");
+        std::process::exit(1);
+    }
+
     std::process::exit(if failed > 0 { 1 } else { 0 });
+}
+
+/// Configure environment for an instrumented build + run.
+/// Sets RUSTFLAGS, LLVM_PROFILE_FILE, etc. via `cargo llvm-cov show-env`,
+/// redirects everything to `cov_dir`, and removes stale profraw files.
+/// The caller is responsible for the actual build (which will pick up
+/// the env we set here).
+fn setup_coverage(root: &Path, cov_dir: &Path) -> Result<()> {
+    fs::create_dir_all(cov_dir)?;
+
+    // Override target dirs *before* show-env so it computes LLVM_PROFILE_FILE
+    // relative to our chosen location.
+    unsafe {
+        std::env::set_var("CARGO_TARGET_DIR", cov_dir);
+        std::env::set_var("CARGO_LLVM_COV_TARGET_DIR", cov_dir);
+    }
+
+    let show_env = Command::new("cargo")
+        .args(["llvm-cov", "show-env"])
+        .current_dir(root)
+        .output()
+        .context("failed to run cargo llvm-cov show-env")?;
+    if !show_env.status.success() {
+        bail!(
+            "cargo llvm-cov show-env failed:\n{}",
+            String::from_utf8_lossy(&show_env.stderr)
+        );
+    }
+
+    for line in String::from_utf8_lossy(&show_env.stdout).lines() {
+        // Lines look like: KEY='value'
+        let Some((key, val)) = line.split_once('=') else {
+            continue;
+        };
+        let val = val.trim_matches('\'');
+        // Re-assert our target dirs over whatever show-env emitted.
+        if key == "CARGO_TARGET_DIR" || key == "CARGO_LLVM_COV_TARGET_DIR" {
+            unsafe { std::env::set_var(key, cov_dir) };
+        } else {
+            unsafe { std::env::set_var(key, val) };
+        }
+    }
+    // Pin profraws to our dir even if show-env's template referenced the old target.
+    unsafe {
+        std::env::set_var("LLVM_PROFILE_FILE", cov_dir.join("valo-%p-%16m.profraw"));
+    }
+
+    eprintln!("-- Cleaning previous coverage data --");
+    for entry in fs::read_dir(cov_dir)? {
+        let path = entry?.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("profraw") {
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    Ok(())
+}
+
+fn generate_coverage_report(root: &Path) -> Result<()> {
+    let cov_dir = root.join("out").join("coverage");
+    eprintln!("\n-- Generating coverage report --");
+    let status = Command::new("cargo")
+        .args([
+            "llvm-cov",
+            "report",
+            "--html",
+            "--ignore-filename-regex",
+            "crates/harness/",
+            "--output-dir",
+        ])
+        .arg(&cov_dir)
+        .current_dir(root)
+        .status()
+        .context("failed to run cargo llvm-cov report --html")?;
+    if !status.success() {
+        bail!("report --html failed");
+    }
+    let status = Command::new("cargo")
+        .args([
+            "llvm-cov",
+            "report",
+            "--summary-only",
+            "--ignore-filename-regex",
+            "crates/harness/",
+        ])
+        .current_dir(root)
+        .status()
+        .context("failed to run cargo llvm-cov report --summary-only")?;
+    if !status.success() {
+        bail!("report --summary-only failed");
+    }
+
+    eprintln!("\nReport: {}/html/index.html", cov_dir.display());
+    Ok(())
 }
 
 fn find_workspace_root() -> PathBuf {
