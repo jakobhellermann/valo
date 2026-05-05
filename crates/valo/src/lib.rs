@@ -6,6 +6,7 @@ mod checkpoint;
 mod frame;
 mod global_state;
 mod hooks;
+pub mod log;
 mod procfs_maps;
 mod stackio;
 mod sys;
@@ -31,10 +32,12 @@ extern "C" fn _init() {
 }
 
 fn init() -> Result<()> {
+    log::init();
     // SAFETY: since this is an initializer there is unique access
     unsafe { GlobalState::set(GlobalState::new()?) };
     checkpoint::init_thread()?;
 
+    info!(Init, "valo initialized");
     Ok(())
 }
 
@@ -42,7 +45,7 @@ fn init() -> Result<()> {
 pub extern "C" fn valo_checkpoint() {
     // SAFETY: same precondition
     if let Err(e) = unsafe { checkpoint::checkpoint() } {
-        eprintln!("{}", e);
+        error!(Checkpoint, "{}", e);
     }
 }
 
@@ -50,6 +53,6 @@ pub extern "C" fn valo_checkpoint() {
 pub extern "C" fn valo_restore() {
     // SAFETY: same precondition
     if let Err(e) = unsafe { checkpoint::restore() } {
-        eprintln!("{}", e);
+        error!(Restore, "{}", e);
     }
 }

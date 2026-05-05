@@ -5,7 +5,7 @@ pub mod writer;
 use libc::{siginfo_t, ucontext_t};
 
 use crate::global_state::GlobalState;
-use crate::{Result, alt_stack, sys, utils};
+use crate::{Result, alt_stack, error, info, sys, utils};
 
 const SIG_CHECKPOINT: i32 = libc::SIGSYS;
 const SNAPSHOT_PATH_META: &str = "/tmp/valo-snapshot-areas";
@@ -75,13 +75,17 @@ pub fn checkpoint_handler_inner(ucontext: *const ucontext_t) -> Result<()> {
 
     if !state.restore_in_progress() {
         eprintln!("-- CREATE SAVESTATE --");
+        info!(Checkpoint, "snapshot create begin");
         // SAFETY: same precondition
         unsafe { snapshot_create(ucontext)? }
+        info!(Checkpoint, "snapshot create done");
     } else {
         eprintln!("-- LOAD SAVESTATE --");
+        info!(Restore, "snapshot restore begin");
         // SAFETY: same precondition
         unsafe { snapshot_restore(ucontext)? };
         eprintln!("-- LOAD SAVESTATE DONE --");
+        info!(Restore, "snapshot restore done");
     }
 
     Ok(())
@@ -93,7 +97,7 @@ pub unsafe extern "C" fn signal_handler(
     ucontext: *const ucontext_t,
 ) {
     if let Err(e) = utils::assert_no_alloc(|| checkpoint_handler_inner(ucontext)) {
-        eprintln!("Error in checkpoint handler {}", e);
+        error!(Checkpoint, "error in checkpoint handler: {}", e);
     }
 }
 
