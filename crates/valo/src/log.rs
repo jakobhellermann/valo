@@ -191,8 +191,17 @@ macro_rules! debug {
     ($category:ident, $($arg:tt)*) => { $crate::log!($category, Debug, $($arg)*) };
     ($($arg:tt)*) => { $crate::log!(Adhoc, Debug, $($arg)*) };
 }
+// TODO: level-based filtering. For now `trace!` is a no-op
 #[macro_export]
 macro_rules! trace {
-    ($category:ident, $($arg:tt)*) => { $crate::log!($category, Trace, $($arg)*) };
-    ($($arg:tt)*) => { $crate::log!(Adhoc, Trace, $($arg)*) };
+    ($category:ident, $($arg:tt)*) => {
+        if false {
+            $crate::log!($category, Trace, $($arg)*);
+        }
+    };
+    ($($arg:tt)*) => {
+        if false {
+            $crate::log!(Adhoc, Trace, $($arg)*);
+        }
+    };
 }
