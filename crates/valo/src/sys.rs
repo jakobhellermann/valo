@@ -27,6 +27,9 @@ pub fn register_onstack_signal_handler(
     let mut sa = unsafe { sa.assume_init() };
     // SAFETY: no preconditions
     unsafe { libc::sigfillset(&raw mut sa.sa_mask) };
+    // Keep SIGSEGV deliverable nested so the diagnostic handler can run
+    // SAFETY: no preconditions
+    unsafe { libc::sigdelset(&raw mut sa.sa_mask, libc::SIGSEGV) };
     sa.sa_flags = libc::SA_ONSTACK | SA_SIGINFO;
     sa.sa_sigaction = handler as usize;
     // SAFETY: correct api usage
