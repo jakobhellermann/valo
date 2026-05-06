@@ -2,7 +2,7 @@ use std::ffi::{CStr, c_char, c_void};
 use std::os::raw::c_int;
 use std::sync::LazyLock;
 
-use crate::override_sym;
+use crate::{override_sym, trace};
 
 override_sym!(dlopen(file: *const c_char, mode: c_int) -> *mut c_void |real| {
     let _name = match file.is_null() {
@@ -38,13 +38,17 @@ pub unsafe extern "C" fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *m
     if !symbol.is_null() {
         // SAFETY: symbol is a valid C string from the caller
         let name = unsafe { CStr::from_ptr(symbol) };
+        trace!(Hooks, "dlsym({})", name.to_str().unwrap_or("<bad utf8>"));
 
-        // TODO: don't hardcode here
-        if name == c"XOpenDisplay" {
-            return crate::hooks::xlib::xdisplay::XOpenDisplay as *mut c_void;
-        }
-        if name == c"XCloseDisplay" {
-            return crate::hooks::xlib::xdisplay::XCloseDisplay as *mut c_void;
+        if let Some(p) = match name.to_bytes() {
+            b"XOpenDisplay" => Some(crate::hooks::xlib::xdisplay::XOpenDisplay as *mut c_void),
+            b"glXGetProcAddress" => Some(crate::hooks::glx::glXGetProcAddress as *mut c_void),
+            b"glXGetProcAddressARB" => Some(crate::hooks::glx::glXGetProcAddressARB as *mut c_void),
+            b"glXGetProcAddressEXT" => Some(crate::hooks::glx::glXGetProcAddressEXT as *mut c_void),
+            b"XCloseDisplay" => Some(crate::hooks::xlib::xdisplay::XCloseDisplay as *mut c_void),
+            _ => None,
+        } {
+            return p;
         }
     }
 
