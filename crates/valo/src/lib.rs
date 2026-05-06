@@ -8,6 +8,7 @@ mod global_state;
 mod hooks;
 pub mod log;
 mod procfs_maps;
+mod sigsegv;
 mod stackio;
 mod sys;
 mod utils;
@@ -36,6 +37,7 @@ fn init() -> Result<()> {
     // SAFETY: since this is an initializer there is unique access
     unsafe { GlobalState::set(GlobalState::new()?) };
     checkpoint::init_thread()?;
+    sigsegv::install()?;
 
     info!(Init, "valo initialized");
     Ok(())
