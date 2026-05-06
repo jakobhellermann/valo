@@ -15,3 +15,21 @@ Goals:
 cargo valo test # run tests in ./tests
 cargo valo test --coverage
 ```
+
+# Environment variables
+
+`libvalo.so` reads the following environment variables at process startup. All
+are optional; a missing or unparseable value is treated as the default.
+
+| Variable                | Default         | Effect                                                                          |
+| ----------------------- | --------------- | ------------------------------------------------------------------------------- |
+| `VALO_LOG`              | `/tmp/valo.log` | Path of the log file (truncated on init). Use `/dev/stderr` to log to stderr.   |
+| `VALO_MAX_RESTORES`     | `0` (unlimited) | After this many restores, `valo_restore` calls `exit(0)`. `0` disables the cap. |
+| `VALO_CHECKPOINT_FRAME` | `0` (disabled)  | Auto-checkpoint when the frame counter reaches this value. `0` disables.        |
+| `VALO_RESTORE_FRAME`    | `0` (disabled)  | Auto-restore when the frame counter reaches this value. `0` disables.           |
+
+The `valo` client also recognises:
+
+| Variable     | Default | Effect                                                                             |
+| ------------ | ------- | ---------------------------------------------------------------------------------- |
+| `LD_PRELOAD` | unset   | If already set, `valo run` prepends `libvalo.so:` to it instead of overwriting it. |
