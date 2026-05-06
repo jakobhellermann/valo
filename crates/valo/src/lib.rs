@@ -6,6 +6,7 @@ mod checkpoint;
 mod frame;
 mod global_state;
 mod hooks;
+mod ipc;
 pub mod log;
 mod procfs_maps;
 mod sigsegv;
@@ -38,6 +39,7 @@ fn init() -> Result<()> {
     unsafe { GlobalState::set(GlobalState::new()?) };
     checkpoint::init_thread()?;
     sigsegv::install()?;
+    ipc::init()?;
 
     info!(Init, "valo initialized");
     Ok(())

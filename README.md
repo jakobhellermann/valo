@@ -27,6 +27,7 @@ are optional; a missing or unparseable value is treated as the default.
 | `VALO_MAX_RESTORES`     | `0` (unlimited) | After this many restores, `valo_restore` calls `exit(0)`. `0` disables the cap. |
 | `VALO_CHECKPOINT_FRAME` | `0` (disabled)  | Auto-checkpoint when the frame counter reaches this value. `0` disables.        |
 | `VALO_RESTORE_FRAME`    | `0` (disabled)  | Auto-restore when the frame counter reaches this value. `0` disables.           |
+| `VALO_SOCK`             | unset           | If set, `init` blocks until a peer rendezvous on the path. See `docs/ipc.md`.   |
 
 The `valo` client also recognises:
 
