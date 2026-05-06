@@ -266,6 +266,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "valo-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "libc",
+]
+
+[[package]]
 name = "valo-harness"
 version = "0.1.0"
 dependencies = [
