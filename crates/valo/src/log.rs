@@ -28,6 +28,7 @@ pub enum Category {
     Hooks,
     Frame,
     Init,
+    Ipc,
     /// Default category for debug prints without a category (`debug!("foo")).
     Adhoc,
 }
@@ -40,6 +41,7 @@ impl Category {
             Category::Hooks => "hooks",
             Category::Frame => "frame",
             Category::Init => "init",
+            Category::Ipc => "ipc",
             Category::Adhoc => "adhoc",
         }
     }

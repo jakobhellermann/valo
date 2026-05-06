@@ -4,6 +4,8 @@ use std::process::{Command, ExitCode};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use valo_ipc::messages::{ClientToLib, FrameBoundary, Hello, LibToClient};
+use valo_ipc::{ClientIPC, PROTOCOL_VERSION};
 
 #[derive(Parser)]
 #[command(name = "valo", about = "valo client")]
@@ -53,11 +55,19 @@ fn run(lib: Option<PathBuf>, gdb: bool, program: PathBuf, args: Vec<String>) -> 
     let mut cmd = build_command(gdb, &program, &args);
     cmd.env("LD_PRELOAD", prepend_ld_preload(&lib));
 
+    let sock_path = PathBuf::from(format!("/tmp/valo-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&sock_path);
+    cmd.env("VALO_SOCK", &sock_path);
+
     let mut child = cmd
         .spawn()
         .with_context(|| format!("spawning {}", cmd.get_program().to_string_lossy()))?;
 
-    // TODO: child communication via socket
+    if let Err(e) = run_ipc_loop(&sock_path) {
+        eprintln!("ipc loop ended: {e:#}");
+    }
+    // Best-effort cleanup of the socket file.
+    let _ = std::fs::remove_file(&sock_path);
 
     let status = child.wait().context("waiting for child")?;
 
@@ -67,6 +77,46 @@ fn run(lib: Option<PathBuf>, gdb: bool, program: PathBuf, args: Vec<String>) -> 
         Ok(ExitCode::from(u8::try_from(128 + sig).unwrap_or(255)))
     } else {
         Ok(ExitCode::from(1))
+    }
+}
+
+fn run_ipc_loop(sock: &Path) -> Result<()> {
+    let mut conn = ClientIPC::establish(sock).context("ipc establish")?;
+    eprintln!("[valo-client] ipc connected on {}", sock.display());
+
+    conn.send(&ClientToLib::Hello(Hello::CLIENT))
+        .context("send hello")?;
+    let peer = conn
+        .recv()
+        .context("recv hello")?
+        .context("lib closed before hello")?;
+    let LibToClient::Hello(peer_hello) = peer else {
+        bail!("expected Hello from lib, got {peer:?}");
+    };
+    if peer_hello.version != PROTOCOL_VERSION {
+        bail!(
+            "lib protocol version {} does not match client {}",
+            peer_hello.version,
+            PROTOCOL_VERSION
+        );
+    }
+    eprintln!("[valo-client] handshake complete");
+
+    loop {
+        let msg = match conn.recv()? {
+            Some(m) => m,
+            None => {
+                eprintln!("[valo-client] lib hung up");
+                return Ok(());
+            }
+        };
+        match msg {
+            LibToClient::FrameBoundary(FrameBoundary { frame: _ }) => {
+                // std::thread::sleep_ms(200);
+                conn.send(&ClientToLib::Advance).context("send advance")?;
+            }
+            other => eprintln!("[valo-client] ipc <- {other:?}"),
+        }
     }
 }
 

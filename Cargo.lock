@@ -473,6 +473,7 @@ dependencies = [
  "libc",
  "memchr",
  "rustix",
+ "valo-ipc",
 ]
 
 [[package]]
@@ -482,6 +483,7 @@ dependencies = [
  "anyhow",
  "clap",
  "libc",
+ "valo-ipc",
 ]
 
 [[package]]
