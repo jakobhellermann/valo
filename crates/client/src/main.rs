@@ -54,6 +54,7 @@ fn run(lib: Option<PathBuf>, gdb: bool, program: PathBuf, args: Vec<String>) -> 
 
     let mut cmd = build_command(gdb, &program, &args);
     cmd.env("LD_PRELOAD", prepend_ld_preload(&lib));
+    set_env_variables(&mut cmd);
 
     let sock_path = PathBuf::from(format!("/tmp/valo-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&sock_path);
@@ -135,6 +136,25 @@ fn build_command(gdb: bool, program: &PathBuf, args: &[String]) -> Command {
         cmd.args(args);
         cmd
     }
+}
+
+/// Set env vars for the child to nudge it onto a deterministic, software rendering path
+// Taken from https://github.com/clementgallet/libTAS/blob/86b04134d1a0dc918c0d72f09d0a6441d42f99ec/src/program/GameThread.cpp#L33
+fn set_env_variables(cmd: &mut Command) {
+    // Disable vsync
+    cmd.env("vblank_mode", "0");
+    // Force Mesa
+    cmd.env("__GLX_VENDOR_LIBRARY_NAME", "mesa");
+    // Force llvmpipe for savestate compatibility
+    cmd.env("LIBGL_ALWAYS_SOFTWARE", "1");
+    // Disable Wayland since we better support X11
+    cmd.env("WAYLAND_DISPLAY", "");
+    // Deterministic time zone.
+    cmd.env("TZ", "UTC0");
+
+    // TODO: opengl_soft config from libTAS:
+    // - VK_DRIVER_FILES -> Lavapipe ICDs
+    // - VDPAU_DRIVER=va_gl, VDPAU_QUIRKS=AvoidVA
 }
 
 fn prepend_ld_preload(lib: &Path) -> std::ffi::OsString {
