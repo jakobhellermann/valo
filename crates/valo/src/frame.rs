@@ -3,13 +3,13 @@ use std::sync::atomic::Ordering;
 use valo_ipc::messages::{ClientToLib, FrameBoundary, LibToClient, State};
 
 use crate::global_state::GlobalState;
-use crate::{debug, error, info, ipc};
+use crate::{error, info, ipc, trace};
 
 pub fn frame_boundary(draw: impl FnOnce()) {
     let global = GlobalState::get();
     let frame = global.frame_count.fetch_add(1, Ordering::SeqCst);
 
-    info!(Frame, "frame boundary {frame}");
+    trace!(Frame, "frame boundary {frame}");
 
     if global.checkpoint_frame > 0 && frame == global.checkpoint_frame {
         crate::valo_checkpoint();
@@ -44,10 +44,13 @@ fn handle_ipc(frame: u64) {
                 return;
             }
         };
-        debug!(Ipc, "received message: {msg:?}");
         match msg {
-            ClientToLib::Advance => return,
+            ClientToLib::Advance => {
+                trace!(Ipc, "received Advance");
+                return;
+            }
             ClientToLib::Checkpoint => {
+                info!(Ipc, "received Checkpoint");
                 drop(conn);
                 crate::valo_checkpoint();
                 let Some(c) = ipc::lock() else { return };
@@ -64,6 +67,7 @@ fn handle_ipc(frame: u64) {
                 }
             }
             ClientToLib::Restore => {
+                info!(Ipc, "received Restore");
                 drop(conn);
                 // On success, valo_restore jumps into the saved ucontext
                 // and never returns here. We only fall through on error.
@@ -72,6 +76,7 @@ fn handle_ipc(frame: u64) {
                 return;
             }
             ClientToLib::GetState => {
+                info!(Ipc, "received GetState");
                 let state = State { frame };
                 if let Err(e) = conn.send(&LibToClient::State(state)) {
                     error!(Ipc, "send State: {e}");
