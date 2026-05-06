@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 use libc::c_char;
 
 mod dlhook;
+mod glx;
 mod pthread;
 mod sdl;
 mod signal;
@@ -29,8 +30,9 @@ pub(crate) fn run_native<T>(f: impl FnOnce() -> T) -> T {
 pub(crate) fn link_function(
     orig: &AtomicPtr<c_void>,
     source: *const c_char,
+    library: *const c_char,
 ) -> Option<*mut c_void> {
-    let real = orig.load(Ordering::SeqCst);
+    let mut real = orig.load(Ordering::SeqCst);
 
     if !real.is_null() {
         return Some(real);
@@ -44,7 +46,15 @@ pub(crate) fn link_function(
         name.to_str().unwrap_or("invalid utf8")
     );
 
-    let real = run_native(|| unsafe { libc::dlsym(libc::RTLD_NEXT, source) });
+    real = run_native(|| unsafe { libc::dlsym(libc::RTLD_NEXT, source) });
+    if real.is_null() && !library.is_null() {
+        let handle =
+            run_native(|| unsafe { libc::dlopen(library, libc::RTLD_LAZY | libc::RTLD_NOLOAD) });
+        if !handle.is_null() {
+            real = run_native(|| unsafe { libc::dlsym(handle, source) });
+            unsafe { libc::dlclose(handle) };
+        }
+    }
     if !real.is_null() {
         orig.store(real, Ordering::SeqCst);
         return Some(real);
@@ -56,6 +66,7 @@ pub(crate) fn link_function(
 /// Defines an `extern "C"` function that overrides a symbol via `LD_PRELOAD`.
 /// The original is resolved lazily (cached) and bound to the `|real|`
 /// identifier for use inside the body.
+/// `lib:` optionally searches an already loaded library if `RTLD_NEXT` fails.
 ///
 /// # Example
 ///
@@ -71,13 +82,19 @@ pub(crate) fn link_function(
 #[macro_export]
 macro_rules! override_sym {
     ($fn:ident ($($param:ident: $ty:ty),*) $(-> $ret_ty:ty)? |$real:ident| $($block:block)?) => {
+        $crate::override_sym!(@impl $fn ($($param: $ty),*) $(-> $ret_ty)?, std::ptr::null(), |$real| $($block)?);
+    };
+    ($fn:ident ($($param:ident: $ty:ty),*) $(-> $ret_ty:ty)?, lib: $lib:expr, |$real:ident| $($block:block)?) => {
+        $crate::override_sym!(@impl $fn ($($param: $ty),*) $(-> $ret_ty)?, $lib, |$real| $($block)?);
+    };
+    (@impl $fn:ident ($($param:ident: $ty:ty),*) $(-> $ret_ty:ty)?, $lib:expr, |$real:ident| $($block:block)?) => {
         #[unsafe(no_mangle)]
         pub extern "C" fn $fn($($param: $ty),*) $(-> $ret_ty)? {
             const NAME: &[u8] = concat!(stringify!($fn), "\0").as_bytes();
             static SYM: std::sync::atomic::AtomicPtr<std::ffi::c_void> =
                 std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 
-            let fn_ptr = $crate::hooks::link_function(&SYM, NAME.as_ptr().cast());
+            let fn_ptr = $crate::hooks::link_function(&SYM, NAME.as_ptr().cast(), $lib);
             let fn_ptr = unsafe {
                 std::mem::transmute::<*mut _, extern "C" fn($($ty),*) $(-> $ret_ty)?>(
                     fn_ptr.unwrap()
