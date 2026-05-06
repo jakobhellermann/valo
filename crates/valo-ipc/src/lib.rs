@@ -44,6 +44,13 @@ impl ClientIPC {
     pub fn recv(&mut self) -> Result<Option<LibToClient>> {
         raw::recv(&mut self.stream)
     }
+
+    /// Duplicate the underlying stream. Both read/write to the same socket.
+    pub fn try_clone_for_reader(&self) -> Result<Self> {
+        Ok(Self {
+            stream: self.stream.try_clone()?,
+        })
+    }
 }
 
 /// Connection handle for the lib side of the protocol. Sends

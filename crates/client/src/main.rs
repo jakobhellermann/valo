@@ -1,3 +1,5 @@
+mod tui;
+
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -26,6 +28,11 @@ enum Cmd {
         #[arg(long)]
         gdb: bool,
 
+        /// Show a TUI for play/pause/snapshot/restore instead of
+        /// auto-advancing every frame.
+        #[arg(long)]
+        tui: bool,
+
         /// Target program to execute.
         program: PathBuf,
 
@@ -41,13 +48,20 @@ fn main() -> Result<ExitCode> {
         Cmd::Run {
             lib,
             gdb,
+            tui,
             program,
             args,
-        } => run(lib, gdb, program, args),
+        } => run(lib, gdb, tui, program, args),
     }
 }
 
-fn run(lib: Option<PathBuf>, gdb: bool, program: PathBuf, args: Vec<String>) -> Result<ExitCode> {
+fn run(
+    lib: Option<PathBuf>,
+    gdb: bool,
+    use_tui: bool,
+    program: PathBuf,
+    args: Vec<String>,
+) -> Result<ExitCode> {
     let lib = resolve_lib(lib)?;
     let lib = std::fs::canonicalize(&lib)
         .with_context(|| format!("canonicalize libvalo.so path {}", lib.display()))?;
@@ -56,21 +70,39 @@ fn run(lib: Option<PathBuf>, gdb: bool, program: PathBuf, args: Vec<String>) -> 
     cmd.env("LD_PRELOAD", prepend_ld_preload(&lib));
     set_env_variables(&mut cmd);
 
+    if use_tui {
+        // Don't let the child's stdout/stderr clobber the alternate screen.
+        // The user can still see lib logs via the events panel.
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::null());
+    }
+
     let sock_path = PathBuf::from(format!("/tmp/valo-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&sock_path);
     cmd.env("VALO_SOCK", &sock_path);
+
+    // Resolve the lib's log path so the TUI can tail it. Same defaulting
+    // as in the lib's `log::init`.
+    let log_path: Option<PathBuf> = std::env::var_os("VALO_LOG")
+        .map(PathBuf::from)
+        .or_else(|| Some(PathBuf::from("/tmp/valo.log")));
 
     let mut child = cmd
         .spawn()
         .with_context(|| format!("spawning {}", cmd.get_program().to_string_lossy()))?;
 
-    if let Err(e) = run_ipc_loop(&sock_path) {
+    let result = if use_tui {
+        tui::run(&sock_path, log_path.as_deref())
+    } else {
+        run_ipc_loop(&sock_path)
+    };
+    if let Err(e) = result {
         eprintln!("ipc loop ended: {e:#}");
     }
     // Best-effort cleanup of the socket file.
     let _ = std::fs::remove_file(&sock_path);
 
-    let status = child.wait().context("waiting for child")?;
+    let status = wait_or_kill(&mut child)?;
 
     if let Some(code) = status.code() {
         Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))
@@ -117,6 +149,29 @@ fn run_ipc_loop(sock: &Path) -> Result<()> {
                 conn.send(&ClientToLib::Advance).context("send advance")?;
             }
             other => eprintln!("[valo-client] ipc <- {other:?}"),
+        }
+    }
+}
+
+/// Wait for the child to exit. If it doesn't exit within a short grace
+/// period, SIGKILL it — covers the case where a failed restore left the
+/// child deadlocked and `wait()` would otherwise block forever.
+fn wait_or_kill(child: &mut std::process::Child) -> Result<std::process::ExitStatus> {
+    use std::time::Duration;
+    let grace = Duration::from_millis(500);
+    let poll = Duration::from_millis(50);
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait().context("try_wait child")? {
+            Some(status) => return Ok(status),
+            None => {
+                if start.elapsed() >= grace {
+                    eprintln!("[valo] child did not exit within {grace:?}, killing");
+                    let _ = child.kill();
+                    return child.wait().context("wait after kill");
+                }
+                std::thread::sleep(poll);
+            }
         }
     }
 }
