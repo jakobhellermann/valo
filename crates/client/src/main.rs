@@ -207,6 +207,10 @@ fn set_env_variables(cmd: &mut Command) {
     // Deterministic time zone.
     cmd.env("TZ", "UTC0");
 
+    // https://github.com/clementgallet/libTAS/blob/32245db8e35ab8f2389bdb781e81ab5e5b92c4db/src/program/GameThread.cpp#L96-L102
+    // Prevent glibc from initializing rseq for each thread. TODO: implement rseq properly
+    cmd.env("GLIBC_TUNABLES", "glibc.pthread.rseq=0");
+
     // TODO: opengl_soft config from libTAS:
     // - VK_DRIVER_FILES -> Lavapipe ICDs
     // - VDPAU_DRIVER=va_gl, VDPAU_QUIRKS=AvoidVA
