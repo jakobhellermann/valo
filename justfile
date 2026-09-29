@@ -20,3 +20,8 @@ run-sdl *args: build
 run-hollowknight *args: build
     # VALO_LOG=/dev/stderr just valo run "/home/jakob/.apps/Heroic/Hollow Knight/game/Hollow Knight" -force-gfx-direct
     just valo run "$@" "/home/jakob/.apps/Heroic/Hollow Knight/game/Hollow Knight" -force-gfx-direct
+
+save-repro:
+    mkdir -p repro
+    cp /tmp/valo.log ./repro
+    coredumpctl dump > repro/coredump
