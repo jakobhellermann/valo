@@ -10,8 +10,12 @@
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Seek, SeekFrom, Stdout};
+use std::os::unix::process::CommandExt;
 use std::path::Path;
+use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -32,6 +36,11 @@ use valo_ipc::{ClientIPC, PROTOCOL_VERSION};
 
 const MAX_EVENTS: usize = 1000;
 
+struct KeyboardInput {
+    suspended: AtomicBool,
+    reader_lock: Mutex<()>,
+}
+
 #[derive(Debug)]
 enum AppEvent {
     Ipc(LibToClient),
@@ -42,6 +51,7 @@ enum AppEvent {
 }
 
 struct App {
+    target_pid: u32,
     paused: bool,
     /// If a `FrameBoundary` arrived while paused, store its frame so we
     /// can ack it the moment the user unpauses.
@@ -72,8 +82,9 @@ enum EventKind {
 }
 
 impl App {
-    fn new() -> Self {
+    fn new(target_pid: u32) -> Self {
         Self {
+            target_pid,
             paused: false,
             pending_advance: None,
             queued_command: None,
@@ -97,7 +108,7 @@ impl App {
     }
 }
 
-pub fn run(sock: &Path, log_path: Option<&Path>) -> Result<()> {
+pub fn run(sock: &Path, log_path: Option<&Path>, target_pid: u32) -> Result<()> {
     if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
         bail!("--tui requires stdout to be a tty");
     }
@@ -122,7 +133,11 @@ pub fn run(sock: &Path, log_path: Option<&Path>) -> Result<()> {
 
     let (tx, rx) = mpsc::channel::<AppEvent>();
 
-    spawn_keyboard_thread(tx.clone());
+    let keyboard_input = Arc::new(KeyboardInput {
+        suspended: AtomicBool::new(false),
+        reader_lock: Mutex::new(()),
+    });
+    spawn_keyboard_thread(tx.clone(), Arc::clone(&keyboard_input));
     if let Some(p) = log_path {
         spawn_log_tail_thread(tx.clone(), p.to_path_buf());
     }
@@ -133,7 +148,7 @@ pub fn run(sock: &Path, log_path: Option<&Path>) -> Result<()> {
 
     // Make sure raw mode is restored even on panic.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        main_loop(&mut terminal, &mut writer, rx)
+        main_loop(&mut terminal, &mut writer, rx, target_pid, &keyboard_input)
     }));
     let _ = restore_terminal(&mut terminal);
     match result {
@@ -146,8 +161,10 @@ fn main_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     conn: &mut ClientIPC,
     rx: Receiver<AppEvent>,
+    target_pid: u32,
+    keyboard_input: &KeyboardInput,
 ) -> Result<()> {
-    let mut app = App::new();
+    let mut app = App::new(target_pid);
     app.push_event(EventKind::User, "ipc connected; running");
 
     draw(terminal, &app)?;
@@ -160,7 +177,21 @@ fn main_loop(
         };
 
         if let Some(ev) = ev {
-            handle_event(&mut app, conn, ev)?;
+            if let AppEvent::Key(KeyEvent {
+                code: KeyCode::Char('g'),
+                ..
+            }) = ev
+            {
+                let pid = app.target_pid;
+                app.push_event(EventKind::User, format!("gdb attaching to pid {pid}"));
+                if let Err(e) = attach_gdb(terminal, keyboard_input, pid) {
+                    let message = format!("gdb: {e:#}");
+                    app.last_error = Some(message.clone());
+                    app.push_event(EventKind::Error, message);
+                }
+            } else {
+                handle_event(&mut app, conn, ev)?;
+            }
         }
 
         draw(terminal, &app)?;
@@ -374,6 +405,8 @@ fn draw(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &App) -> Result<
             Span::raw(" snapshot   "),
             Span::styled("[r]", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(" restore   "),
+            Span::styled("[g]", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(" gdb   "),
             Span::styled("[q]", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(" quit"),
         ]);
@@ -385,9 +418,17 @@ fn draw(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &App) -> Result<
     Ok(())
 }
 
-fn spawn_keyboard_thread(tx: Sender<AppEvent>) {
+fn spawn_keyboard_thread(tx: Sender<AppEvent>, input: Arc<KeyboardInput>) {
     thread::spawn(move || {
         loop {
+            if input.suspended.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+            let _reader = input.reader_lock.lock().unwrap();
+            if input.suspended.load(Ordering::Acquire) {
+                continue;
+            }
             // 250ms poll keeps the loop responsive to channel-disconnect.
             match event::poll(Duration::from_millis(250)) {
                 Ok(true) => {}
@@ -467,6 +508,78 @@ fn spawn_ipc_reader_thread(tx: Sender<AppEvent>, mut reader: ClientIPC) {
             }
         }
     });
+}
+
+fn attach_gdb(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    input: &KeyboardInput,
+    pid: u32,
+) -> Result<()> {
+    input.suspended.store(true, Ordering::Release);
+    // Wait for any in-progress poll/read before GDB takes stdin.
+    let _reader = input.reader_lock.lock().unwrap();
+
+    let result = restore_terminal(terminal)
+        .context("suspend TUI")
+        .and_then(|_| run_gdb(pid));
+
+    let restarted = setup_terminal().context("resume TUI");
+    input.suspended.store(false, Ordering::Release);
+    *terminal = restarted?;
+    result
+}
+
+fn run_gdb(pid: u32) -> Result<()> {
+    // SAFETY: getpgrp has no preconditions.
+    let client_group = unsafe { libc::getpgrp() };
+    let mut command = Command::new("gdb");
+    command.arg("-p").arg(pid.to_string()).process_group(0);
+    let mut debugger = command.spawn().context("start gdb")?;
+    let debugger_group = debugger.id() as libc::pid_t;
+
+    if let Err(e) = foreground_process_group(debugger_group) {
+        let _ = debugger.kill();
+        let _ = debugger.wait();
+        return Err(e).context("give terminal to gdb");
+    }
+    // GDB may have stopped on SIGTTIN while it was briefly in the background.
+    // SAFETY: the negative PID addresses the new process group created above.
+    unsafe { libc::kill(-debugger_group, libc::SIGCONT) };
+
+    let status = debugger.wait();
+    foreground_process_group(client_group).context("return terminal to TUI")?;
+    let status = status.context("wait for gdb")?;
+    if !status.success() {
+        bail!("gdb exited with {status}");
+    }
+    Ok(())
+}
+
+fn foreground_process_group(group: libc::pid_t) -> Result<()> {
+    // A background process must block SIGTTOU while reclaiming its terminal.
+    // SAFETY: sigset_t values are initialized before use and stdin is the
+    // controlling terminal required by the TUI.
+    unsafe {
+        let mut blocked: libc::sigset_t = std::mem::zeroed();
+        let mut previous: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut blocked);
+        libc::sigaddset(&mut blocked, libc::SIGTTOU);
+        let error = libc::pthread_sigmask(libc::SIG_BLOCK, &blocked, &mut previous);
+        if error != 0 {
+            return Err(io::Error::from_raw_os_error(error).into());
+        }
+        let rc = libc::tcsetpgrp(libc::STDIN_FILENO, group);
+        let tty_error = io::Error::last_os_error();
+        let restore_error =
+            libc::pthread_sigmask(libc::SIG_SETMASK, &previous, std::ptr::null_mut());
+        if restore_error != 0 {
+            return Err(io::Error::from_raw_os_error(restore_error).into());
+        }
+        if rc != 0 {
+            return Err(tty_error.into());
+        }
+    }
+    Ok(())
 }
 
 fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
