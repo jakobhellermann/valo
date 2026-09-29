@@ -2,8 +2,9 @@ CC := clang
 CFLAGS := -O2 -g
 RUSTFLAGS= --release
 ENV_VARS := GLIBC_TUNABLES=glibc.pthread.rseq=0
+VALO_RS_SOURCES := $(shell find crates/valo/src -name '*.rs')
 
-out/libvalo.so: crates/valo/Cargo.toml crates/valo/src/lib.rs
+out/libvalo.so: crates/valo/Cargo.toml $(VALO_RS_SOURCES)
 	cargo build $(RUSTFLAGS) -Zunstable-options --artifact-dir out -p valo
 
 out/manual:
