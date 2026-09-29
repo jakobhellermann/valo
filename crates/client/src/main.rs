@@ -2,7 +2,9 @@ mod tui;
 
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::{Child, Command, ExitCode};
+use std::sync::mpsc;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -93,7 +95,7 @@ fn run(
     let result = if use_tui {
         tui::run(&sock_path, log_path.as_deref(), child.id())
     } else {
-        run_ipc_loop(&sock_path)
+        run_ipc_loop(&sock_path, &mut child, gdb)
     };
     if let Err(e) = result {
         eprintln!("ipc loop ended: {e:#}");
@@ -101,7 +103,12 @@ fn run(
     // Best-effort cleanup of the socket file.
     let _ = std::fs::remove_file(&sock_path);
 
-    let status = wait_or_kill(&mut child)?;
+    // In gdb, don't kill after the inferior process stops.
+    let status = if gdb {
+        child.wait().context("wait for gdb")?
+    } else {
+        wait_or_kill(&mut child)?
+    };
 
     if let Some(code) = status.code() {
         Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))
@@ -112,42 +119,76 @@ fn run(
     }
 }
 
-fn run_ipc_loop(sock: &Path) -> Result<()> {
-    let mut conn = ClientIPC::establish(sock).context("ipc establish")?;
-    eprintln!("[valo-client] ipc connected on {}", sock.display());
-
-    conn.send(&ClientToLib::Hello(Hello::CLIENT))
-        .context("send hello")?;
-    let peer = conn
-        .recv()
-        .context("recv hello")?
-        .context("lib closed before hello")?;
-    let LibToClient::Hello(peer_hello) = peer else {
-        bail!("expected Hello from lib, got {peer:?}");
-    };
-    if peer_hello.version != PROTOCOL_VERSION {
-        bail!(
-            "lib protocol version {} does not match client {}",
-            peer_hello.version,
-            PROTOCOL_VERSION
-        );
-    }
-    eprintln!("[valo-client] handshake complete");
-
+fn run_ipc_loop(sock: &Path, child: &mut Child, gdb: bool) -> Result<()> {
     loop {
-        let msg = match conn.recv()? {
-            Some(m) => m,
-            None => {
-                eprintln!("[valo-client] lib hung up");
-                return Ok(());
-            }
+        let Some(mut conn) = establish_or_child_exit(sock, child)? else {
+            eprintln!("[valo-client] child exited before ipc connection");
+            return Ok(());
         };
-        match msg {
-            LibToClient::FrameBoundary(FrameBoundary { frame: _ }) => {
-                // std::thread::sleep_ms(200);
-                conn.send(&ClientToLib::Advance).context("send advance")?;
+        eprintln!("[valo-client] ipc connected on {}", sock.display());
+
+        conn.send(&ClientToLib::Hello(Hello::CLIENT))
+            .context("send hello")?;
+        let peer = conn
+            .recv()
+            .context("recv hello")?
+            .context("lib closed before hello")?;
+        let LibToClient::Hello(peer_hello) = peer else {
+            bail!("expected Hello from lib, got {peer:?}");
+        };
+        if peer_hello.version != PROTOCOL_VERSION {
+            bail!(
+                "lib protocol version {} does not match client {}",
+                peer_hello.version,
+                PROTOCOL_VERSION
+            );
+        }
+        eprintln!("[valo-client] handshake complete");
+
+        loop {
+            let msg = match conn.recv()? {
+                Some(m) => m,
+                None => {
+                    eprintln!("[valo-client] lib hung up");
+                    break;
+                }
+            };
+            match msg {
+                LibToClient::FrameBoundary(FrameBoundary { frame: _ }) => {
+                    // std::thread::sleep_ms(200);
+                    conn.send(&ClientToLib::Advance).context("send advance")?;
+                }
+                other => eprintln!("[valo-client] ipc <- {other:?}"),
             }
-            other => eprintln!("[valo-client] ipc <- {other:?}"),
+        }
+
+        // gdb session may run the inferior multiple times
+        if !gdb {
+            return Ok(());
+        }
+    }
+}
+
+/// Like [`ClientIPC::establish`], but gives up when the child exits first
+/// (e.g. the user quit gdb without ever starting the inferior).
+/// Returns `Ok(None)` in that case.
+fn establish_or_child_exit(sock: &Path, child: &mut Child) -> Result<Option<ClientIPC>> {
+    let sock = sock.to_owned();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(ClientIPC::establish(&sock));
+    });
+    loop {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(conn) => return Ok(Some(conn.context("ipc establish")?)),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if child.try_wait().context("try_wait child")?.is_some() {
+                    return Ok(None);
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                bail!("ipc establish thread died without result")
+            }
         }
     }
 }
