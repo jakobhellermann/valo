@@ -25,7 +25,7 @@ enum Cmd {
         lib: Option<PathBuf>,
 
         /// Run the target inside gdb (gdb --args \<program\> [args...]).
-        #[arg(long)]
+        #[arg(long, conflicts_with = "tui")]
         gdb: bool,
 
         /// Show a TUI for play/pause/snapshot/restore instead of
@@ -92,7 +92,7 @@ fn run(
         .with_context(|| format!("spawning {}", cmd.get_program().to_string_lossy()))?;
 
     let result = if use_tui {
-        tui::run(&sock_path, log_path.as_deref())
+        tui::run(&sock_path, log_path.as_deref(), child.id())
     } else {
         run_ipc_loop(&sock_path)
     };
