@@ -15,11 +15,11 @@ valo *args: build
 run-sdl *args: build
     make out/manual/sdl2-test
     # VALO_LOG=/dev/stderr just valo run "./out/manual/sdl2-test"
-    just valo run "./out/manual/sdl2-test" "$@"
+    just valo run {{ args }}"./out/manual/sdl2-test"
 
 run-hollowknight *args: build
     # VALO_LOG=/dev/stderr just valo run "/home/jakob/.apps/Heroic/Hollow Knight/game/Hollow Knight" -force-gfx-direct
-    just valo run "$@" "/home/jakob/.apps/Heroic/Hollow Knight/game/Hollow Knight" -force-gfx-direct
+    just valo run {{ args }} "/home/jakob/.apps/Heroic/Hollow Knight/game/Hollow Knight" -force-gfx-direct
 
 save-repro:
     mkdir -p repro

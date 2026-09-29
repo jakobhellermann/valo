@@ -66,8 +66,7 @@ fn run(
     let lib = std::fs::canonicalize(&lib)
         .with_context(|| format!("canonicalize libvalo.so path {}", lib.display()))?;
 
-    let mut cmd = build_command(gdb, &program, &args);
-    cmd.env("LD_PRELOAD", prepend_ld_preload(&lib));
+    let mut cmd = build_command(gdb, &program, &args, &lib);
     valo_launch::configure_target(&mut cmd);
 
     if use_tui {
@@ -176,12 +175,21 @@ fn wait_or_kill(child: &mut std::process::Child) -> Result<std::process::ExitSta
     }
 }
 
-fn build_command(gdb: bool, program: &PathBuf, args: &[String]) -> Command {
+fn build_command(gdb: bool, program: &PathBuf, args: &[String], lib: &Path) -> Command {
+    let ld_preload = prepend_ld_preload(lib);
+
     if gdb {
         // gdb -ex 'handle SIGSYS nostop noprint' --args <program> [args...]
         let mut cmd = Command::new("gdb");
         cmd.arg("-ex")
             .arg("python gdb.execute('handle SIGSYS nostop noprint', to_string=True)") // suppress gdb signal table result
+            .arg("-ex")
+            .arg("set startup-with-shell off")
+            .arg("-ex")
+            .arg(format!(
+                "set environment LD_PRELOAD={}",
+                ld_preload.to_str().expect("valid utf8")
+            ))
             .arg("--args")
             .arg(program)
             .args(args);
@@ -189,6 +197,7 @@ fn build_command(gdb: bool, program: &PathBuf, args: &[String]) -> Command {
     } else {
         let mut cmd = Command::new(program);
         cmd.args(args);
+        cmd.env("LD_PRELOAD", ld_preload);
         cmd
     }
 }
