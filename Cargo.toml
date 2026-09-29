@@ -2,3 +2,6 @@
 resolver = "3"
 members = ["crates/valo", "crates/harness", "crates/client", "crates/valo-ipc"]
 default-members = ["crates/client"]
+
+[profile.release]
+debug = "full"
