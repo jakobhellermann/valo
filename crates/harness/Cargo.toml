@@ -12,3 +12,4 @@ path = "src/main.rs"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 wait-timeout = "0.2"
+valo-launch = { path = "../valo-launch" }

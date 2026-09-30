@@ -1734,6 +1734,7 @@ dependencies = [
  "libc",
  "ratatui",
  "valo-ipc",
+ "valo-launch",
 ]
 
 [[package]]
@@ -1742,6 +1743,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "valo-launch",
  "wait-timeout",
 ]
 
@@ -1755,6 +1757,10 @@ dependencies = [
  "serde",
  "tempfile",
 ]
+
+[[package]]
+name = "valo-launch"
+version = "0.1.0"
 
 [[package]]
 name = "version_check"
