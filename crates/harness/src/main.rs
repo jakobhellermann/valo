@@ -283,13 +283,6 @@ fn run_test(
 }
 
 fn main() {
-    // Disable core dumps for child processes (inherited across fork)
-    let rlimit = libc::rlimit {
-        rlim_cur: 0,
-        rlim_max: 0,
-    };
-    unsafe { libc::setrlimit(libc::RLIMIT_CORE, &rlimit) };
-
     let args = Args::parse();
 
     match args.command {
