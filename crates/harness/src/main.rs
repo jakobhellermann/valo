@@ -206,7 +206,7 @@ fn run(
             let stderr = stderr_thread
                 .and_then(|t| t.join().ok())
                 .unwrap_or_default();
-            bail!("timed out\nstderr:\n{stderr}");
+            bail!("timed out\nlog: {}\nstderr:\n{stderr}", log_path.display());
         }
     };
 
@@ -218,7 +218,10 @@ fn run(
         .unwrap_or_default();
 
     if !status.success() {
-        bail!("exit status: {status}\nstdout:\n{stdout}\nstderr:\n{stderr}");
+        bail!(
+            "exit status: {status}\nlog: {}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            log_path.display()
+        );
     }
 
     Ok(Output { stdout, stderr })
