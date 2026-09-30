@@ -2,7 +2,7 @@ use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 use std::os::fd::OwnedFd;
 
-use crate::checkpoint::{AreaMeta, Header, PageFlag};
+use crate::checkpoint::{AreaMeta, Header, PageFlag, SnapshotSlot};
 use crate::global_state::{GlobalState, ReservedMemory};
 use crate::procfs_maps::{
     MMapPath, MemoryMap, MemoryMapPermissions, PageFlags, ProcMaps, ProcPagemap,
@@ -17,18 +17,16 @@ pub struct SnapshotMetaWriter {
 }
 
 impl SnapshotMetaWriter {
-    pub fn new() -> Result<SnapshotMetaWriter> {
+    pub fn new(slot: SnapshotSlot) -> Result<SnapshotMetaWriter> {
         Ok(SnapshotMetaWriter {
-            snapshot_meta: File::create(super::SNAPSHOT_PATH_META)?,
-            snapshot_pages: File::create(super::SNAPSHOT_PATH_PAGEDATA)?,
+            snapshot_meta: File::create(super::snapshot_path(slot, "meta").as_str())?,
+            snapshot_pages: File::create(super::snapshot_path(slot, "pages").as_str())?,
         })
     }
 }
 
 #[allow(clippy::undocumented_unsafe_blocks)]
-pub fn write_all_areas() -> Result<()> {
-    let mut writer = SnapshotMetaWriter::new()?;
-
+pub fn write_all_areas(writer: &mut SnapshotMetaWriter) -> Result<()> {
     let mut maps = File::open("/proc/self/maps")?;
     let mut copy = File::create("/tmp/test-a").unwrap();
     std::io::copy(&mut maps, &mut copy)?;
@@ -53,7 +51,7 @@ pub fn write_all_areas() -> Result<()> {
     while let Some(area) = maps.next()? {
         header.area_count += 1;
 
-        write_area(&mut writer, &area, &mut page_map)?;
+        write_area(writer, &area, &mut page_map)?;
     }
 
     writer.snapshot_meta.seek(SeekFrom::Start(header_pos))?;

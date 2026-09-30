@@ -3,13 +3,22 @@ pub mod ucontext;
 pub mod writer;
 
 use libc::{siginfo_t, ucontext_t};
+use std::fmt::Write;
+use std::sync::atomic::Ordering;
 
 use crate::global_state::GlobalState;
 use crate::{Result, alt_stack, error, info, sys, thread_tracker, utils};
 
 const SIG_CHECKPOINT: i32 = libc::SIGSYS;
-const SNAPSHOT_PATH_META: &str = "/tmp/valo-snapshot-areas";
-const SNAPSHOT_PATH_PAGEDATA: &str = "/tmp/valo-snapshot-pages";
+
+#[derive(Clone, Copy)]
+pub(crate) struct SnapshotSlot(pub u32);
+
+fn snapshot_path(slot: SnapshotSlot, kind: &str) -> heapless::String<64> {
+    let mut path = heapless::String::new();
+    write!(path, "/tmp/valo-snapshot-{}-{kind}", slot.0).unwrap();
+    path
+}
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug)]
@@ -43,10 +52,11 @@ pub struct Header {
 
 // # Safety
 // - Must not be called concurrently
-unsafe fn snapshot_create(ucontext: *const libc::ucontext_t) -> Result<()> {
+unsafe fn snapshot_create(ucontext: *const libc::ucontext_t, slot: SnapshotSlot) -> Result<()> {
     // SAFETY: same preconditions
     unsafe { ucontext::save(ucontext) };
-    writer::write_all_areas()?;
+    let mut writer = writer::SnapshotMetaWriter::new(slot)?;
+    writer::write_all_areas(&mut writer)?;
 
     Ok(())
 }
@@ -54,11 +64,12 @@ unsafe fn snapshot_create(ucontext: *const libc::ucontext_t) -> Result<()> {
 // # Safety
 // - Must not be called concurrently
 // - `snapshot_create` must have been called prior
-unsafe fn snapshot_restore(ucontext: *const libc::ucontext_t) -> Result<()> {
+unsafe fn snapshot_restore(ucontext: *const libc::ucontext_t, slot: SnapshotSlot) -> Result<()> {
     // Save current X11 connection state before restore overwrites it
     let x11_state = crate::hooks::xlib::xfixup::X11SavedState::save()?;
 
-    reader::read_all_areas()?;
+    let mut reader = reader::SnapshotMetaReader::new(slot)?;
+    reader::read_all_areas(&mut reader)?;
 
     // Restore X11 connection state (sequence numbers, xcb connection)
     // Must happen after read_all_areas but before ucontext::restore
@@ -77,6 +88,7 @@ unsafe fn snapshot_restore(ucontext: *const libc::ucontext_t) -> Result<()> {
 // - globalstate.restore_in_progress must be false/true for create/restore
 pub fn checkpoint_handler_inner(ucontext: *const ucontext_t) -> Result<()> {
     let state = GlobalState::get();
+    let slot = SnapshotSlot(state.snapshot_slot.load(Ordering::SeqCst));
 
     utils::assert_stack_in_range(state.alt_stack_memory());
 
@@ -84,13 +96,13 @@ pub fn checkpoint_handler_inner(ucontext: *const ucontext_t) -> Result<()> {
         eprintln!("-- CREATE SAVESTATE --");
         info!(Checkpoint, "snapshot create begin");
         // SAFETY: same precondition
-        unsafe { snapshot_create(ucontext)? }
+        unsafe { snapshot_create(ucontext, slot)? }
         info!(Checkpoint, "snapshot create done");
     } else {
         eprintln!("-- LOAD SAVESTATE --");
         info!(Restore, "snapshot restore begin");
         // SAFETY: same precondition
-        unsafe { snapshot_restore(ucontext)? };
+        unsafe { snapshot_restore(ucontext, slot)? };
         eprintln!("-- LOAD SAVESTATE DONE --");
         info!(Restore, "snapshot restore done");
     }
@@ -117,9 +129,11 @@ pub fn init_thread() -> Result<()> {
 
 // # Safety
 // Must not be called concurrently
-pub unsafe fn checkpoint() -> Result<()> {
+pub unsafe fn checkpoint(slot: SnapshotSlot) -> Result<()> {
     thread_tracker::require_no_cancellation();
-    GlobalState::get().set_restore_in_progress(false);
+    let state = GlobalState::get();
+    state.snapshot_slot.store(slot.0, Ordering::SeqCst);
+    state.set_restore_in_progress(false);
 
     // Safety: function precondition
     unsafe { alt_stack::save_stack()? };
@@ -136,7 +150,7 @@ pub unsafe fn checkpoint() -> Result<()> {
 
 // # Safety
 // Must not be called concurrently
-pub unsafe fn restore() -> Result<()> {
+pub unsafe fn restore(slot: SnapshotSlot) -> Result<()> {
     thread_tracker::require_no_cancellation();
     let state = GlobalState::get();
     if state.max_restores > 0 {
@@ -152,6 +166,7 @@ pub unsafe fn restore() -> Result<()> {
         }
     }
 
+    state.snapshot_slot.store(slot.0, Ordering::SeqCst);
     state.set_restore_in_progress(true);
 
     alt_stack::prepare_altstack()?;

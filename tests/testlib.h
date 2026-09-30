@@ -9,6 +9,8 @@
 
 void valo_checkpoint();
 void valo_restore();
+void valo_checkpoint_slot(unsigned slot);
+void valo_restore_slot(unsigned slot);
 
 // Unbuffered printf to stdout via write(). Necessary because stdio
 // buffers are part of process memory and get restored along with

@@ -5,7 +5,7 @@ use std::mem::MaybeUninit;
 
 use rustix::mm::{self, MapFlags, MprotectFlags, ProtFlags};
 
-use crate::checkpoint::{AreaMeta, Header, PageFlag, Result};
+use crate::checkpoint::{AreaMeta, Header, PageFlag, Result, SnapshotSlot};
 use crate::procfs_maps::{
     MMapPath, MemoryMap, MemoryMapPermissions, PageFlags, ProcMaps, ProcPagemap,
 };
@@ -20,10 +20,10 @@ pub struct SnapshotMetaReader {
 }
 
 impl SnapshotMetaReader {
-    pub fn new() -> Result<SnapshotMetaReader> {
+    pub fn new(slot: SnapshotSlot) -> Result<SnapshotMetaReader> {
         let mut reader = SnapshotMetaReader {
-            snapshot_meta: File::open(super::SNAPSHOT_PATH_META)?,
-            snapshot_page_data: File::open(super::SNAPSHOT_PATH_PAGEDATA)?,
+            snapshot_meta: File::open(super::snapshot_path(slot, "meta").as_str())?,
+            snapshot_page_data: File::open(super::snapshot_path(slot, "pages").as_str())?,
             flags_remaining: 0,
             header: Header { area_count: 0 },
         };
@@ -81,9 +81,7 @@ impl SnapshotMetaReader {
     }
 }
 
-pub fn read_all_areas() -> Result<()> {
-    let mut reader = SnapshotMetaReader::new()?;
-
+pub fn read_all_areas(reader: &mut SnapshotMetaReader) -> Result<()> {
     debug!(Restore, "Restoring {} areas", reader.header.area_count);
 
     let saved_maps = (0..reader.header.area_count).map(|_| reader.read());
@@ -161,7 +159,7 @@ pub fn read_all_areas() -> Result<()> {
     for _ in 0..reader.header.area_count {
         let (area, meta) = reader.read()?;
 
-        read_area(&area, &meta, &mut reader, &mut page_map)?;
+        read_area(&area, &meta, reader, &mut page_map)?;
     }
     debug!(Restore, "finished reading areas");
 
