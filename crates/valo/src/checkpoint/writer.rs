@@ -10,15 +10,15 @@ use crate::procfs_maps::{
 use crate::utils::PAGE_SIZE;
 use crate::{Result, debug, warn};
 
-pub struct SnapshotMetaWriter {
+pub struct SnapshotWriter {
     // todo: stack buffered?
     pub snapshot_meta: File,
     pub snapshot_pages: File,
 }
 
-impl SnapshotMetaWriter {
-    pub fn new(slot: SnapshotSlot) -> Result<SnapshotMetaWriter> {
-        Ok(SnapshotMetaWriter {
+impl SnapshotWriter {
+    pub fn new(slot: SnapshotSlot) -> Result<SnapshotWriter> {
+        Ok(SnapshotWriter {
             snapshot_meta: File::create(super::snapshot_path(slot, "meta").as_str())?,
             snapshot_pages: File::create(super::snapshot_path(slot, "pages").as_str())?,
         })
@@ -26,7 +26,7 @@ impl SnapshotMetaWriter {
 }
 
 #[allow(clippy::undocumented_unsafe_blocks)]
-pub fn write_all_areas(writer: &mut SnapshotMetaWriter) -> Result<()> {
+pub fn write_all_areas(writer: &mut SnapshotWriter) -> Result<()> {
     let mut maps = File::open("/proc/self/maps")?;
     let mut copy = File::create("/tmp/test-a").unwrap();
     std::io::copy(&mut maps, &mut copy)?;
@@ -66,7 +66,7 @@ pub fn write_all_areas(writer: &mut SnapshotMetaWriter) -> Result<()> {
 
 #[allow(clippy::undocumented_unsafe_blocks)]
 fn write_area(
-    writer: &mut SnapshotMetaWriter,
+    writer: &mut SnapshotWriter,
     area: &MemoryMap,
     page_map: &mut ProcPagemap,
 ) -> Result<()> {

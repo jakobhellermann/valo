@@ -12,16 +12,16 @@ use crate::procfs_maps::{
 use crate::utils::PAGE_SIZE;
 use crate::{debug, trace, warn};
 
-pub struct SnapshotMetaReader {
+pub struct SnapshotReader {
     snapshot_meta: File,
     pub snapshot_page_data: File,
     flags_remaining: usize,
     pub header: Header,
 }
 
-impl SnapshotMetaReader {
-    pub fn new(slot: SnapshotSlot) -> Result<SnapshotMetaReader> {
-        let mut reader = SnapshotMetaReader {
+impl SnapshotReader {
+    pub fn new(slot: SnapshotSlot) -> Result<SnapshotReader> {
+        let mut reader = SnapshotReader {
             snapshot_meta: File::open(super::snapshot_path(slot, "meta").as_str())?,
             snapshot_page_data: File::open(super::snapshot_path(slot, "pages").as_str())?,
             flags_remaining: 0,
@@ -81,7 +81,7 @@ impl SnapshotMetaReader {
     }
 }
 
-pub fn read_all_areas(reader: &mut SnapshotMetaReader) -> Result<()> {
+pub fn read_all_areas(reader: &mut SnapshotReader) -> Result<()> {
     debug!(Restore, "Restoring {} areas", reader.header.area_count);
 
     let saved_maps = (0..reader.header.area_count).map(|_| reader.read());
@@ -170,7 +170,7 @@ pub fn read_all_areas(reader: &mut SnapshotMetaReader) -> Result<()> {
 fn read_area(
     saved_area: &MemoryMap,
     meta: &AreaMeta,
-    reader: &mut SnapshotMetaReader,
+    reader: &mut SnapshotReader,
     current_pagemap: &mut ProcPagemap,
 ) -> Result<()> {
     // todo: uncommitted
@@ -338,7 +338,7 @@ fn read_area(
 }
 
 fn queue_page_load(
-    reader: &mut SnapshotMetaReader,
+    reader: &mut SnapshotReader,
     page_addr: *mut u8,
     flag: PageFlag,
 ) -> Result<(), std::io::Error> {
