@@ -27,13 +27,6 @@ impl SnapshotWriter {
 
 #[allow(clippy::undocumented_unsafe_blocks)]
 pub fn write_all_areas(writer: &mut SnapshotWriter) -> Result<()> {
-    let mut maps = File::open("/proc/self/maps")?;
-    let mut copy = File::create("/tmp/test-a").unwrap();
-    std::io::copy(&mut maps, &mut copy)?;
-    let mut maps = File::open("/proc/self/maps")?;
-    let mut copy = File::create("/tmp/test-b").unwrap();
-    std::io::copy(&mut maps, &mut copy)?;
-
     // TODO proc.clear_refs(ClearRefs::SoftDirty)?;
 
     let mut maps = ProcMaps::new_self_copy()?;
