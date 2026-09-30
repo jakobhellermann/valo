@@ -5,7 +5,7 @@ pub mod writer;
 use libc::{siginfo_t, ucontext_t};
 
 use crate::global_state::GlobalState;
-use crate::{Result, alt_stack, error, info, sys, utils};
+use crate::{Result, alt_stack, error, info, sys, thread_tracker, utils};
 
 const SIG_CHECKPOINT: i32 = libc::SIGSYS;
 const SNAPSHOT_PATH_META: &str = "/tmp/valo-snapshot-areas";
@@ -118,6 +118,7 @@ pub fn init_thread() -> Result<()> {
 // # Safety
 // Must not be called concurrently
 pub unsafe fn checkpoint() -> Result<()> {
+    thread_tracker::require_no_cancellation();
     GlobalState::get().set_restore_in_progress(false);
 
     // Safety: function precondition
@@ -136,6 +137,7 @@ pub unsafe fn checkpoint() -> Result<()> {
 // # Safety
 // Must not be called concurrently
 pub unsafe fn restore() -> Result<()> {
+    thread_tracker::require_no_cancellation();
     let state = GlobalState::get();
     if state.max_restores > 0 {
         // SAFETY: reserved is valid and restore_count is in the excluded region

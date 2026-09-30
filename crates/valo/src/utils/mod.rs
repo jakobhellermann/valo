@@ -1,8 +1,10 @@
 mod atomic_ptr_vec;
+mod fixed_slots;
 
 use std::ops::Range;
 
 pub(crate) use atomic_ptr_vec::AtomicPtrVec;
+pub(crate) use fixed_slots::FixedSlots;
 
 #[repr(transparent)]
 pub struct UnsafeSendSync<T>(pub T);

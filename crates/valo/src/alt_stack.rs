@@ -11,7 +11,7 @@ type Result<T, E = std::io::Error> = std::result::Result<T, E>;
 static OSS: SyncUnsafeCell<MaybeUninit<UnsafeSendSync<stack_t>>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 
-pub const ALT_STACK_SIZE: usize = 5 * 1024 * 1024 - 8;
+pub const ALT_STACK_SIZE: usize = 5 * 1024 * 1024;
 
 fn sigaltstack_get() -> Result<stack_t, i32> {
     let mut oss = MaybeUninit::uninit();
