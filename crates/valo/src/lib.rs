@@ -12,6 +12,7 @@ mod procfs_maps;
 mod sigsegv;
 mod stackio;
 mod sys;
+mod thread_tracker;
 mod utils;
 
 use crate::global_state::GlobalState;
@@ -37,6 +38,7 @@ fn init() -> Result<()> {
     log::init();
     // SAFETY: since this is an initializer there is unique access
     unsafe { GlobalState::set(GlobalState::new()?) };
+    thread_tracker::init_main();
     checkpoint::init_thread()?;
     sigsegv::install()?;
     ipc::init()?;

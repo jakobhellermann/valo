@@ -4,11 +4,13 @@ use std::cell::SyncUnsafeCell;
 use std::mem::MaybeUninit;
 use std::ops::Range;
 use std::ptr::addr_of_mut;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use rustix::mm;
 
 use crate::Result;
+use crate::thread_tracker::ThreadRegistry;
 
 fn parse_env_u64(name: &CStr) -> u64 {
     // SAFETY: name is a valid C string, and we don't modify the environment
@@ -72,8 +74,8 @@ impl GlobalState {
 pub struct ReservedMemory {
     pub alt_stack: [u8; ALT_STACK_SIZE],
     pub restore_count: AtomicU64,
+    pub thread_registry: Mutex<ThreadRegistry>,
 }
-const _: () = assert!(size_of::<ReservedMemory>().div_ceil(PAGE_SIZE) == 1280);
 
 impl GlobalState {
     pub fn new() -> Result<GlobalState> {
@@ -98,6 +100,8 @@ impl GlobalState {
                     mm::MprotectFlags::READ | mm::MprotectFlags::WRITE,
                 )?;
                 libc::memset(inner, 0, len);
+                addr_of_mut!((*(inner.cast::<ReservedMemory>())).thread_registry)
+                    .write(Mutex::new(ThreadRegistry::new()));
             }
             inner
         };

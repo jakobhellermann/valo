@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 use libc::c_char;
 
 mod dlhook;
+mod pthread;
 mod sdl;
 pub(crate) mod xlib;
 
