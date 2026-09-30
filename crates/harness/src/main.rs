@@ -158,6 +158,7 @@ fn run(
     log_path: &Path,
 ) -> Result<Output> {
     let mut cmd = Command::new(binary);
+    valo_launch::configure_target(&mut cmd);
     match config.link_mode {
         LinkMode::Link => {
             cmd.env("LD_LIBRARY_PATH", out_dir);
