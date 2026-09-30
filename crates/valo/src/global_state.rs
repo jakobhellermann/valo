@@ -4,13 +4,11 @@ use std::cell::SyncUnsafeCell;
 use std::mem::MaybeUninit;
 use std::ops::Range;
 use std::ptr::addr_of_mut;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use rustix::mm;
 
 use crate::Result;
-use crate::thread_tracker::ThreadRegistry;
 
 fn parse_env_u64(name: &CStr) -> u64 {
     // SAFETY: name is a valid C string, and we don't modify the environment
@@ -71,11 +69,15 @@ impl GlobalState {
     }
 }
 
+/// Memory excluded from checkpoint snapshots: only state that must survive
+/// restores unchanged lives here. Everything that rewinds with process memory
+/// (thread table, saved contexts) lives in normal statics instead.
 #[repr(C)]
 pub struct ReservedMemory {
+    /// In use by the restore signal handler while memory is being loaded.
     pub alt_stack: [u8; ALT_STACK_SIZE],
+    /// Accumulates across restores and must therefore not be rewound.
     pub restore_count: AtomicU64,
-    pub thread_registry: Mutex<ThreadRegistry>,
 }
 
 impl GlobalState {
@@ -101,8 +103,6 @@ impl GlobalState {
                     mm::MprotectFlags::READ | mm::MprotectFlags::WRITE,
                 )?;
                 libc::memset(inner, 0, len);
-                addr_of_mut!((*(inner.cast::<ReservedMemory>())).thread_registry)
-                    .write(Mutex::new(ThreadRegistry::new()));
             }
             inner
         };
