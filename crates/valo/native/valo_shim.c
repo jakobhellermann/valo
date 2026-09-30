@@ -1,6 +1,7 @@
 // TODO(ai-review): generated, not yet audited
 #include <stddef.h>
 #include <stdint.h>
+#include <alloca.h>
 #include <string.h>
 #include <pthread.h>
 #include <sys/uio.h>
@@ -22,6 +23,20 @@ int main(void)
     return 0;
 }
 #else
+
+static const size_t PARK_STACK_HEADROOM = 16 * 1024;
+
+int valo_park_on_stack(uintptr_t stack_low, void (*park)(void *), void *arg)
+{
+    volatile char marker;
+    uintptr_t sp = (uintptr_t)&marker;
+    if (sp <= stack_low + 2 * PARK_STACK_HEADROOM)
+        return -1;
+    volatile char *padding = alloca(sp - stack_low - PARK_STACK_HEADROOM);
+    padding[0] = 0;
+    park(arg);
+    return 0;
+}
 
 /* Requires a live Display without concurrent Xlib/XCB access, writable output
  * pointers, and dst_len writable bytes at dst. The runtime libxcb layout must

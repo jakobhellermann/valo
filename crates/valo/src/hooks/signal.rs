@@ -7,6 +7,7 @@ use std::ffi::{CStr, c_int};
 use libc::{sighandler_t, sigset_t, strsignal};
 
 use crate::checkpoint::SIG_CHECKPOINT;
+use crate::checkpoint::threads::SUSPEND_SIGNAL;
 use crate::hooks::is_native;
 use crate::{info, override_sym, trace, warn};
 
@@ -154,13 +155,14 @@ override_sym!(sigaltstack(
 });
 
 fn is_valo_signal(sig: c_int) -> bool {
-    sig == SIG_CHECKPOINT
+    sig == SUSPEND_SIGNAL || sig == SIG_CHECKPOINT
 }
 
 // Return a copy with suspend/checkpoint signals removed
 fn strip_valo_signals(mut mask: sigset_t) -> sigset_t {
     // SAFETY: `mask` is initialized
     unsafe {
+        libc::sigdelset(&raw mut mask, SUSPEND_SIGNAL);
         libc::sigdelset(&raw mut mask, SIG_CHECKPOINT);
     }
     mask

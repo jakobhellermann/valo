@@ -60,6 +60,7 @@ fn init() -> Result<()> {
     // SAFETY: since this is an initializer there is unique access
     unsafe { GlobalState::set(GlobalState::new()?) };
     thread_tracker::init_main();
+    checkpoint::threads::init_main();
     checkpoint::init_thread()?;
     sigsegv::install()?;
     ipc::init()?;
@@ -79,6 +80,7 @@ pub extern "C" fn valo_checkpoint_slot(slot: u32) {
     // SAFETY: same precondition
     if let Err(e) = unsafe { checkpoint::checkpoint(checkpoint::SnapshotSlot(slot)) } {
         error!(Checkpoint, "{}", e);
+        std::process::abort();
     }
 }
 
@@ -92,5 +94,6 @@ pub extern "C" fn valo_restore_slot(slot: u32) {
     // SAFETY: same precondition
     if let Err(e) = unsafe { checkpoint::restore(checkpoint::SnapshotSlot(slot)) } {
         error!(Restore, "{}", e);
+        std::process::abort();
     }
 }
