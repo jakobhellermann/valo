@@ -1,3 +1,8 @@
+[workspace.package]
+version = "0.1.0"
+license = "GPL-3.0-or-later"
+edition = "2024"
+
 [workspace]
 resolver = "3"
 members = ["crates/valo", "crates/harness", "crates/client", "crates/valo-ipc"]
