@@ -55,7 +55,7 @@ pub struct Header {
 unsafe fn snapshot_create(ucontext: *const libc::ucontext_t, slot: SnapshotSlot) -> Result<()> {
     // SAFETY: same preconditions
     unsafe { ucontext::save(ucontext) };
-    let mut writer = writer::SnapshotMetaWriter::new(slot)?;
+    let mut writer = writer::SnapshotWriter::new(slot)?;
     writer::write_all_areas(&mut writer)?;
 
     Ok(())
@@ -68,7 +68,7 @@ unsafe fn snapshot_restore(ucontext: *const libc::ucontext_t, slot: SnapshotSlot
     // Save current X11 connection state before restore overwrites it
     let x11_state = crate::hooks::xlib::xfixup::X11SavedState::save()?;
 
-    let mut reader = reader::SnapshotMetaReader::new(slot)?;
+    let mut reader = reader::SnapshotReader::new(slot)?;
     reader::read_all_areas(&mut reader)?;
 
     // Restore X11 connection state (sequence numbers, xcb connection)
