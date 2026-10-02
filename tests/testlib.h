@@ -4,6 +4,7 @@
 #define TESTLIB_H
 
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <unistd.h>
 
@@ -23,6 +24,22 @@ __attribute__((format(printf, 1, 2))) static void tprintf(const char *fmt,
   int len = vsnprintf(buf, sizeof(buf), fmt, ap);
   va_end(ap);
   write(1, buf, len);
+}
+
+// Thread is ready for scheckpoint
+static inline void thread_ready(atomic_int *started) {
+  atomic_fetch_add_explicit(started, 1, memory_order_release);
+}
+
+// Main-thread side: wait until `count` threads sit in the window above.
+static inline void wait_for_threads(atomic_int *started, int count) {
+  while (atomic_load_explicit(started, memory_order_acquire) != count) {
+  }
+}
+
+// Main-thread side: let waiting threads leave the window.
+static inline void release_threads(atomic_int *phase) {
+  atomic_store_explicit(phase, 1, memory_order_release);
 }
 
 #endif

@@ -10,7 +10,7 @@ use crate::global_state::GlobalState;
 use crate::log::structured;
 use crate::{Result, alt_stack, error, info, sys, thread_tracker, utils};
 
-const SIG_CHECKPOINT: i32 = libc::SIGSYS;
+pub(crate) const SIG_CHECKPOINT: i32 = libc::SIGSYS;
 
 #[derive(Clone, Copy)]
 pub(crate) struct SnapshotSlot(pub u32);

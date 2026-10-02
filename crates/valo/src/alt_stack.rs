@@ -1,4 +1,5 @@
 use crate::global_state::GlobalState;
+use crate::hooks::run_native;
 use crate::utils::UnsafeSendSync;
 
 use std::cell::SyncUnsafeCell;
@@ -16,7 +17,7 @@ pub const ALT_STACK_SIZE: usize = 5 * 1024 * 1024;
 fn sigaltstack_get() -> Result<stack_t, i32> {
     let mut oss = MaybeUninit::uninit();
     // SAFETY: has no preconditions
-    let ret = unsafe { sigaltstack(std::ptr::null(), oss.as_mut_ptr()) };
+    let ret = run_native(|| unsafe { sigaltstack(std::ptr::null(), oss.as_mut_ptr()) });
     if ret != 0 {
         return Err(ret);
     }
@@ -45,7 +46,7 @@ pub fn prepare_altstack() -> Result<(), std::io::Error> {
             ss_flags: 0,
             ss_size: ALT_STACK_SIZE,
         };
-        let ret = sigaltstack(&raw const x, std::ptr::null_mut());
+        let ret = run_native(|| sigaltstack(&raw const x, std::ptr::null_mut()));
         if ret != 0 {
             return Err(std::io::Error::from_raw_os_error(ret));
         }
@@ -61,7 +62,7 @@ pub fn restore_stack() -> Result<(), std::io::Error> {
     // SAFETY: preconditions
     let stack = unsafe { &raw const (*(*OSS.get()).as_ptr()).0 };
     // SAFETY: stack is valid since it comes from save_stack
-    let ret = unsafe { sigaltstack(stack, std::ptr::null_mut()) };
+    let ret = run_native(|| unsafe { sigaltstack(stack, std::ptr::null_mut()) });
     if ret != 0 {
         return Err(std::io::Error::from_raw_os_error(ret));
     }
