@@ -205,3 +205,12 @@ macro_rules! trace {
         }
     };
 }
+
+#[macro_export]
+macro_rules! abort {
+    ($category:ident, $($arg:tt)*) => {
+        $crate::log!($category, Error, $($arg)*);
+        std::process::abort();
+    };
+    ($($arg:tt)*) => { $crate::abort!(Adhoc, $($arg)*) };
+}
