@@ -9,6 +9,7 @@ use libc::c_char;
 mod dlhook;
 mod pthread;
 mod sdl;
+mod signal;
 pub(crate) mod xlib;
 
 thread_local! {
@@ -18,7 +19,7 @@ thread_local! {
 fn is_native() -> bool {
     IS_NATIVE.get() > 0
 }
-fn run_native<T>(f: impl FnOnce() -> T) -> T {
+pub(crate) fn run_native<T>(f: impl FnOnce() -> T) -> T {
     IS_NATIVE.with(|cell| cell.update(|count| count + 1));
     let ret = f();
     IS_NATIVE.with(|cell| cell.update(|count| count - 1));

@@ -3,6 +3,7 @@ use std::mem::MaybeUninit;
 use libc::{SA_SIGINFO, SIG_UNBLOCK, siginfo_t, sigset_t, ucontext_t};
 
 use crate::Result;
+use crate::hooks::run_native;
 
 pub fn pthread_unblock_signal(signal: i32) {
     let mut mask = MaybeUninit::<sigset_t>::uninit();
@@ -12,8 +13,10 @@ pub fn pthread_unblock_signal(signal: i32) {
     let mut mask = unsafe { mask.assume_init() };
     // SAFETY: no precondition
     unsafe { libc::sigaddset(&raw mut mask, signal) };
-    // SAFETY: no precondition
-    unsafe { libc::pthread_sigmask(SIG_UNBLOCK, &mask, std::ptr::null_mut()) };
+    run_native(|| {
+        // SAFETY: no precondition
+        unsafe { libc::pthread_sigmask(SIG_UNBLOCK, &mask, std::ptr::null_mut()) };
+    });
 }
 
 pub fn register_onstack_signal_handler(
@@ -32,8 +35,10 @@ pub fn register_onstack_signal_handler(
     unsafe { libc::sigdelset(&raw mut sa.sa_mask, libc::SIGSEGV) };
     sa.sa_flags = libc::SA_ONSTACK | SA_SIGINFO;
     sa.sa_sigaction = handler as usize;
-    // SAFETY: correct api usage
-    let ret = unsafe { libc::sigaction(signal, &sa, std::ptr::null_mut()) };
+    let ret = run_native(|| unsafe {
+        // SAFETY: correct api usage
+        libc::sigaction(signal, &sa, std::ptr::null_mut())
+    });
     if ret != 0 {
         return Err(std::io::Error::from_raw_os_error(ret));
     }
