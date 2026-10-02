@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use libc::{pid_t, pthread_t};
 
+use crate::abort;
 use crate::global_state::GlobalState;
 use crate::utils::FixedSlots;
 
@@ -165,8 +166,7 @@ pub(crate) fn init_main() {
 
 pub(crate) fn require_ready() {
     if !READY.load(Ordering::Acquire) {
-        eprintln!("valo: pthread hook called before thread registry initialization");
-        std::process::abort();
+        abort!("pthread hook called before thread registry initialization");
     }
 }
 
@@ -184,8 +184,7 @@ pub(crate) fn mark_cancellation() {
 
 pub(crate) fn require_no_cancellation() {
     if with_registry(|registry| registry.cancellation_seen) {
-        eprintln!("valo: cannot checkpoint or restore after untracked thread cancellation");
-        std::process::abort();
+        abort!("cannot checkpoint or restore after untracked thread cancellation");
     }
 }
 
