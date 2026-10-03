@@ -16,6 +16,7 @@ mod thread_tracker;
 mod utils;
 
 use crate::global_state::GlobalState;
+use crate::log::structured;
 use crate::utils::PAGE_SIZE;
 
 fn install_panic_hook() {
@@ -51,6 +52,7 @@ fn init() -> Result<()> {
     ipc::init()?;
 
     info!(Init, "valo initialized");
+    structured::events::init();
     Ok(())
 }
 

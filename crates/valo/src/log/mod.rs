@@ -21,6 +21,23 @@ const DEFAULT_PATH: &CStr = c"/tmp/valo.log";
 /// -2 = failed
 static LOG_FD: AtomicI32 = AtomicI32::new(-1);
 
+#[cfg(feature = "structured-log")]
+pub(crate) mod structured;
+
+#[cfg(not(feature = "structured-log"))]
+pub(crate) mod structured {
+    pub mod events {
+        use crate::checkpoint::SnapshotSlot;
+        use crate::procfs_maps::MemoryMap;
+
+        pub fn init() {}
+        pub fn save_area(_area: &MemoryMap, _skip: bool) {}
+        pub fn restore_area(_area: &MemoryMap, _skip: bool) {}
+        pub fn checkpoint_begin(_slot: SnapshotSlot) {}
+        pub fn restore_begin(_slot: SnapshotSlot) {}
+    }
+}
+
 #[derive(Clone, Copy)]
 pub enum Category {
     Checkpoint,
@@ -88,6 +105,12 @@ pub fn init() {
             LOG_FD.store(-2, Ordering::Release);
         }
     }
+    init_structured();
+}
+
+#[cfg(feature = "structured-log")]
+fn init_structured() {
+    structured::init();
 }
 
 fn path_from_env() -> Option<&'static CStr> {
@@ -100,20 +123,23 @@ fn path_from_env() -> Option<&'static CStr> {
     Some(unsafe { CStr::from_ptr(raw) })
 }
 
-struct StackWriter {
+#[cfg(not(feature = "structured-log"))]
+fn init_structured() {}
+
+pub(super) struct StackWriter {
     buf: [u8; BUF_SIZE],
     len: usize,
 }
 
 impl StackWriter {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             buf: [0; BUF_SIZE],
             len: 0,
         }
     }
 
-    fn as_slice(&self) -> &[u8] {
+    pub(super) fn as_slice(&self) -> &[u8] {
         &self.buf[..self.len]
     }
 }

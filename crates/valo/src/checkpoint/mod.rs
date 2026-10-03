@@ -7,6 +7,7 @@ use std::fmt::Write;
 use std::sync::atomic::Ordering;
 
 use crate::global_state::GlobalState;
+use crate::log::structured;
 use crate::{Result, alt_stack, error, info, sys, thread_tracker, utils};
 
 const SIG_CHECKPOINT: i32 = libc::SIGSYS;
@@ -134,6 +135,7 @@ pub unsafe fn checkpoint(slot: SnapshotSlot) -> Result<()> {
     let state = GlobalState::get();
     state.snapshot_slot.store(slot.0, Ordering::SeqCst);
     state.set_restore_in_progress(false);
+    structured::events::checkpoint_begin(slot);
 
     // Safety: function precondition
     unsafe { alt_stack::save_stack()? };
@@ -167,6 +169,7 @@ pub unsafe fn restore(slot: SnapshotSlot) -> Result<()> {
     }
 
     state.snapshot_slot.store(slot.0, Ordering::SeqCst);
+    structured::events::restore_begin(slot);
     state.set_restore_in_progress(true);
 
     alt_stack::prepare_altstack()?;
