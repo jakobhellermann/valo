@@ -189,7 +189,8 @@ fn write_area(
         }
 
         if area.perms.contains(MemoryMapPermissions::SHARED) {
-            let current_off = area.offset + (page - area.page()) as u64 * PAGE_SIZE as u64;
+            let page_i = page - area.page();
+            let current_off = area.offset + page_i as u64 * PAGE_SIZE as u64;
 
             if let Some((ref fd, ref mut next_off_hole, ref mut next_off_data)) = shared_fd
                 && current_off > *next_off_data

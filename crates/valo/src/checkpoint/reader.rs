@@ -3,6 +3,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::mem::MaybeUninit;
 
+use rustix::fs::SeekFrom as RSeekFrom;
 use rustix::mm::{self, MapFlags, MprotectFlags, ProtFlags};
 
 use crate::checkpoint::{AreaMeta, Header, PageFlag, Result, SnapshotSlot};
@@ -213,16 +214,13 @@ fn read_area(
 
     debug!(Restore, "restore {}", saved_area);
 
-    let shared_fd;
-
-    if saved_area.perms.contains(MemoryMapPermissions::SHARED) {
+    let mut shared_fd = if saved_area.perms.contains(MemoryMapPermissions::SHARED) {
         let fd = saved_area.open_file().ok();
-        shared_fd = fd.and_then(|fd| {
+        let shared_fd = fd.and_then(|fd| {
             let mut next_off_hole =
-                rustix::fs::seek(&fd, rustix::fs::SeekFrom::Hole(saved_area.offset)).ok()?;
+                rustix::fs::seek(&fd, RSeekFrom::Hole(saved_area.offset)).ok()?;
             let mut next_off_data =
-                rustix::fs::seek(&fd, rustix::fs::SeekFrom::Data(saved_area.offset))
-                    .unwrap_or(u64::MAX);
+                rustix::fs::seek(&fd, RSeekFrom::Data(saved_area.offset)).unwrap_or(u64::MAX);
             next_off_hole = align_page_up(next_off_hole);
             next_off_data = align_page_down(next_off_data);
             Some((fd, next_off_hole, next_off_data))
@@ -233,7 +231,10 @@ fn read_area(
                 "Could not open shared map file for restore {}", saved_area.pathname
             );
         }
-    }
+        shared_fd
+    } else {
+        None
+    };
 
     reader
         .snapshot_page_data
@@ -249,6 +250,8 @@ fn read_area(
         skip: 0,
         zero_or_file: 0,
     };
+
+    let mut shared_seek_failed = false;
 
     for page_idx in page_idx..page_idx + page_count {
         let current_pageflag = current_pagemap.read_at_single(page_idx)?; // TODO buffer
@@ -308,7 +311,61 @@ fn read_area(
                     stats.skip += 1;
                 }
             } else {
-                todo!("shared pages");
+                if let &mut Some((ref shared_fd, ref mut next_off_hole, ref mut next_off_data)) =
+                    &mut shared_fd
+                    && !shared_seek_failed
+                {
+                    let page_i = page_idx - saved_area.page();
+                    let current_offset = saved_area.offset + page_i as u64 * PAGE_SIZE as u64;
+
+                    // Advance hole/data
+                    if current_offset > *next_off_data && current_offset > *next_off_hole {
+                        *next_off_data =
+                            rustix::fs::seek(shared_fd, RSeekFrom::Data(current_offset))
+                                .unwrap_or(u64::MAX);
+                        match rustix::fs::seek(shared_fd, RSeekFrom::Hole(current_offset)) {
+                            Ok(hole) => {
+                                *next_off_data = align_page_down(*next_off_data);
+                                *next_off_hole = align_page_up(hole);
+                            }
+                            Err(_) => {
+                                warn!(
+                                    Checkpoint,
+                                    "shared map file {} could not be queried for hole information during restore",
+                                    saved_area.pathname
+                                );
+                                shared_seek_failed = true;
+                            }
+                        }
+                    }
+
+                    if shared_seek_failed {
+                        // do nothing
+                    } else if current_offset == *next_off_data || current_offset < *next_off_hole {
+                        // Current page has data, saved page is hole -> write 0
+                        // TODO: fallocate the hole
+                        if !saved_area.perms.contains(MemoryMapPermissions::WRITE) {
+                            page_mprotect_with(MprotectFlags::WRITE)?;
+                        }
+                        page_memset0();
+                        stats.zero_or_file += 1;
+                    } else if current_offset == *next_off_hole || current_offset < *next_off_data {
+                        // Hole in current and savestate
+                        stats.skip += 1;
+                    } else {
+                        warn!(
+                            Checkpoint,
+                            "shared file seek neither data nor hole at offset {current_offset}"
+                        );
+                    }
+                } else {
+                    warn!(
+                        Checkpoint,
+                        "shared map file {} was not found even if it existed when the \
+                         savestate was made",
+                        saved_area.pathname
+                    );
+                }
             }
             continue;
         }
