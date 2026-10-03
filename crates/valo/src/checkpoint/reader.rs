@@ -10,7 +10,7 @@ use crate::log::structured;
 use crate::procfs_maps::{
     MMapPath, MemoryMap, MemoryMapPermissions, PageFlags, ProcMaps, ProcPagemap,
 };
-use crate::utils::PAGE_SIZE;
+use crate::utils::{PAGE_SIZE, align_page_down, align_page_up};
 use crate::{debug, error, info, trace, warn};
 
 pub struct SnapshotReader {
@@ -223,8 +223,8 @@ fn read_area(
             let mut next_off_data =
                 rustix::fs::seek(&fd, rustix::fs::SeekFrom::Data(saved_area.offset))
                     .unwrap_or(u64::MAX);
-            next_off_hole &= !(PAGE_SIZE as u64 - 1);
-            next_off_data &= !(PAGE_SIZE as u64 - 1);
+            next_off_hole = align_page_up(next_off_hole);
+            next_off_data = align_page_down(next_off_data);
             Some((fd, next_off_hole, next_off_data))
         });
         if shared_fd.is_none() {

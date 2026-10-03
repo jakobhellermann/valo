@@ -15,6 +15,17 @@ unsafe impl<T> Sync for UnsafeSendSync<T> {}
 
 pub const PAGE_SIZE: usize = 4096;
 
+/// Round down to the start of the containing page.
+pub(crate) fn align_page_down(off: u64) -> u64 {
+    off & !(PAGE_SIZE as u64 - 1)
+}
+
+/// Round up to the start of the next page (0 stays 0).
+pub(crate) fn align_page_up(off: u64) -> u64 {
+    off.div_ceil(PAGE_SIZE as u64)
+        .saturating_mul(PAGE_SIZE as u64)
+}
+
 pub fn assert_stack_in_range(range: Range<*const ()>) {
     let local_var = 0;
     let local_addr = &raw const local_var;
