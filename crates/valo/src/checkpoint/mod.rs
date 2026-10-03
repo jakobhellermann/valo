@@ -1,3 +1,4 @@
+pub mod gpu;
 pub mod reader;
 pub(crate) mod threads;
 pub mod ucontext;
@@ -98,9 +99,26 @@ unsafe fn snapshot_restore(ucontext: *const libc::ucontext_t, slot: SnapshotSlot
     let x11_state = crate::hooks::xlib::xfixup::X11SavedState::save()?;
 
     let mut reader = reader::SnapshotReader::new(slot)?;
+
+    // Restore the GPU host concurrently with the CPU memory restore:
+    // Memory and kumquat handle disjoint data:
+    // - the CPU restore rewrites the guest-shared memfd contents
+    //   (kumquat-guest-blob areas, ASG rings) from the snapshot,
+    // - kumquat's restore only re-attaches those mappings and replays its
+    //   own host state; the single guest-visible write it performs (ASG ring
+    //   control state) is identical to the snapshot content, so racing
+    //   writers produce the same bytes either way.
+    structured::events::trace_step("restore.gpu.trigger.begin");
+    gpu::trigger_restore(slot)?;
+    structured::events::trace_step("restore.gpu.trigger.end");
+
     structured::events::trace_step("restore.memory.begin");
     reader::read_all_areas(&mut reader)?;
     structured::events::trace_step("restore.memory.end");
+
+    structured::events::trace_step("restore.gpu.wait.begin");
+    gpu::wait_restore_complete()?;
+    structured::events::trace_step("restore.gpu.wait.end");
 
     // Restore threads that died since the checkpoint
     threads::recreate_missing();
@@ -181,8 +199,21 @@ pub unsafe fn checkpoint(slot: SnapshotSlot) -> Result<()> {
     threads::suspend_others(None);
     structured::events::trace_step("checkpoint.freeze.end");
 
+    structured::events::trace_step("checkpoint.gpu.trigger.begin");
+    gpu::trigger_snapshot(slot)?;
+    structured::events::trace_step("checkpoint.gpu.trigger.end");
+
     // SAFETY: no preconditions
     unsafe { libc::raise(SIG_CHECKPOINT) };
+
+    let restoring = state.restore_in_progress();
+
+    // only wait for gpu on checkpoint, not on resume
+    if !restoring {
+        structured::events::trace_step("checkpoint.gpu.wait.begin");
+        gpu::wait_snapshot_complete()?; // stay frozen until gpu checkpoint is finished
+        structured::events::trace_step("checkpoint.gpu.wait.end");
+    }
 
     threads::resume_others();
 

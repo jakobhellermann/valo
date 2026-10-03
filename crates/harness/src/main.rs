@@ -40,8 +40,10 @@ const SAFETY_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Default)]
 struct Config {
     max_restores: u32,
+    gpu: bool,
     link_mode: LinkMode,
     link_flags: Vec<String>,
+    env: Vec<(String, String)>,
 }
 
 #[derive(Default)]
@@ -62,6 +64,7 @@ struct Output {
 fn parse_config(source: &Path) -> Config {
     let mut config = Config {
         max_restores: 1,
+        env: Vec::new(),
         ..Config::default()
     };
 
@@ -74,6 +77,9 @@ fn parse_config(source: &Path) -> Config {
                 let key = key.trim();
                 let value = value.trim();
                 match key {
+                    "gpu" => {
+                        config.gpu = matches!(value, "yes" | "true" | "1");
+                    }
                     "max_restores" => {
                         config.max_restores = value.parse().unwrap_or(1);
                     }
@@ -87,6 +93,13 @@ fn parse_config(source: &Path) -> Config {
                         config
                             .link_flags
                             .extend(value.split_whitespace().map(String::from));
+                    }
+                    "env" => {
+                        if let Some((k, v)) = value.split_once('=') {
+                            config
+                                .env
+                                .push((k.trim().to_string(), v.trim().to_string()));
+                        }
                     }
                     _ => {}
                 }
@@ -158,7 +171,7 @@ fn run(
     log_path: &Path,
 ) -> Result<Output> {
     let mut cmd = Command::new(binary);
-    valo_launch::configure_target(&mut cmd);
+    valo_launch::configure_target(&mut cmd, config.gpu);
     match config.link_mode {
         LinkMode::Link => {
             cmd.env("LD_LIBRARY_PATH", out_dir);
@@ -169,6 +182,19 @@ fn run(
     }
     cmd.env("VALO_MAX_RESTORES", config.max_restores.to_string());
     cmd.env("VALO_LOG", log_path);
+    if config.gpu {
+        cmd.env("VALO_USE_GPU", "1");
+    }
+    for (k, v) in &config.env {
+        cmd.env(k, v);
+    }
+    let mut gpu = if config.gpu {
+        let session = valo_launch::gpu_session::GpuSession::start()?;
+        session.configure_game(&mut cmd);
+        Some(session)
+    } else {
+        None
+    };
 
     if nocapture {
         cmd.stdout(Stdio::inherit());
@@ -179,6 +205,9 @@ fn run(
     }
 
     let mut child = cmd.spawn().context("failed to spawn test")?;
+    if let Some(gpu) = &mut gpu {
+        gpu.game_started();
+    }
 
     let stdout_thread = child.stdout.take().map(|child_stdout| {
         thread::spawn(move || {
@@ -197,7 +226,12 @@ fn run(
         })
     });
 
-    let status = child.wait_timeout(SAFETY_TIMEOUT)?;
+    let timeout = if gpu.is_some() {
+        Duration::from_secs(30)
+    } else {
+        SAFETY_TIMEOUT
+    };
+    let status = child.wait_timeout(timeout)?;
 
     let status = match status {
         Some(s) => s,

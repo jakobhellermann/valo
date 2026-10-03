@@ -12,11 +12,13 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use valo_ipc::messages::{ClientToLib, FrameBoundary, Hello, LibToClient};
 use valo_ipc::{ClientIPC, PROTOCOL_VERSION};
+use valo_launch::gpu_session::GpuSession;
 
 /// How long to wait for the next FrameBoundary after sending Advance
 /// before assuming the target hung.
 /// On expiry the client prints a hang report to stderr, and keeps waiting.
 const HANG_TIMEOUT: Duration = Duration::from_secs(2);
+const GPU_HANG_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Parser)]
 #[command(name = "valo", about = "valo client")]
@@ -112,7 +114,8 @@ fn run(
         .with_context(|| format!("canonicalize libvalo.so path {}", lib.display()))?;
 
     let mut cmd = build_command(gdb, &program, &args, &lib);
-    valo_launch::configure_target(&mut cmd);
+    let use_gpu = valo_launch::use_gpu();
+    valo_launch::configure_target(&mut cmd, use_gpu);
 
     if use_tui {
         // Don't let the child's stdout/stderr clobber the alternate screen.
@@ -131,9 +134,20 @@ fn run(
         .map(PathBuf::from)
         .or_else(|| Some(PathBuf::from("/tmp/valo.log")));
 
+    let mut gpu = if use_gpu {
+        let session = GpuSession::start()?;
+        session.configure_game(&mut cmd);
+        Some(session)
+    } else {
+        None
+    };
+
     let mut child = cmd
         .spawn()
         .with_context(|| format!("spawning {}", cmd.get_program().to_string_lossy()))?;
+    if let Some(gpu) = &mut gpu {
+        gpu.game_started();
+    }
 
     let result = if use_tui {
         tui::run(&sock_path, log_path.as_deref(), child.id()).map(|_| SessionEnd::Done)
@@ -147,7 +161,16 @@ fn run(
     let _ = std::fs::remove_file(&sock_path);
 
     if matches!(result, Ok(SessionEnd::Hung)) && !gdb {
-        // Don't kill target, leave it for live debugging
+        let host_died = gpu
+            .as_mut()
+            .map(report_kumquat_exit)
+            .transpose()?
+            .unwrap_or(false);
+        if host_died {
+            eprintln!("[valo-client] terminating the stalled game");
+            let _ = child.kill();
+            let _ = child.wait();
+        }
         return Ok(ExitCode::from(125));
     }
 
@@ -157,6 +180,14 @@ fn run(
     } else {
         wait_or_kill(&mut child)?
     };
+    let host_died = gpu
+        .as_mut()
+        .map(report_kumquat_exit)
+        .transpose()?
+        .unwrap_or(false);
+    if host_died && status.success() {
+        return Ok(ExitCode::from(125));
+    }
 
     if let Some(code) = status.code() {
         Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))
@@ -165,6 +196,22 @@ fn run(
     } else {
         Ok(ExitCode::from(1))
     }
+}
+
+fn report_kumquat_exit(session: &mut GpuSession) -> Result<bool> {
+    let Some(status) = session.exit_status()? else {
+        return Ok(false);
+    };
+    let pid = session.pid();
+    eprintln!("[valo-client] kumquat (pid {pid}) exited: {status}");
+    if status.signal().is_some() {
+        eprintln!("[valo-client] inspect core dump: coredumpctl debug {pid}");
+    }
+    eprintln!(
+        "[valo-client] kumquat log: {}",
+        session.log_path().display()
+    );
+    Ok(true)
 }
 
 fn run_ipc_loop(sock: &Path, child: &mut Child, gdb: bool) -> Result<SessionEnd> {
@@ -191,7 +238,7 @@ fn run_ipc_loop(sock: &Path, child: &mut Child, gdb: bool) -> Result<SessionEnd>
                 PROTOCOL_VERSION
             );
         }
-        conn.set_read_timeout(HANG_TIMEOUT)
+        conn.set_read_timeout(hang_timeout())
             .context("set hang watchdog timeout")?;
 
         let pid = child.id();
@@ -225,7 +272,11 @@ fn run_ipc_loop(sock: &Path, child: &mut Child, gdb: bool) -> Result<SessionEnd>
 }
 
 pub(crate) fn report_hang(pid: u32) -> Result<()> {
-    eprintln!("[valo-client] hang: no frame boundary for {HANG_TIMEOUT:?} (pid {pid})");
+    eprintln!(
+        "[valo-client] hang: no frame boundary for {:?} (pid {pid})",
+        hang_timeout()
+    );
+
     for entry in std::fs::read_dir(format!("/proc/{pid}/task"))? {
         let tid: u32 = entry?.file_name().to_string_lossy().parse()?;
         let wchan = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/wchan"))?;
@@ -239,6 +290,14 @@ pub(crate) fn report_hang(pid: u32) -> Result<()> {
     eprintln!("[valo-client] attach with:");
     eprintln!("  gdb -p {pid} -ex 'thread apply all bt'");
     Ok(())
+}
+
+fn hang_timeout() -> Duration {
+    if std::env::var_os("VALO_USE_GPU").is_some() {
+        GPU_HANG_TIMEOUT
+    } else {
+        HANG_TIMEOUT
+    }
 }
 
 /// Like [`ClientIPC::establish`], but gives up when the child exits first

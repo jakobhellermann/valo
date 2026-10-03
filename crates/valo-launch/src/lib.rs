@@ -1,7 +1,9 @@
+pub mod gpu_session;
+
 use std::process::Command;
 
 /// Apply the runtime environment expected by valo to a target process.
-pub fn configure_target(cmd: &mut Command) {
+pub fn configure_target(cmd: &mut Command, gpu: bool) {
     // Set env vars for the child to nudge it onto a deterministic, software rendering path.
     // Taken from https://github.com/clementgallet/libTAS/blob/86b04134d1a0dc918c0d72f09d0a6441d42f99ec/src/program/GameThread.cpp#L33
 
@@ -20,7 +22,25 @@ pub fn configure_target(cmd: &mut Command) {
     // Prevent glibc from initializing rseq for each thread. TODO: implement rseq properly
     cmd.env("GLIBC_TUNABLES", "glibc.pthread.rseq=0");
 
-    // TODO: opengl_soft config from libTAS:
-    // - VK_DRIVER_FILES -> Lavapipe ICDs
-    // - VDPAU_DRIVER=va_gl, VDPAU_QUIRKS=AvoidVA
+    if gpu {
+        cmd.env("VIRTGPU_KUMQUAT", "1");
+        if let Some(icd) = std::env::var_os("VALO_GFXSTREAM_ICD") {
+            cmd.env("VK_DRIVER_FILES", icd);
+            cmd.env_remove("VK_LOADER_DRIVERS_SELECT");
+        } else {
+            cmd.env_remove("VK_DRIVER_FILES");
+            cmd.env("VK_LOADER_DRIVERS_SELECT", "gfxstream_vk_icd*");
+        }
+    } else {
+        cmd.env_remove("VK_DRIVER_FILES");
+        cmd.env("VK_LOADER_DRIVERS_SELECT", "lvp_icd*");
+    }
+}
+
+/// Whether the target should snapshot using kumquat/gfxstream
+pub fn use_gpu() -> bool {
+    match std::env::var("VALO_USE_GPU") {
+        Ok(value) => !matches!(value.trim(), "" | "0" | "false" | "no"),
+        Err(_) => false,
+    }
 }
