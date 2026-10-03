@@ -169,17 +169,17 @@ pub unsafe fn checkpoint(slot: SnapshotSlot) -> Result<()> {
 pub unsafe fn restore(slot: SnapshotSlot) -> Result<()> {
     thread_tracker::require_no_cancellation();
     let state = GlobalState::get();
-    if state.max_restores > 0 {
-        // SAFETY: reserved is valid and restore_count is in the excluded region
-        let count = unsafe { &(*state.reserved).restore_count }
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        if count >= state.max_restores {
-            info!(
-                "VALO_MAX_RESTORES={} reached, exiting--",
-                state.max_restores
-            );
-            std::process::exit(0);
-        }
+
+    // SAFETY: reserved is valid and restore_count is in the excluded region
+    let restore_count = unsafe { &(*state.reserved).restore_count }
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+    if state.max_restores > 0 && restore_count >= state.max_restores {
+        info!(
+            "VALO_MAX_RESTORES={} reached, exiting--",
+            state.max_restores
+        );
+        std::process::exit(0);
     }
 
     state.snapshot_slot.store(slot.0, Ordering::SeqCst);
