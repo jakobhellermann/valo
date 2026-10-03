@@ -227,7 +227,7 @@ fn write_area(
                 }
             }
 
-            if !page_present {
+            if !page_present && !matches!(area.path_kind, MMapPath::MemFd) {
                 stats.zero_or_file += 1;
                 save_page_flags(&mut writer.snapshot_meta, PageFlag::File)?;
                 continue;
