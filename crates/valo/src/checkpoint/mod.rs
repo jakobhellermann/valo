@@ -127,6 +127,8 @@ unsafe fn snapshot_restore(ucontext: *const libc::ucontext_t, slot: SnapshotSlot
     // Must happen after read_all_areas but before ucontext::restore
     x11_state.restore()?;
 
+    crate::hooks::vulkan::queue_outofdate_swapchain();
+
     GlobalState::get().set_restore_in_progress(true);
 
     // SAFETY: same preconditions
