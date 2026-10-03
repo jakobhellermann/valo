@@ -8,8 +8,9 @@ use crate::log::structured;
 use crate::procfs_maps::{
     MMapPath, MemoryMap, MemoryMapPermissions, PageFlags, ProcMaps, ProcPagemap,
 };
-use crate::utils::PAGE_SIZE;
-use crate::{Result, debug, warn};
+use crate::utils::{PAGE_SIZE, align_page_down, align_page_up};
+
+use crate::{Result, debug, info, warn};
 
 pub struct SnapshotWriter {
     // todo: stack buffered?
@@ -95,25 +96,34 @@ fn write_area(
 
         if let Some(fd) = fd {
             match rustix::fs::seek(&fd, rustix::fs::SeekFrom::Hole(area.offset)) {
-                Err(_) => std::mem::drop(fd),
-                #[allow(unused)]
+                Err(_) => {
+                    warn!(
+                        Checkpoint,
+                        "Could not seek shared map file for save {}", area.pathname
+                    )
+                }
                 Ok(mut next_off_hole) => {
                     let mut next_off_data =
                         rustix::fs::seek(&fd, rustix::fs::SeekFrom::Data(area.offset))
                             .unwrap_or(u64::MAX);
-                    next_off_hole &= !(PAGE_SIZE as u64 - 1);
-                    next_off_data &= !(PAGE_SIZE as u64 - 1);
+                    next_off_hole = align_page_up(next_off_hole);
+                    next_off_data = align_page_down(next_off_data);
                     shared_fd = Some((fd, next_off_hole, next_off_data));
+
+                    if next_off_data == 0 && next_off_hole == 0 {
+                        // TODO if shared_fd != area.fd
+                        info!(Checkpoint, "shared fd hold and data are both 0");
+                        shared_fd = None;
+                    }
                 }
             }
         } else {
             warn!(
-                Restore,
+                Checkpoint,
                 "Could not open shared map file for save {}", area.pathname
             )
         }
     }
-
     #[derive(Debug)]
     struct Stats {
         unmapped: usize,
@@ -179,22 +189,39 @@ fn write_area(
         }
 
         if area.perms.contains(MemoryMapPermissions::SHARED) {
-            if let Some((ref shared_fd, mut next_off_hole, mut next_off_data)) = shared_fd {
-                let current_off = area.offset;
-                if current_off > next_off_data && current_off > next_off_hole {
-                    next_off_data =
-                        rustix::fs::seek(shared_fd, rustix::fs::SeekFrom::Data(current_off))?;
-                    next_off_data &= !(PAGE_SIZE as u64 - 1);
-                    next_off_hole =
-                        rustix::fs::seek(shared_fd, rustix::fs::SeekFrom::Hole(current_off))?;
-                    next_off_hole &= !(PAGE_SIZE as u64 - 1);
-                }
+            let current_off = area.offset + (page - area.page()) as u64 * PAGE_SIZE as u64;
 
-                if current_off == next_off_data || current_off < next_off_hole {
+            if let Some((ref fd, ref mut next_off_hole, ref mut next_off_data)) = shared_fd
+                && current_off > *next_off_data
+                && current_off > *next_off_hole
+            {
+                // update data and hole
+                *next_off_data = rustix::fs::seek(fd, rustix::fs::SeekFrom::Data(current_off))
+                    .unwrap_or(u64::MAX);
+                match rustix::fs::seek(fd, rustix::fs::SeekFrom::Hole(current_off)) {
+                    Err(_) => {
+                        warn!(
+                            Checkpoint,
+                            "Shared map file {} could not be queried for hole information while saving",
+                            area.pathname
+                        );
+                        shared_fd = None;
+                    }
+                    Ok(hole) => {
+                        *next_off_data = align_page_down(*next_off_data);
+                        *next_off_hole = align_page_up(hole);
+                    }
+                }
+            }
+
+            if let Some((_, next_off_hole, next_off_data)) = shared_fd.as_ref() {
+                if current_off == *next_off_data || current_off < *next_off_hole {
                     // current page is data
-                } else if current_off == next_off_hole || current_off < next_off_data {
+                } else if current_off == *next_off_hole || current_off < *next_off_data {
                     save_page_flags(&mut writer.snapshot_meta, PageFlag::No)?;
                     stats.unmapped += 1;
+
+                    continue;
                 } else {
                     todo!();
                 }
