@@ -42,6 +42,9 @@ pub unsafe extern "C" fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *m
 
         if let Some(p) = match name.to_bytes() {
             b"XOpenDisplay" => Some(crate::hooks::xlib::xdisplay::XOpenDisplay as *mut c_void),
+            b"vkGetInstanceProcAddr" => {
+                Some(crate::hooks::vulkan::vkGetInstanceProcAddr as *mut c_void)
+            }
             b"glXGetProcAddress" => Some(crate::hooks::glx::glXGetProcAddress as *mut c_void),
             b"glXGetProcAddressARB" => Some(crate::hooks::glx::glXGetProcAddressARB as *mut c_void),
             b"glXGetProcAddressEXT" => Some(crate::hooks::glx::glXGetProcAddressEXT as *mut c_void),

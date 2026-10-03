@@ -5,7 +5,7 @@ use valo_ipc::messages::{ClientToLib, FrameBoundary, LibToClient, State};
 use crate::global_state::GlobalState;
 use crate::{error, info, ipc, trace};
 
-pub fn frame_boundary(draw: impl FnOnce()) {
+pub fn frame_boundary<T>(draw: impl FnOnce() -> T) -> T {
     let global = GlobalState::get();
     let frame = global.frame_count.fetch_add(1, Ordering::SeqCst);
 
@@ -19,7 +19,7 @@ pub fn frame_boundary(draw: impl FnOnce()) {
 
     handle_ipc(frame);
 
-    draw();
+    draw()
 }
 
 fn handle_ipc(frame: u64) {

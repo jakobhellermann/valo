@@ -11,6 +11,7 @@ mod glx;
 mod pthread;
 mod sdl;
 mod signal;
+pub(crate) mod vulkan;
 pub(crate) mod xlib;
 
 thread_local! {
