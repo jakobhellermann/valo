@@ -8,6 +8,20 @@
 
     flake-utils.url = "github:numtide/flake-utils";
 
+    mesaGpu = {
+      url = "github:jakobhellermann/mesa/wip";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    gfxstream = {
+      url = "github:jakobhellermann/gfxstream/wip";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    kumquat = {
+      url = "github:jakobhellermann/rutabaga_gfx/wip";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.gfxstream.follows = "gfxstream";
+    };
+
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -20,6 +34,8 @@
       nixpkgs,
       crane,
       flake-utils,
+      mesaGpu,
+      kumquat,
       rust-overlay,
       ...
     }:
@@ -64,6 +80,10 @@
         };
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+        kumquatPackage = kumquat.packages.${system}.default;
+        gfxstreamIcd = "${
+          mesaGpu.packages.${system}.default
+        }/share/vulkan/icd.d/gfxstream_vk_icd.x86_64.json";
 
         valo-client = craneLib.buildPackage (
           commonArgs
@@ -71,8 +91,14 @@
             inherit cargoArtifacts;
             pname = "valo-client";
             cargoExtraArgs = "--locked -p valo-client";
+            nativeBuildInputs = [ pkgs.makeWrapper ];
             postInstall = ''
               ln -s ${valo}/lib/libvalo.so $out/bin/libvalo.so
+            '';
+            postFixup = ''
+              wrapProgram $out/bin/valo \
+                --prefix PATH : ${pkgs.lib.makeBinPath [ kumquatPackage ]} \
+                --set-default VALO_GFXSTREAM_ICD ${gfxstreamIcd}
             '';
           }
         );
@@ -108,7 +134,14 @@
             just
             SDL2.dev
             sdl3.dev
+            vulkan-headers
+            vulkan-loader
+            mesaGpu.packages.${system}.default
+            kumquatPackage
           ];
+          shellHook = ''
+            export VALO_GFXSTREAM_ICD=${gfxstreamIcd}
+          '';
         };
       }
     );

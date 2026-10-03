@@ -49,7 +49,7 @@ static INIT: extern "C" fn() = _init;
 
 extern "C" fn _init() {
     if let Err(e) = init() {
-        panic!("Failed to initialize valo: {e}");
+        abort!("Failed to initialize valo: {e}");
     }
 }
 
@@ -61,6 +61,7 @@ fn init() -> Result<()> {
     thread_tracker::init_main();
     checkpoint::threads::init_main();
     checkpoint::init_thread()?;
+    checkpoint::gpu::init()?;
     sigsegv::install()?;
     ipc::init()?;
 

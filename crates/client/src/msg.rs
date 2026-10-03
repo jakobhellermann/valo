@@ -34,6 +34,9 @@ pub enum MsgCmd {
 }
 
 pub fn spawn(lib: Option<PathBuf>, sock: &Path, target: &[String]) -> Result<()> {
+    if valo_launch::use_gpu() {
+        bail!("GPU sessions require `valo run`, which owns the Kumquat lifecycle");
+    }
     let Some(program) = target.first() else {
         bail!("missing program");
     };
@@ -42,7 +45,7 @@ pub fn spawn(lib: Option<PathBuf>, sock: &Path, target: &[String]) -> Result<()>
         .with_context(|| format!("canonicalize libvalo.so path {}", lib.display()))?;
 
     let mut cmd = crate::build_command(false, &PathBuf::from(program), &target[1..], &lib);
-    valo_launch::configure_target(&mut cmd);
+    valo_launch::configure_target(&mut cmd, false);
     cmd.env("VALO_SOCK", sock);
     cmd.env("VALO_IPC_MODE", "async");
 

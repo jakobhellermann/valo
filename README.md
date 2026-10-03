@@ -34,3 +34,11 @@ The `valo` client also recognises:
 | Variable     | Default | Effect                                                                             |
 | ------------ | ------- | ---------------------------------------------------------------------------------- |
 | `LD_PRELOAD` | unset   | If already set, `valo run` prepends `libvalo.so:` to it instead of overwriting it. |
+
+| Variable                      | Default   | Effect                                                                                          |
+| ----------------------------- | --------- | ----------------------------------------------------------------------------------------------- |
+| `VALO_USE_GPU`                | `false`   | Allow running using vulkan, with support for checkpoints using gfxstream                        |
+| `VALO_KUMQUAT_BIN`            | `kumquat` | Path to the kumquat executable                                                                  |
+| `VALO_GFXSTREAM_ICD`          | unset     | Override the path to the `gfxtream` guest driver icd, defaults to selecting `gfxstream_vk_icd*` |
+| `ANDROID_EMU_VK_LOG_CALLS`    | `false`   | Include vulkan commands in kumquat log                                                          |
+| `GFXSTREAM_LOG_LEVEL`         | `info`    | Log level for gfxstream                                                                         |
