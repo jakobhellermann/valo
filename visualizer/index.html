@@ -1,0 +1,131 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>valo visualizer</title>
+    <style>
+      body {
+        font-family: ui-monospace, monospace;
+        margin: 1rem;
+        background: #111;
+        color: #ccc;
+      }
+      h1 {
+        font-size: 1.2rem;
+      }
+      h2 {
+        font-size: 1rem;
+        color: #9cf;
+      }
+      select {
+        background: #222;
+        color: #ccc;
+        border: 1px solid #444;
+        padding: 4px 8px;
+      }
+      button {
+        background: #422;
+        color: #fbb;
+        border: 1px solid #644;
+        padding: 4px 8px;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #533;
+      }
+      button:active {
+        background: #311;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: wait;
+      }
+
+      #layout {
+        display: grid;
+        grid-template-columns: 320px 1fr;
+        gap: 1.5rem;
+        align-items: start;
+      }
+
+      .run {
+        margin-bottom: 0.75rem;
+      }
+      .run-head {
+        color: #888;
+        padding: 2px 8px;
+        font-size: 0.85rem;
+      }
+      .seg {
+        padding: 3px 8px 3px 20px;
+        cursor: pointer;
+      }
+      .seg:hover {
+        background: #1a1a1a;
+      }
+      .seg.active {
+        background: #223;
+      }
+      .seg.restore {
+        color: #9cf;
+      }
+      .seg.aborted {
+        color: #f88;
+      }
+      .dim {
+        color: #666;
+        font-size: 0.85rem;
+      }
+      .mismatch {
+        color: #f66;
+      }
+
+      table {
+        border-collapse: collapse;
+        font-size: 12px;
+      }
+      td,
+      th {
+        padding: 2px 8px;
+        text-align: left;
+        border-bottom: 1px solid #222;
+      }
+      .skip {
+        color: #555;
+      }
+      .bar {
+        display: inline-block;
+        height: 8px;
+        background: #4a9;
+        border-radius: 2px;
+        vertical-align: middle;
+      }
+      .bar.skip {
+        background: #333;
+      }
+      .bar:hover {
+        background: #7df;
+      }
+      .bar.skip:hover {
+        background: #555;
+      }
+      td.size {
+        color: #999;
+        white-space: nowrap;
+      }
+      .bad td {
+        background: #301;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>valo visualizer</h1>
+    <select id="file"></select>
+    <button id="delete">delete all</button>
+    <div id="layout">
+      <div id="tree"></div>
+      <div id="view"></div>
+    </div>
+    <script type="module" src="/src/app.ts"></script>
+  </body>
+</html>
