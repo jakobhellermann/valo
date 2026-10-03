@@ -76,7 +76,7 @@ impl SnapshotReader {
             // SAFETY: assume layout, PageFlag is just u8
             unsafe { self.read_data::<PageFlag>() }
         } else {
-            todo!()
+            unreachable!("attempteed to read out-of-bounds pageflag")
         }
     }
 }
@@ -266,11 +266,11 @@ fn read_area(
         if let PageFlag::Guard = flag {
             stats.skip += 1;
             if !page_guard_region {
-                todo!();
+                todo!("page was unguarded");
             }
             continue;
         } else if page_guard_region {
-            todo!()
+            todo!("page was guarded")
         }
 
         page_mprotect_with(MprotectFlags::READ)?;
@@ -287,7 +287,7 @@ fn read_area(
                     stats.skip += 1;
                 }
             } else {
-                todo!();
+                todo!("shared pages");
             }
             continue;
         }
@@ -309,7 +309,7 @@ fn read_area(
 
         if let PageFlag::File = flag {
             if page_present && !page_file {
-                todo!()
+                todo!("file page changed to non-file")
             } else {
                 stats.skip += 1;
             }
@@ -396,16 +396,16 @@ fn reallocate_area(
 
         if saved_area_size != current_area_size {
             if let MMapPath::Stack = saved_area.path_kind {
-                todo!();
+                todo!("stack page size changed");
             }
             if let MMapPath::Heap = saved_area.path_kind {
-                todo!();
+                todo!("heap page size changed");
             }
         }
 
         if saved_area.perms != current_area.perms {
             // mprotect
-            todo!();
+            todo!("page protections changed");
         }
 
         let is_special_section = match saved_area.path_kind {
