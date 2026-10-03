@@ -24,11 +24,16 @@ fn snapshot_path(slot: SnapshotSlot, kind: &str) -> heapless::String<64> {
 #[repr(u8)]
 #[derive(Clone, Copy, Debug)]
 pub enum PageFlag {
+    // No physical page is mapped at the address
     No,
+    // Page is entirely zero
     #[allow(dead_code)]
     Zero,
+    // Page is saved
     Full,
+    // Page is same as the mapped file
     File,
+    // Page causing signal on access
     Guard,
 }
 
