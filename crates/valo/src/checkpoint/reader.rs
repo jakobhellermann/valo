@@ -11,7 +11,7 @@ use crate::procfs_maps::{
     MMapPath, MemoryMap, MemoryMapPermissions, PageFlags, ProcMaps, ProcPagemap,
 };
 use crate::utils::PAGE_SIZE;
-use crate::{debug, trace, warn};
+use crate::{debug, error, info, trace, warn};
 
 pub struct SnapshotReader {
     snapshot_meta: File,
@@ -420,7 +420,17 @@ fn reallocate_area(
                 todo!("stack page size changed");
             }
             if let MMapPath::Heap = saved_area.path_kind {
-                todo!("heap page size changed");
+                // SAFETY: ideally transparent to the process
+                let ret = unsafe { libc::brk(saved_area.address.end as *mut _) };
+                if ret < 0 {
+                    error!(Checkpoint, "failed to resize heap");
+                    return Ok(Ordering::Equal);
+                }
+
+                info!(
+                    Checkpoint,
+                    "heap resized from {current_area_size} to {saved_area_size}"
+                );
             }
         }
 
