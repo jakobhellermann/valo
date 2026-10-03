@@ -18,6 +18,12 @@ mod utils;
 use crate::global_state::GlobalState;
 use crate::utils::PAGE_SIZE;
 
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        error!(Adhoc, "panic: {info}");
+    }));
+}
+
 pub type Result<T, E = std::io::Error> = std::result::Result<T, E>;
 
 #[cfg(feature = "assert-no-alloc")]
@@ -36,6 +42,7 @@ extern "C" fn _init() {
 
 fn init() -> Result<()> {
     log::init();
+    install_panic_hook();
     // SAFETY: since this is an initializer there is unique access
     unsafe { GlobalState::set(GlobalState::new()?) };
     thread_tracker::init_main();
