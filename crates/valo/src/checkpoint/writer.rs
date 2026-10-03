@@ -4,6 +4,7 @@ use std::os::fd::OwnedFd;
 
 use crate::checkpoint::{AreaMeta, Header, PageFlag, SnapshotSlot};
 use crate::global_state::{GlobalState, ReservedMemory};
+use crate::log::structured;
 use crate::procfs_maps::{
     MMapPath, MemoryMap, MemoryMapPermissions, PageFlags, ProcMaps, ProcPagemap,
 };
@@ -80,10 +81,12 @@ fn write_area(
 
     if skip || uncommitted {
         debug!(Checkpoint, "Skip   {}", area);
+        structured::events::save_area(area, true);
         // mprotect?
         return Ok(());
     }
     debug!(Checkpoint, "Saving {}", area);
+    structured::events::save_area(area, false);
 
     let mut shared_fd: Option<(OwnedFd, u64, u64)> = None;
 

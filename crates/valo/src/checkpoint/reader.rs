@@ -6,6 +6,7 @@ use std::mem::MaybeUninit;
 use rustix::mm::{self, MapFlags, MprotectFlags, ProtFlags};
 
 use crate::checkpoint::{AreaMeta, Header, PageFlag, Result, SnapshotSlot};
+use crate::log::structured;
 use crate::procfs_maps::{
     MMapPath, MemoryMap, MemoryMapPermissions, PageFlags, ProcMaps, ProcPagemap,
 };
@@ -84,6 +85,14 @@ impl SnapshotReader {
 pub fn read_all_areas(reader: &mut SnapshotReader) -> Result<()> {
     debug!(Restore, "Restoring {} areas", reader.header.area_count);
 
+    #[cfg(feature = "structured-log")]
+    {
+        for area in (0..reader.header.area_count).map(|_| reader.read().unwrap().0) {
+            structured::events::saved_area(&area);
+        }
+        reader.restart()?;
+    }
+
     let saved_maps = (0..reader.header.area_count).map(|_| reader.read());
 
     /*let mut snapshot_area_vec = std::fs::read(SNAPSHOT_PATH_META)?;
@@ -116,6 +125,14 @@ pub fn read_all_areas(reader: &mut SnapshotReader) -> Result<()> {
 
     let mut maps = ProcMaps::new_self_copy()?;
     let mut page_map = ProcPagemap::new_self()?;
+
+    #[cfg(feature = "structured-log")]
+    {
+        while let Some(area) = maps.next()? {
+            structured::events::current_area(&area);
+        }
+        maps.reset()?;
+    }
 
     /*debug!("Saved: ");
     for (area, meta, flags) in &saved_maps {
@@ -176,13 +193,17 @@ fn read_area(
     // todo: uncommitted
 
     if meta.skip {
+        structured::events::restore_area(saved_area, true);
         return Ok(());
     }
 
     if meta.uncommitted {
         // TODO: check current is uncommitted
+        structured::events::restore_area(saved_area, true);
         return Ok(());
     }
+
+    structured::events::restore_area(saved_area, false);
 
     // todo: mprotect read
 
