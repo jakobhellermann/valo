@@ -26,6 +26,9 @@ save-repro:
     cp /tmp/valo.log ./repro
     coredumpctl dump > repro/coredump
 
+visualizer:
+    @cd visualizer && pnpm run dev
+
 vendor:
     #!/usr/bin/env bash
     set -euo pipefail
