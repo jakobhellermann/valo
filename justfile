@@ -1,5 +1,9 @@
 set positional-arguments
 
+HK := `for p in "$HOME/.apps/Heroic/Hollow Knight/game/Hollow Knight" "$HOME/.local/share/Steam/steamapps/common/Hollow Knight/hollow_knight.x86_64"; do [ -f "$p" ] && { echo "$p"; break; }; done; true`
+HK_LOGDIR := "$HOME/.local/state/valo"
+HK_WRAPPER := `if command -v steam-run >/dev/null 2>&1; then printf steam-run; fi`
+
 _default:
     just --list
 
@@ -14,13 +18,14 @@ run-sdl *args:
     just valo run {{ args }}"./out/manual/sdl2-test"
 
 run-hollowknight *args:
-    just valo run {{ args }} "/home/jakob/.apps/Heroic/Hollow Knight/game/Hollow Knight" -force-gfx-direct
+    @mkdir -p {{ HK_LOGDIR }}
+    VALO_LOG={{ HK_LOGDIR }}/valo.log VALO_STRUCTURED_LOG={{ HK_LOGDIR }}/valo-struct-$$.jsonl {{ HK_WRAPPER }} just valo run {{ args }} "{{ HK }}" -force-gfx-direct
 
 spawn-hollowknight *args:
-    just valo spawn {{ args }} "/home/jakob/.apps/Heroic/Hollow Knight/game/Hollow Knight" -force-gfx-direct
+    VALO_LOG={{ HK_LOGDIR }}/valo.log VALO_STRUCTURED_LOG={{ HK_LOGDIR }}/valo-struct-$$.jsonl {{ HK_WRAPPER }} just valo spawn {{ args }} "{{ HK }}" -force-gfx-direct
 
 run-hollowknight-gpu *args:
-    VALO_USE_GPU=1 just valo run {{ args }} "/home/jakob/.apps/Heroic/Hollow Knight/game/Hollow Knight" -force-gfx-direct -force-vulkan
+    VALO_USE_GPU=1 VALO_LOG={{ HK_LOGDIR }}/valo.log VALO_STRUCTURED_LOG={{ HK_LOGDIR }}/valo-struct-$$.jsonl {{ HK_WRAPPER }} just valo run {{ args }} "{{ HK }}" -force-gfx-direct -force-vulkan
 
 save-repro:
     mkdir -p repro
@@ -55,4 +60,20 @@ vendor:
     install -m 0644 "$temp_dir/generated.rs" crates/valo/src/hooks/xlib/generated.rs
 
 clean:
-    rm -fr /tmp/valo* /tmp/tmp-valo-maps
+    rm -fr /tmp/valo* /tmp/tmp-valo-maps "$HOME/.local/state/valo"
+
+# reproduce the current bug
+repro XTRACE="": clean
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cmd="vkcube"
+    pkill "$cmd" || true
+    display="${DISPLAY:-:1}"
+    if [[ -n "{{ XTRACE }}" ]]; then
+        pkill xtrace || true
+        rm -f /tmp/xtrace.log
+        nix run nixpkgs#xtrace -d :1 -D :9 -n -k -o /tmp/xtrace.log > /tmp/xtrace-start.log 2>&1 &
+        sleep 0.5
+        display=":9"
+    fi
+    VALO_MAX_RESTORES=1 VALO_USE_GPU=0 VALO_CHECKPOINT_FRAME=60 VALO_RESTORE_FRAME=120 just valo run "$cmd"

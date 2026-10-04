@@ -141,6 +141,8 @@
           ];
           shellHook = ''
             export VALO_GFXSTREAM_ICD=${gfxstreamIcd}
+            # nix develop sets TMPDIR to a per-shell dir that doesn't exist in steam-run /tmp
+            unset TMPDIR
           '';
         };
       }

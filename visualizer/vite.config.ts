@@ -1,26 +1,36 @@
 import { defineConfig } from "vite";
 import { readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
-const TMP = "/tmp";
+// Direct host runs use the lib defaults (/tmp); steam-run runs escape the
+// sandbox tmpfs via the bind-mounted home (XDG state dir).
+const EVENTS_DIRS = ["/tmp", join(homedir(), ".local/state/valo")];
 
-function listValoFiles(): string[] {
-  return readdirSync(TMP)
-    .filter((f) => f.startsWith("valo"))
-    .filter((f) => f.endsWith(".jsonl"))
-    .filter((f) => {
+type ListedFile = { name: string; dir: string; mtime: number };
+
+function listValoFiles(): ListedFile[] {
+  const files: ListedFile[] = [];
+  for (const dir of EVENTS_DIRS) {
+    let names: string[];
+    try {
+      names = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const f of names) {
+      if (!f.startsWith("valo") || !f.endsWith(".jsonl")) continue;
       try {
-        return statSync(join(TMP, f)).isFile();
-      } catch {
-        return false;
-      }
-    })
-    .map((f) => ({ name: f, mtime: statSync(join(TMP, f)).mtimeMs }))
-    .sort((a, b) => b.mtime - a.mtime)
-    .map((f) => f.name);
+        const p = join(dir, f);
+        if (!statSync(p).isFile()) continue;
+        files.push({ name: f, dir, mtime: statSync(p).mtimeMs });
+      } catch {}
+    }
+  }
+  return files.sort((a, b) => b.mtime - a.mtime);
 }
 
-// Vite dev plugin: serve valo files from /tmp without a separate backend.
+// Vite dev plugin: serve valo files without a separate backend.
 const valoApi = () => ({
   name: "valo-api",
   configureServer(server: any) {
@@ -29,15 +39,15 @@ const valoApi = () => ({
 
       if (req.url === "/api/files") {
         res.setHeader("Content-Type", "application/json");
-        res.end(JSON.stringify(listValoFiles().map((name) => ({ name }))));
+        res.end(JSON.stringify(listValoFiles().map(({ name }) => ({ name }))));
         return;
       }
 
       if (req.url === "/api/delete-all" && req.method === "POST") {
         let deleted = 0;
-        for (const name of listValoFiles()) {
+        for (const { dir, name } of listValoFiles()) {
           try {
-            unlinkSync(join(TMP, name));
+            unlinkSync(join(dir, name));
             deleted++;
           } catch {}
         }
@@ -54,9 +64,15 @@ const valoApi = () => ({
           res.end("bad path");
           return;
         }
+        const listed = listValoFiles().find((f) => f.name === name);
+        if (!listed) {
+          res.statusCode = 404;
+          res.end("not found");
+          return;
+        }
         try {
           res.setHeader("Content-Type", "text/plain");
-          res.end(readFileSync(join(TMP, name), "utf8"));
+          res.end(readFileSync(join(listed.dir, listed.name), "utf8"));
         } catch {
           res.statusCode = 404;
           res.end("not found");
