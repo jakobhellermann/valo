@@ -2,8 +2,8 @@ use std::ffi::{c_int, c_void};
 
 use libc::{clockid_t, pthread_attr_t, pthread_t, timespec};
 
-use crate::override_sym;
 use crate::thread_tracker::{self, ThreadId};
+use crate::{abort, override_sym};
 
 type StartRoutine = extern "C" fn(*mut c_void) -> *mut c_void;
 
@@ -47,8 +47,7 @@ override_sym!(pthread_create(
 ) -> c_int |real| {
     thread_tracker::require_ready();
     let Some(id) = thread_tracker::reserve(initially_detached(attr)) else {
-        eprintln!("valo: thread registry capacity exhausted");
-        std::process::abort();
+        abort!("thread registry capacity exhausted");
     };
     let payload = Box::into_raw(Box::new(StartPayload {
         id,
