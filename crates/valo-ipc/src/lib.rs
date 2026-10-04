@@ -36,6 +36,21 @@ impl ClientIPC {
         })
     }
 
+    /// Connect-only handshake for one-shot clients.
+    /// Unlike [`ClientIPC::establish`] this never
+    /// falls back to becoming the listener.
+    pub fn connect(path: &Path, timeout: Duration) -> Result<Self> {
+        Ok(Self {
+            stream: raw::connect_stream(path, timeout)?,
+        })
+    }
+
+    /// Wrap an already-accepted stream. For async-mode servers that own the
+    /// listener socket and accept connections at frame boundaries.
+    pub fn from_accepted(stream: UnixStream) -> Self {
+        Self { stream }
+    }
+
     pub fn send(&mut self, msg: &ClientToLib) -> Result<()> {
         raw::send(&mut self.stream, msg)
     }
@@ -69,6 +84,16 @@ impl LibIPC {
         Ok(Self {
             stream: raw::establish_stream(path)?,
         })
+    }
+
+    /// Wrap an already-accepted stream. For async-mode servers that own the
+    /// listener socket and accept connections at frame boundaries.
+    pub fn from_accepted(stream: UnixStream) -> Self {
+        Self { stream }
+    }
+
+    pub fn set_read_timeout(&self, timeout: Duration) -> Result<()> {
+        self.stream.set_read_timeout(Some(timeout))
     }
 
     pub fn send(&mut self, msg: &LibToClient) -> Result<()> {

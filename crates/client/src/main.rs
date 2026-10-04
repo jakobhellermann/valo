@@ -1,3 +1,4 @@
+mod msg;
 mod tui;
 
 use std::io::ErrorKind;
@@ -48,6 +49,30 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Spawn a detached target. Control via `valo msg`.
+    Spawn {
+        /// Path to libvalo.so. Defaults to libvalo.so next to the valo binary.
+        #[arg(long)]
+        lib: Option<PathBuf>,
+
+        /// Socket path shared with `valo msg`.
+        #[arg(long, default_value = msg::DEFAULT_SOCK)]
+        sock: PathBuf,
+
+        /// Target program and arguments.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        target: Vec<String>,
+    },
+
+    /// Send a command to a `valo spawn` session.
+    Msg {
+        /// Socket path of the spawned session.
+        #[arg(long, default_value = msg::DEFAULT_SOCK)]
+        sock: PathBuf,
+
+        #[command(subcommand)]
+        command: msg::MsgCmd,
+    },
 }
 
 fn main() -> Result<ExitCode> {
@@ -60,6 +85,10 @@ fn main() -> Result<ExitCode> {
             program,
             args,
         } => run(lib, gdb, tui, program, args),
+        Cmd::Spawn { lib, sock, target } => {
+            msg::spawn(lib, &sock, &target).map(|_| ExitCode::SUCCESS)
+        }
+        Cmd::Msg { sock, command } => msg::msg(&sock, &command).map(|_| ExitCode::SUCCESS),
     }
 }
 
@@ -195,7 +224,7 @@ fn run_ipc_loop(sock: &Path, child: &mut Child, gdb: bool) -> Result<SessionEnd>
     }
 }
 
-fn report_hang(pid: u32) -> Result<()> {
+pub(crate) fn report_hang(pid: u32) -> Result<()> {
     eprintln!("[valo-client] hang: no frame boundary for {HANG_TIMEOUT:?} (pid {pid})");
     for entry in std::fs::read_dir(format!("/proc/{pid}/task"))? {
         let tid: u32 = entry?.file_name().to_string_lossy().parse()?;
@@ -259,7 +288,7 @@ fn wait_or_kill(child: &mut std::process::Child) -> Result<std::process::ExitSta
     }
 }
 
-fn build_command(gdb: bool, program: &PathBuf, args: &[String], lib: &Path) -> Command {
+pub(crate) fn build_command(gdb: bool, program: &PathBuf, args: &[String], lib: &Path) -> Command {
     let ld_preload = prepend_ld_preload(lib);
 
     if gdb {
@@ -298,7 +327,7 @@ fn prepend_ld_preload(lib: &Path) -> std::ffi::OsString {
     }
 }
 
-fn resolve_lib(explicit: Option<PathBuf>) -> Result<PathBuf> {
+pub(crate) fn resolve_lib(explicit: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(p) = explicit {
         if !p.exists() {
             bail!("--lib path does not exist: {}", p.display());
