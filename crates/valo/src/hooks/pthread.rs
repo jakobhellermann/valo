@@ -68,6 +68,10 @@ override_sym!(pthread_create(
 
 override_sym!(pthread_join(thread: pthread_t, retval: *mut *mut c_void) -> c_int |real| {
     thread_tracker::require_ready();
+    // The swapchain destroy arms kick budget before its manager joins; the
+    // status write is already in place here, so an injection now lands after
+    // it and unblocks the join.
+    crate::hooks::xcb::consume_pending_kick();
     let result = real(thread, retval);
     if result == 0 {
         thread_tracker::joined(thread);
