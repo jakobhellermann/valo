@@ -18,7 +18,7 @@ bitflags = "2.10"
 heapless = "0.9"
 libc = "0.2"
 memchr = "2.7"
-rustix = { version = "1.1", features = ["fs", "mm"] }
+rustix = { version = "1.1", features = ["fs", "mm", "time"] }
 valo-ipc = { path = "../valo-ipc" }
 
 [build-dependencies]
