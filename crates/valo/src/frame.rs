@@ -23,6 +23,11 @@ pub fn frame_boundary(draw: impl FnOnce()) {
 }
 
 fn handle_ipc(frame: u64) {
+    if ipc::async_mode() {
+        ipc::handle_async(frame);
+        return;
+    }
+
     let Some(mut conn) = ipc::lock() else {
         return;
     };

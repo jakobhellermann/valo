@@ -4,7 +4,7 @@
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{fs, thread};
 
 use serde::{Deserialize, Serialize};
@@ -87,6 +87,24 @@ fn read_full_or_eof<R: Read>(r: &mut R, buf: &mut [u8]) -> Result<ReadFull> {
 }
 
 // ---------- rendezvous ----------
+
+/// Connect to a peer that already owns the listener socket, retrying only
+/// while the socket file does not exist yet (peer still starting up).
+/// Never binds or removes the socket file.
+pub(crate) fn connect_stream(path: &Path, timeout: Duration) -> Result<UnixStream> {
+    let deadline = Instant::now() + timeout;
+    let mut delay = Duration::from_millis(5);
+    loop {
+        match UnixStream::connect(path) {
+            Ok(stream) => return Ok(stream),
+            Err(e) if e.kind() == ErrorKind::NotFound && Instant::now() < deadline => {
+                thread::sleep(delay);
+                delay = (delay * 2).min(Duration::from_millis(100));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
 
 pub(crate) fn establish_stream(path: &Path) -> Result<UnixStream> {
     let mut backoff = Backoff::new();
