@@ -34,20 +34,100 @@ function parseFile(text: string): Run[] {
       runs.push(run);
       cur = null;
     } else if (run) {
-      if (ev.e === "checkpoint_begin") {
+      if (ev.e === "checkpoint.begin" || ev.e === "checkpoint_begin") {
         cur = { kind: "checkpoint", slot: ev.slot, areas: [], savedDump: [], currentDump: [] };
         run.segments.push(cur);
-      } else if (ev.e === "restore_begin") {
+      } else if (ev.e === "restore.begin" || ev.e === "restore_begin") {
         cur = { kind: "restore", slot: ev.slot, areas: [], savedDump: [], currentDump: [] };
         run.segments.push(cur);
       } else if (cur) {
-        if (ev.e === "save_area" || ev.e === "restore_area") cur.areas.push(ev);
+        if (ev.e === "save_area" || ev.e === "restore_area" || ev.e === "restore.memory.area.begin")
+          cur.areas.push(ev);
         else if (ev.e === "saved_area") cur.savedDump.push(ev);
         else if (ev.e === "current_area") cur.currentDump.push(ev);
       }
     }
   }
   return runs;
+}
+
+function perfettoTrace(text: string): string {
+  const traceEvents: object[] = [];
+  let pid: number | null = null;
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    let ev: any;
+    try {
+      ev = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (ev.e === "init") {
+      pid = ev.pid;
+      continue;
+    }
+    if (pid === null || typeof ev.e !== "string" || !Number.isFinite(ev.ts_us)) continue;
+    const separator = ev.e.lastIndexOf(".");
+    if (separator < 1) continue;
+    const phase = ev.e.slice(separator + 1);
+    if (phase !== "begin" && phase !== "end") continue;
+    traceEvents.push({
+      name: ev.e.slice(0, separator),
+      cat: "valo",
+      ph: phase === "begin" ? "B" : "E",
+      ts: ev.ts_us,
+      pid,
+      tid: 0,
+      args: Object.fromEntries(
+        Object.entries(ev).filter(([key]) => key !== "e" && key !== "ts_us"),
+      ),
+    });
+  }
+  return JSON.stringify({ traceEvents });
+}
+
+function openInPerfetto(text: string, fileName: string) {
+  const origin = "https://ui.perfetto.dev";
+  const perfettoWindow = window.open(origin, "_blank");
+  if (!perfettoWindow) {
+    window.alert("Allow popups for the visualizer to open Perfetto.");
+    return;
+  }
+
+  const buffer = new TextEncoder().encode(perfettoTrace(text)).buffer;
+  const onMessage = (event: MessageEvent) => {
+    if (event.source !== perfettoWindow || event.origin !== origin || event.data !== "PONG") {
+      return;
+    }
+    cleanup();
+    perfettoWindow.postMessage(
+      {
+        perfetto: {
+          buffer,
+          title: fileName,
+          fileName: fileName.replace(/\.jsonl$/, ".trace.json"),
+        },
+      },
+      origin,
+      [buffer],
+    );
+  };
+  const ping = () => {
+    if (perfettoWindow.closed) {
+      cleanup();
+      return;
+    }
+    perfettoWindow.postMessage("PING", origin);
+  };
+  const cleanup = () => {
+    clearInterval(interval);
+    clearTimeout(timeout);
+    window.removeEventListener("message", onMessage);
+  };
+  window.addEventListener("message", onMessage);
+  const interval = setInterval(ping, 100);
+  const timeout = setTimeout(cleanup, 20_000);
+  ping();
 }
 
 type DiffRow = {
@@ -143,10 +223,15 @@ function diffTable(rows: DiffRow[], leftName: string, rightName: string): string
 async function main() {
   const sel = document.getElementById("file") as HTMLSelectElement;
   const del = document.getElementById("delete") as HTMLButtonElement;
+  const openPerfetto = document.getElementById("open-perfetto") as HTMLButtonElement;
+  const perfetto = document.getElementById("perfetto") as HTMLButtonElement;
   const treeEl = document.getElementById("tree") as HTMLDivElement;
   const viewEl = document.getElementById("view") as HTMLDivElement;
 
   let runs: Run[] = [];
+  let loadedText = "";
+  openPerfetto.disabled = true;
+  perfetto.disabled = true;
 
   function renderTree() {
     treeEl.innerHTML = "";
@@ -215,18 +300,36 @@ async function main() {
   }
 
   async function load(name: string) {
+    openPerfetto.disabled = true;
+    perfetto.disabled = true;
     const text = await (await fetch(`/api/file/${name}`)).text();
+    loadedText = text;
     runs = parseFile(text);
     renderTree();
     viewEl.innerHTML = "<p class='dim'>select a checkpoint or restore</p>";
+    openPerfetto.disabled = false;
+    perfetto.disabled = false;
   }
 
   sel.onchange = () => load(sel.value);
+  openPerfetto.onclick = () => openInPerfetto(loadedText, sel.value);
+  perfetto.onclick = () => {
+    const blob = new Blob([perfettoTrace(loadedText)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = sel.value.replace(/\.jsonl$/, ".trace.json");
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
   del.onclick = async () => {
     del.disabled = true;
     try {
       await fetch("/api/delete-all", { method: "POST" });
       runs = [];
+      loadedText = "";
+      openPerfetto.disabled = true;
+      perfetto.disabled = true;
       treeEl.innerHTML = "";
       viewEl.innerHTML = "";
       await refreshFiles();
