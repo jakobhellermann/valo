@@ -151,10 +151,12 @@ size_t valo_xcb_save(xcb_connection_t *conn, void *dst, size_t dst_len)
  * to checkpoint state. The rewound connection is internally consistent (list
  * nodes, mutexes and suspended threads all match checkpoint state); the only
  * divergence is toward the X server, which kept processing requests. So take
- * I/O progress (sequence counters + embedded queues, which encode the server's
- * request-sequence position) from `src`, and keep everything that references
- * rewound heap or resumed thread stacks (list heads, sync primitives, socket
- * ownership, the "I am the one doing I/O" flags) from the rewound connection.
+ * I/O progress (sequence counters, embedded queues and the XID allocator,
+ * which encodes both the server's request-sequence position and the resource
+ * ids the server still holds from the discarded timeline) from `src`, and
+ * keep everything that references rewound heap or resumed thread stacks
+ * (list heads, sync primitives, socket ownership, the "I am the one doing
+ * I/O" flags) from the rewound connection.
  *
  * Requires: every thread is suspended at its checkpoint-time stack, and there
  * is no concurrent Xlib/XCB access. Returns zero on success. */
@@ -166,7 +168,6 @@ static int xcb_apply_restored_io_state(xcb_connection_t *conn, const xcb_connect
     /* Checkpoint-time state referencing rewound memory or resumed stacks. */
     pthread_mutex_t iolock = conn->iolock;
     _xcb_ext ext = conn->ext;
-    _xcb_xid xid = conn->xid;
     struct {
         pthread_cond_t event_cond;
         int reading;
@@ -208,7 +209,6 @@ static int xcb_apply_restored_io_state(xcb_connection_t *conn, const xcb_connect
 
     conn->iolock = iolock;
     conn->ext = ext;
-    conn->xid = xid;
     conn->in.event_cond = in.event_cond;
     conn->in.reading = in.reading;
     conn->in.current_reply = in.current_reply;
@@ -280,6 +280,80 @@ xcb_connection_t *valo_x11_conn(Display *display)
     if (!display)
         return NULL;
     return XGetXCBConnection(display);
+}
+
+/* Wake a thread parked in xcb_wait_for_special_event on `eid`'s queue by
+ * injecting a minimal (all-zero payload) generic Present CompleteNotify event
+ * and signaling the queue's condvar. The caller must be in normal process
+ * context (this allocates), with no concurrent Xlib/XCB access guarantee
+ * beyond what libxcb's own iolock provides. The consumer re-checks its own
+ * state after the wait returns, so the payload is never acted upon when used
+ * to break the post-restore park. */
+
+/* libxcb 1.17 internal types defined in xcb_in.c (no header exports these;
+ * the vendored xcbint.h only declares pointers to them). Member order must
+ * match xcb_in.c exactly. */
+struct valo_event_list {
+    xcb_generic_event_t *event;
+    struct valo_event_list *next;
+};
+struct valo_special_event {
+    struct valo_special_event *next;
+    uint8_t extension;
+    uint32_t eid;
+    uint32_t *stamp;
+    struct valo_event_list *events;
+    struct valo_event_list **events_tail;
+    pthread_cond_t special_event_cond;
+};
+
+void valo_xcb_kick_special_event(xcb_connection_t *conn, uint32_t eid)
+{
+    if (!conn || conn->has_error)
+        return;
+
+    struct valo_event_list *node = malloc(sizeof(*node));
+    xcb_generic_event_t *event = calloc(1, sizeof(*event));
+    if (!node || !event) {
+        free(node);
+        free(event);
+        return;
+    }
+
+    pthread_mutex_lock(&conn->iolock);
+    struct valo_special_event *se = (void *)conn->in.special_events;
+    while (se && se->eid != eid)
+        se = se->next;
+    if (!se) {
+        free(node);
+        free(event);
+        pthread_mutex_unlock(&conn->iolock);
+        return;
+    }
+
+    uint8_t *bytes = (uint8_t *)event;
+    bytes[0] = 35; /* XCB generic-event response type */
+    bytes[1] = se->extension;
+    bytes[8] = 1; /* XCB_PRESENT_EVENT_COMPLETE_NOTIFY */
+    memcpy(bytes + 12, &se->eid, sizeof(se->eid));
+    /* the first 32-bit word after evtype is the eid the demux matches on */
+
+    node->event = event;
+    node->next = NULL;
+    *se->events_tail = node;
+    se->events_tail = &node->next;
+    pthread_cond_signal(&se->special_event_cond);
+    pthread_mutex_unlock(&conn->iolock);
+
+    /* A consumer parked in xcb_conn_wait's poll() only re-checks the queue
+     * when socket data arrives — the injected event alone does not wake it.
+     * A blocking roundtrip forces a reply, whose arrival both wakes the
+     * poller (which then finds the injected event) and flushes anything
+     * still stuck in the out queue. */
+    xcb_get_input_focus_cookie_t cookie = xcb_get_input_focus(conn);
+    xcb_generic_error_t *error = NULL;
+    free(xcb_get_input_focus_reply(conn, cookie, &error));
+    free(error);
 }
 
 /* Requires a live Display without concurrent Xlib/XCB access, and src_len

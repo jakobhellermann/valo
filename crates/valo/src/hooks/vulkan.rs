@@ -91,6 +91,7 @@ override_sym!(vkGetInstanceProcAddr(instance: *mut c_void, name: *const c_char) 
         b"vkAcquireNextImage2KHR" => vkAcquireNextImage2KHR as *const c_void,
         // TODO: debug for  post-restore swapchain recreate failure.
         b"vkGetPhysicalDeviceSurfaceCapabilitiesKHR" => vkGetPhysicalDeviceSurfaceCapabilitiesKHR as *const c_void,
+        b"vkDestroySwapchainKHR" => vkDestroySwapchainKHR as *const c_void,
         _other => result,
     }
 });
@@ -108,6 +109,8 @@ override_sym!(vkGetDeviceProcAddr(device: *mut c_void, name: *const c_char) -> *
         b"vkAcquireNextImageKHR" => vkAcquireNextImageKHR as *const c_void,
         b"vkAcquireNextImage2KHR" => vkAcquireNextImage2KHR as *const c_void,
         b"vkGetPhysicalDeviceSurfaceCapabilitiesKHR" => vkGetPhysicalDeviceSurfaceCapabilitiesKHR as *const c_void,
+        // The destroy arms the kick budget for the swapchain-destroy joins.
+        b"vkDestroySwapchainKHR" => vkDestroySwapchainKHR as *const c_void,
         _other => result,
     }
 });
@@ -130,4 +133,14 @@ override_sym!(vkAcquireNextImageKHR( device: *mut c_void, swapchain: u64, timeou
 
 override_sym!(vkAcquireNextImage2KHR( device: *mut c_void, p_acquire_info: *const c_void, p_image_index: *mut u32 ) -> c_int, lib: LIB, |real| {
     acquire_next_image(move || real(device, p_acquire_info, p_image_index))
+});
+
+override_sym!(vkDestroySwapchainKHR(device: *mut c_void, swapchain: u64, allocator: *const c_void) -> (), lib: LIB, |real| {
+    // Every destroy path (resize-driven recreate, OUT_OF_DATE recreate,
+    // exit) joins the swapchain's event manager, which may be parked waiting
+    // for Present events whose originals the discarded timeline consumed.
+    // Arm the kicks: the join hook injects once the destroy's invalidated
+    // status is in place.
+    crate::hooks::xcb::schedule_present_kicks(3);
+    real(device, swapchain, allocator)
 });

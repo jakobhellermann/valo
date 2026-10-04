@@ -2,10 +2,12 @@
 
 mod conn;
 mod events;
+mod kicks;
 mod present;
 
 pub use conn::*;
 pub use events::*;
+pub use kicks::*;
 pub use present::*;
 
 use std::ffi::c_char;
@@ -19,6 +21,7 @@ unsafe extern "C" {
     pub type xcb_auth_info_t;
     pub type xcb_extension_t;
 }
+unsafe impl Send for xcb_connection_t {}
 
 #[repr(C)]
 pub struct xcb_void_cookie_t {
