@@ -293,6 +293,7 @@ fn area_is_uncommmited(area: &MemoryMap, page_map: &mut ProcPagemap) -> Result<b
     Ok(!present)
 }
 
+#[allow(clippy::needless_bool)]
 fn skip(area: &MemoryMap) -> bool {
     if area.address.end >= 0x7f00000000 && area.address.start == 0xffffe000 {
         return true;
