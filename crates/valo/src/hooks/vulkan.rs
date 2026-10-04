@@ -49,6 +49,8 @@ override_sym!("system" vkGetInstanceProcAddr(instance: VkInstance, name: *const 
         b"vkQueuePresentKHR" => vkQueuePresentKHR as *const c_void,
         b"vkAcquireNextImageKHR" => vkAcquireNextImageKHR as *const c_void,
         b"vkAcquireNextImage2KHR" => vkAcquireNextImage2KHR as *const c_void,
+        // TODO: debug for  post-restore swapchain recreate failure.
+        b"vkGetPhysicalDeviceSurfaceCapabilitiesKHR" => vkGetPhysicalDeviceSurfaceCapabilitiesKHR as *const c_void,
         b"vkGetPhysicalDeviceSurfacePresentModesKHR" => vkGetPhysicalDeviceSurfacePresentModesKHR as *const c_void,
         _other => result,
     }
@@ -71,6 +73,7 @@ override_sym!("system" vkGetDeviceProcAddr(device: VkDevice, name: *const c_char
         b"vkAcquireNextImageKHR" => vkAcquireNextImageKHR as *const c_void,
         b"vkAcquireNextImage2KHR" => vkAcquireNextImage2KHR as *const c_void,
         b"vkCreateSwapchainKHR" => vkCreateSwapchainKHR as *const c_void,
+        b"vkGetPhysicalDeviceSurfaceCapabilitiesKHR" => vkGetPhysicalDeviceSurfaceCapabilitiesKHR as *const c_void,
         _other => result,
     }
 });
@@ -115,6 +118,14 @@ override_sym!("system" vkQueuePresentKHR(queue: VkQueue, present_info: &VkPresen
 
     // Present for real so the semaphores resolve and the queue gets captured.
     crate::frame::frame_boundary(move || real(queue, present_info))
+});
+
+override_sym!("system" vkGetPhysicalDeviceSurfaceCapabilitiesKHR( physical_device: VkPhysicalDevice, surface: VkSurfaceKHR, p_capabilities: &mut VkSurfaceCapabilitiesKHR ) -> VkResult, lib: LIB, |real| {
+    let result = real(physical_device, surface, p_capabilities);
+    if result != VK_SUCCESS {
+        crate::hooks::xlib::xfixup::log_counters("caps-query fail");
+    }
+    result
 });
 
 override_sym!("system" vkAcquireNextImageKHR( device: VkDevice, swapchain: VkSwapchainKHR, timeout: u64, semaphore: VkSemaphore, fence: VkFence, p_image_index: &mut u32 ) -> VkResult, lib: LIB, |real| {
