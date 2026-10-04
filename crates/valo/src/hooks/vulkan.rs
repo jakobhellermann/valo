@@ -89,6 +89,8 @@ override_sym!(vkGetInstanceProcAddr(instance: *mut c_void, name: *const c_char) 
         b"vkQueuePresentKHR" => vkQueuePresentKHR as *const c_void,
         b"vkAcquireNextImageKHR" => vkAcquireNextImageKHR as *const c_void,
         b"vkAcquireNextImage2KHR" => vkAcquireNextImage2KHR as *const c_void,
+        // TODO: debug for  post-restore swapchain recreate failure.
+        b"vkGetPhysicalDeviceSurfaceCapabilitiesKHR" => vkGetPhysicalDeviceSurfaceCapabilitiesKHR as *const c_void,
         _other => result,
     }
 });
@@ -105,12 +107,21 @@ override_sym!(vkGetDeviceProcAddr(device: *mut c_void, name: *const c_char) -> *
         b"vkQueuePresentKHR" =>  vkQueuePresentKHR as *const c_void,
         b"vkAcquireNextImageKHR" => vkAcquireNextImageKHR as *const c_void,
         b"vkAcquireNextImage2KHR" => vkAcquireNextImage2KHR as *const c_void,
+        b"vkGetPhysicalDeviceSurfaceCapabilitiesKHR" => vkGetPhysicalDeviceSurfaceCapabilitiesKHR as *const c_void,
         _other => result,
     }
 });
 
 override_sym!(vkQueuePresentKHR(queue: *mut c_void, present_info: *const c_void) -> c_int, lib: LIB, |real| {
     crate::frame::frame_boundary(move || real(queue, present_info))
+});
+
+override_sym!(vkGetPhysicalDeviceSurfaceCapabilitiesKHR( physical_device: *mut c_void, surface: u64, p_capabilities: *mut c_void ) -> c_int, lib: LIB, |real| {
+    let result = real(physical_device, surface, p_capabilities);
+    if result != 0 {
+        crate::hooks::xlib::xfixup::log_counters("caps-query fail");
+    }
+    result
 });
 
 override_sym!(vkAcquireNextImageKHR( device: *mut c_void, swapchain: u64, timeout: u64, semaphore: u64, fence: u64, p_image_index: *mut u32 ) -> c_int, lib: LIB, |real| {
