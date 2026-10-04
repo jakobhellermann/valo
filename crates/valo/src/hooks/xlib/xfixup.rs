@@ -126,11 +126,7 @@ impl std::fmt::Display for XcbCounters {
 /// Log Xlib/XCB bookkeeping for every tracked display/connection. TEMP debug helper.
 pub fn log_counters(when: &str) {
     for (i, conn) in GAME_XCB_CONNS.iter().enumerate() {
-        let mut counters = XcbCounters::default();
-        // SAFETY: tracked connections are live xcb connection pointers, and
-        // this runs with all other threads suspended (no concurrent X11
-        // access). `counters` is a valid writable output buffer.
-        unsafe { valo_xcb_debug_counters(conn, &mut counters) };
+        let counters = conn_counters(conn);
         debug!(Hooks, "xcb-conn[{i}] {conn:p} {when}: {counters}");
     }
     for (i, display) in GAME_DISPLAYS.iter().enumerate() {
@@ -141,6 +137,16 @@ pub fn log_counters(when: &str) {
         unsafe { valo_x11_debug_counters(display, &mut counters) };
         crate::trace!(Hooks, "xcb-display[{i}] {when}: {counters}");
     }
+}
+
+/// Snapshot of a tracked connection's bookkeeping. TEMP debug helper.
+fn conn_counters(conn: *mut ()) -> XcbCounters {
+    let mut counters = XcbCounters::default();
+    // SAFETY: tracked connections are live xcb connection pointers, and this
+    // runs either with all other threads suspended or racy-by-design from the
+    // debug ticker. `counters` is a valid writable output buffer.
+    unsafe { valo_xcb_debug_counters(conn, &mut counters) };
+    counters
 }
 
 struct DisplayState {
