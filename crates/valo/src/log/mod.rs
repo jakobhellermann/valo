@@ -34,8 +34,14 @@ pub(crate) mod structured {
         pub fn save_area(_area: &MemoryMap, _skip: bool) {}
         pub fn save_pages(_start: u64, _index: u64, _count: u64, _flag: PageFlag) {}
         pub fn restore_area(_area: &MemoryMap, _skip: bool) {}
+        pub fn restore_area_done(_area: &MemoryMap) {}
         pub fn checkpoint_begin(_slot: SnapshotSlot) {}
+        pub fn checkpoint_end(_slot: SnapshotSlot) {}
         pub fn restore_begin(_slot: SnapshotSlot) {}
+        pub fn restore_end(_slot: SnapshotSlot) {}
+        pub fn trace_step(_event: &'static str) {}
+        pub fn reallocate_areas_begin() {}
+        pub fn reallocate_areas_end() {}
     }
 }
 

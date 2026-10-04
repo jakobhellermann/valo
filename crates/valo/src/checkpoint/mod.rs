@@ -87,7 +87,9 @@ unsafe fn snapshot_restore(ucontext: *const libc::ucontext_t, slot: SnapshotSlot
     let x11_state = crate::hooks::xlib::xfixup::X11SavedState::save()?;
 
     let mut reader = reader::SnapshotReader::new(slot)?;
+    structured::events::trace_step("restore.memory.begin");
     reader::read_all_areas(&mut reader)?;
+    structured::events::trace_step("restore.memory.end");
 
     // Restore X11 connection state (sequence numbers, xcb connection)
     // Must happen after read_all_areas but before ucontext::restore
@@ -112,13 +114,17 @@ pub fn checkpoint_handler_inner(ucontext: *const ucontext_t) -> Result<()> {
 
     if !state.restore_in_progress() {
         info!(Checkpoint, "snapshot create begin");
+        structured::events::trace_step("checkpoint.memory.begin");
         // SAFETY: same precondition
         unsafe { snapshot_create(ucontext, slot)? }
+        structured::events::trace_step("checkpoint.memory.end");
         info!(Checkpoint, "snapshot create done");
     } else {
         info!(Restore, "snapshot restore begin");
+        structured::events::trace_step("restore.apply.begin");
         // SAFETY: same precondition
         unsafe { snapshot_restore(ucontext, slot)? };
+        structured::events::trace_step("restore.apply.end");
         info!(Restore, "snapshot restore done");
     }
 
@@ -159,7 +165,15 @@ pub unsafe fn checkpoint(slot: SnapshotSlot) -> Result<()> {
     // SAFETY: no preconditions
     unsafe { libc::raise(SIG_CHECKPOINT) };
 
+    let restoring = state.restore_in_progress();
+
     alt_stack::restore_stack()?;
+
+    if restoring {
+        structured::events::restore_end(slot);
+    } else {
+        structured::events::checkpoint_end(slot);
+    }
 
     Ok(())
 }

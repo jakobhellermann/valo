@@ -191,6 +191,7 @@ pub fn read_all_areas(reader: &mut SnapshotReader) -> Result<()> {
         let (area, meta) = reader.read()?;
 
         read_area(&area, &meta, reader, &mut page_map)?;
+        structured::events::restore_area_done(&area);
     }
     debug!(Restore, "finished reading areas");
 
