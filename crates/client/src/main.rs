@@ -1,5 +1,6 @@
 mod tui;
 
+use std::io::ErrorKind;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode};
@@ -10,6 +11,11 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use valo_ipc::messages::{ClientToLib, FrameBoundary, Hello, LibToClient};
 use valo_ipc::{ClientIPC, PROTOCOL_VERSION};
+
+/// How long to wait for the next FrameBoundary after sending Advance
+/// before assuming the target hung.
+/// On expiry the client prints a hang report to stderr, and keeps waiting.
+const HANG_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Parser)]
 #[command(name = "valo", about = "valo client")]
@@ -57,6 +63,14 @@ fn main() -> Result<ExitCode> {
     }
 }
 
+#[derive(PartialEq)]
+enum SessionEnd {
+    /// Finished normally
+    Done,
+    /// Frame watchdog expired
+    Hung,
+}
+
 fn run(
     lib: Option<PathBuf>,
     gdb: bool,
@@ -93,15 +107,20 @@ fn run(
         .with_context(|| format!("spawning {}", cmd.get_program().to_string_lossy()))?;
 
     let result = if use_tui {
-        tui::run(&sock_path, log_path.as_deref(), child.id())
+        tui::run(&sock_path, log_path.as_deref(), child.id()).map(|_| SessionEnd::Done)
     } else {
         run_ipc_loop(&sock_path, &mut child, gdb)
     };
-    if let Err(e) = result {
+    if let Err(e) = &result {
         eprintln!("ipc loop ended: {e:#}");
     }
     // Best-effort cleanup of the socket file.
     let _ = std::fs::remove_file(&sock_path);
+
+    if matches!(result, Ok(SessionEnd::Hung)) && !gdb {
+        // Don't kill target, leave it for live debugging
+        return Ok(ExitCode::from(125));
+    }
 
     // In gdb, don't kill after the inferior process stops.
     let status = if gdb {
@@ -119,11 +138,11 @@ fn run(
     }
 }
 
-fn run_ipc_loop(sock: &Path, child: &mut Child, gdb: bool) -> Result<()> {
+fn run_ipc_loop(sock: &Path, child: &mut Child, gdb: bool) -> Result<SessionEnd> {
     loop {
         let Some(mut conn) = establish_or_child_exit(sock, child)? else {
             eprintln!("[valo-client] child exited before ipc connection");
-            return Ok(());
+            return Ok(SessionEnd::Done);
         };
         eprintln!("[valo-client] ipc connected on {}", sock.display());
 
@@ -143,15 +162,22 @@ fn run_ipc_loop(sock: &Path, child: &mut Child, gdb: bool) -> Result<()> {
                 PROTOCOL_VERSION
             );
         }
-        eprintln!("[valo-client] handshake complete");
+        conn.set_read_timeout(HANG_TIMEOUT)
+            .context("set hang watchdog timeout")?;
 
+        let pid = child.id();
         loop {
-            let msg = match conn.recv()? {
-                Some(m) => m,
-                None => {
+            let msg = match conn.recv() {
+                Ok(Some(m)) => m,
+                Ok(None) => {
                     eprintln!("[valo-client] lib hung up");
                     break;
                 }
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    report_hang(pid)?;
+                    return Ok(SessionEnd::Hung);
+                }
+                Err(e) => return Err(e).context("ipc recv"),
             };
             match msg {
                 LibToClient::FrameBoundary(FrameBoundary { frame: _ }) => {
@@ -164,9 +190,26 @@ fn run_ipc_loop(sock: &Path, child: &mut Child, gdb: bool) -> Result<()> {
 
         // gdb session may run the inferior multiple times
         if !gdb {
-            return Ok(());
+            return Ok(SessionEnd::Done);
         }
     }
+}
+
+fn report_hang(pid: u32) -> Result<()> {
+    eprintln!("[valo-client] hang: no frame boundary for {HANG_TIMEOUT:?} (pid {pid})");
+    for entry in std::fs::read_dir(format!("/proc/{pid}/task"))? {
+        let tid: u32 = entry?.file_name().to_string_lossy().parse()?;
+        let wchan = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/wchan"))?;
+        let comm = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/comm"))?;
+        eprintln!(
+            "[valo-client]   tid {tid} ({}) wchan={}",
+            comm.trim(),
+            wchan.trim()
+        );
+    }
+    eprintln!("[valo-client] attach with:");
+    eprintln!("  gdb -p {pid} -ex 'thread apply all bt'");
+    Ok(())
 }
 
 /// Like [`ClientIPC::establish`], but gives up when the child exits first

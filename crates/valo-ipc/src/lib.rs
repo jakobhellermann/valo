@@ -13,6 +13,7 @@ pub type Result<T, E = std::io::Error> = std::result::Result<T, E>;
 
 use std::os::unix::net::UnixStream;
 use std::path::Path;
+use std::time::Duration;
 
 use crate::messages::{ClientToLib, LibToClient};
 
@@ -50,6 +51,10 @@ impl ClientIPC {
         Ok(Self {
             stream: self.stream.try_clone()?,
         })
+    }
+
+    pub fn set_read_timeout(&self, timeout: Duration) -> Result<()> {
+        self.stream.set_read_timeout(Some(timeout))
     }
 }
 
