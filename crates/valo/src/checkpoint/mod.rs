@@ -99,17 +99,14 @@ pub fn checkpoint_handler_inner(ucontext: *const ucontext_t) -> Result<()> {
     utils::assert_stack_in_range(state.alt_stack_memory());
 
     if !state.restore_in_progress() {
-        eprintln!("-- CREATE SAVESTATE --");
         info!(Checkpoint, "snapshot create begin");
         // SAFETY: same precondition
         unsafe { snapshot_create(ucontext, slot)? }
         info!(Checkpoint, "snapshot create done");
     } else {
-        eprintln!("-- LOAD SAVESTATE --");
         info!(Restore, "snapshot restore begin");
         // SAFETY: same precondition
         unsafe { snapshot_restore(ucontext, slot)? };
-        eprintln!("-- LOAD SAVESTATE DONE --");
         info!(Restore, "snapshot restore done");
     }
 
@@ -165,8 +162,8 @@ pub unsafe fn restore(slot: SnapshotSlot) -> Result<()> {
         let count = unsafe { &(*state.reserved).restore_count }
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if count >= state.max_restores {
-            eprintln!(
-                "-- VALO_MAX_RESTORES={} reached, exiting --",
+            info!(
+                "VALO_MAX_RESTORES={} reached, exiting--",
                 state.max_restores
             );
             std::process::exit(0);
