@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::mem::MaybeUninit;
+use std::os::fd::OwnedFd;
 
 use rustix::fs::SeekFrom as RSeekFrom;
 use rustix::mm::{self, MapFlags, MprotectFlags, ProtFlags};
@@ -253,6 +254,8 @@ fn read_area(
 
     let mut shared_seek_failed = false;
 
+    let mut orig_fd = None;
+
     for page_idx in page_idx..page_idx + page_count {
         let current_pageflag = current_pagemap.read_at_single(page_idx)?; // TODO buffer
 
@@ -387,7 +390,39 @@ fn read_area(
 
         if let PageFlag::File = flag {
             if page_present && !page_file {
-                todo!("file page changed to non-file")
+                let orig_fd = orig_fd.get_or_insert_with(|| saved_area.open_file());
+                let orig_fd = match orig_fd {
+                    Err(e) => {
+                        warn!(
+                            Checkpoint,
+                            "Could not open {} to recover file mapped page: {}",
+                            saved_area.pathname,
+                            e
+                        );
+                        continue;
+                    }
+                    Ok(fd) => fd,
+                };
+
+                if !saved_area.perms.contains(MemoryMapPermissions::WRITE) {
+                    page_mprotect_with(MprotectFlags::WRITE)?;
+                }
+
+                let file_offset =
+                    saved_area.offset + (page_idx - saved_area.page()) as u64 * PAGE_SIZE as u64;
+                // SAFETY: page_addr is a mapped page and was made writable above.
+                let page = unsafe { std::slice::from_raw_parts_mut(page_addr, PAGE_SIZE) };
+                match read_all(orig_fd, page, file_offset) {
+                    Ok(()) => stats.zero_or_file += 1,
+                    Err(e) => {
+                        warn!(
+                            Checkpoint,
+                            "Could not read {} to recover file mapped page: {}",
+                            saved_area.pathname,
+                            e
+                        );
+                    }
+                }
             } else {
                 stats.skip += 1;
             }
@@ -624,4 +659,18 @@ fn permission_to_mprotect(perms: MemoryMapPermissions) -> MprotectFlags {
         prot.insert(MprotectFlags::EXEC);
     }
     prot
+}
+
+/// Read exactly `buf.len()` bytes from `fd` at `offset`.
+fn read_all(fd: &OwnedFd, buf: &mut [u8], offset: u64) -> Result<(), rustix::io::Errno> {
+    let mut done = 0;
+    while done < buf.len() {
+        let read = rustix::io::pread(fd, &mut buf[done..], offset + done as u64)?;
+        if read == 0 {
+            // Unexpected EOF: the mapped region extends beyond the file.
+            return Err(rustix::io::Errno::NXIO);
+        }
+        done += read;
+    }
+    Ok(())
 }
