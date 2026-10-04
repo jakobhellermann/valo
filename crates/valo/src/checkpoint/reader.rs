@@ -293,11 +293,13 @@ fn read_area(
         if let PageFlag::Guard = flag {
             stats.skip += 1;
             if !page_guard_region {
-                todo!("page was unguarded");
+                // SAFETY: page_addr is page-aligned by construction
+                unsafe { set_guard_region(page_addr, true)? };
             }
             continue;
         } else if page_guard_region {
-            todo!("page was guarded")
+            // SAFETY: page_addr is page-aligned by construction
+            unsafe { set_guard_region(page_addr, false)? };
         }
 
         page_mprotect_with(MprotectFlags::READ)?;
@@ -671,6 +673,30 @@ fn read_all(fd: &OwnedFd, buf: &mut [u8], offset: u64) -> Result<(), rustix::io:
             return Err(rustix::io::Errno::NXIO);
         }
         done += read;
+    }
+    Ok(())
+}
+
+/// Install or remove a madvise guard region on a single page.
+///
+/// # Safety
+/// - `page_addr` must be page-aligned.
+unsafe fn set_guard_region(page_addr: *mut u8, guarded: bool) -> Result<(), std::io::Error> {
+    // Values from /usr/include/bits/mman-linux.h; libc 0.2 lacks the constants.
+    const MADV_GUARD_INSTALL: i32 = 102;
+    const MADV_GUARD_REMOVE: i32 = 103;
+
+    let advice = match guarded {
+        true => MADV_GUARD_INSTALL,
+        false => MADV_GUARD_REMOVE,
+    };
+
+    // SAFETY: the caller upholds page-alignment
+    // madvise itself never dereferences the range and the kernel rejects unaligned or unmapped
+    // ranges with EINVAL/ENOMEM.
+    // TODO: validate this is correct
+    if unsafe { libc::madvise(page_addr.cast(), PAGE_SIZE, advice) } != 0 {
+        return Err(std::io::Error::last_os_error());
     }
     Ok(())
 }
