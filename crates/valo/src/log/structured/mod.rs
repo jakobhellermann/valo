@@ -123,6 +123,16 @@ impl JsonField for &str {
     }
 }
 
+impl JsonField for u8 {
+    fn write_json(&self, w: &mut StackWriter) {
+        let _ = write!(w, "{}", self);
+    }
+}
+impl JsonField for u32 {
+    fn write_json(&self, w: &mut StackWriter) {
+        let _ = write!(w, "{}", self);
+    }
+}
 impl JsonField for u64 {
     fn write_json(&self, w: &mut StackWriter) {
         let _ = write!(w, "{}", self);

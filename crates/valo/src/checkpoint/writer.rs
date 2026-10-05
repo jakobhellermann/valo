@@ -1,21 +1,27 @@
+#![cfg_attr(not(feature = "structured-log"), allow(unused))]
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 use std::os::fd::OwnedFd;
+
+use rustix::fs::SeekFrom as RSeekFrom;
 
 use crate::checkpoint::threads::SavedThreads;
 use crate::checkpoint::{AreaMeta, Header, PageFlag, SnapshotSlot};
 use crate::global_state::{GlobalState, ReservedMemory};
 use crate::log::structured;
 use crate::procfs_maps::{
-    MMapPath, MemoryMap, MemoryMapPermissions, PageFlags, ProcMaps, ProcPagemap,
+    MMapPath, MemoryMap, MemoryMapPermissions, PageFlags, PageIndex, ProcMaps, ProcPagemap,
 };
-use crate::utils::{PAGE_SIZE, TrackRun, align_page_down, align_page_up};
+use crate::utils::{PAGE_SIZE, align_page_down, align_page_up};
 
 use crate::{Result, debug, info, warn};
 
 pub struct SnapshotWriter {
     // todo: stack buffered?
+
+    // Header, [MemoryMap Area] x n_areas
     pub snapshot_meta: File,
+    // PageFlag x n_page_flags
     pub snapshot_pages: File,
 }
 
@@ -39,13 +45,10 @@ pub fn write_all_areas(writer: &mut SnapshotWriter, threads: SavedThreads) -> Re
         area_count: 0,
         threads,
     };
-    let header_pos = {
-        let pos = writer.snapshot_meta.stream_position()?;
-        writer
-            .snapshot_meta
-            .seek_relative(size_of::<Header>() as i64)?;
-        pos
-    };
+    let header_pos = writer.snapshot_meta.stream_position()?;
+    writer
+        .snapshot_meta
+        .seek_relative(size_of::<Header>() as i64)?;
 
     while let Some(area) = maps.next()? {
         header.area_count += 1;
@@ -54,27 +57,34 @@ pub fn write_all_areas(writer: &mut SnapshotWriter, threads: SavedThreads) -> Re
     }
 
     writer.snapshot_meta.seek(SeekFrom::Start(header_pos))?;
-    writer.snapshot_meta.write_all(unsafe {
-        std::slice::from_raw_parts(std::ptr::from_ref(&header).cast(), size_of::<Header>())
-    })?;
-
-    // postcard::to_io(&maps, snapshot_area)?;
+    writer.snapshot_meta.write_all(header.as_bytes())?;
 
     Ok(())
 }
 
-#[allow(clippy::undocumented_unsafe_blocks)]
-fn write_area(
+#[derive(Default)]
+struct AreaStats {
+    unmapped: usize,
+    zero_or_file: usize,
+    full: usize,
+
+    modified: usize,
+}
+
+// Write the [MemoryMap, AreaMeta] into the writer.
+// Returns whether individual pages need to be saved.
+fn write_area_meta(
     writer: &mut SnapshotWriter,
     area: &MemoryMap,
     page_map: &mut ProcPagemap,
-) -> Result<()> {
-    // mprotect read
+) -> Result<AreaMeta> {
+    // TODO: mprotect read?
+    // TODO: "fill deleted fd"
 
     let page_data_offset = writer.snapshot_pages.stream_position()?;
     let uncommitted = area_is_uncommmited(area, page_map)?;
 
-    // todo more skip?
+    // TODO: more skip logic?
     let skip = skip(area);
     writer.snapshot_meta.write_all(area.as_bytes())?;
     let meta = AreaMeta {
@@ -84,88 +94,95 @@ fn write_area(
     };
     writer.snapshot_meta.write_all(meta.as_bytes())?;
 
-    if skip || uncommitted {
-        debug!(Checkpoint, "Skip   {}", area);
-        structured::events::save_area(area, true);
-        // mprotect?
-        return Ok(());
-    }
-    debug!(Checkpoint, "Saving {}", area);
-    structured::events::save_area(area, false);
+    Ok(meta)
+}
 
-    let mut shared_fd: Option<(OwnedFd, u64, u64)> = None;
-
-    if area.perms.contains(MemoryMapPermissions::SHARED) {
-        let fd = area.open_file().ok();
-
-        if let Some(fd) = fd {
-            match rustix::fs::seek(&fd, rustix::fs::SeekFrom::Hole(area.offset)) {
-                Err(_) => {
-                    warn!(
-                        Checkpoint,
-                        "Could not seek shared map file for save {}", area.pathname
-                    )
-                }
-                Ok(mut next_off_hole) => {
-                    let mut next_off_data =
-                        rustix::fs::seek(&fd, rustix::fs::SeekFrom::Data(area.offset))
-                            .unwrap_or(u64::MAX);
-                    next_off_hole = align_page_up(next_off_hole);
-                    next_off_data = align_page_down(next_off_data);
-                    shared_fd = Some((fd, next_off_hole, next_off_data));
-
-                    if next_off_data == 0 && next_off_hole == 0 {
-                        // TODO if shared_fd != area.fd
-                        info!(Checkpoint, "shared fd hold and data are both 0");
-                        shared_fd = None;
-                    }
-                }
-            }
-        } else {
+// File descriptor of the shared area, whith hold information.
+// Returns offset of the next hold and next data.
+fn area_fd(area: &MemoryMap) -> Option<(OwnedFd, u64, u64)> {
+    let fd = area
+        .open_file()
+        .inspect_err(|e| {
             warn!(
                 Checkpoint,
-                "Could not open shared map file for save {}", area.pathname
+                "Could not open shared map file for save {}: err={}",
+                area.pathname,
+                e.raw_os_error()
             )
-        }
-    }
-    if area.perms.contains(MemoryMapPermissions::SHARED) {
-        structured::events::shared_fd_initial(area.address.start, shared_fd.as_ref());
-    }
-    #[derive(Debug)]
-    struct Stats {
-        unmapped: usize,
-        zero_or_file: usize,
-        full: usize,
+        })
+        .ok()?;
 
-        modified: usize,
-    }
-    let mut stats = Stats {
-        unmapped: 0,
-        zero_or_file: 0,
-        full: 0,
-        modified: 0,
-    };
+    let mut next_off_hole = rustix::fs::seek(&fd, RSeekFrom::Hole(area.offset))
+        .inspect_err(|e| {
+            warn!(
+                Checkpoint,
+                "Could not seek shared map file for save {}: err={}",
+                area.pathname,
+                e.raw_os_error()
+            )
+        })
+        .ok()?;
 
-    let mut structured_run = TrackRun::new(|start, length, flag: PageFlag| {
-        structured::events::save_pages(area.address.start, start as u64, length as u64, flag)
-    });
+    let mut next_off_data = rustix::fs::seek(&fd, RSeekFrom::Data(area.offset)).unwrap_or(u64::MAX);
+    next_off_hole = align_page_up(next_off_hole);
+    next_off_data = align_page_down(next_off_data);
+
+    if next_off_data == 0 && next_off_hole == 0 {
+        // TODO if shared_fd != area.fd
+        info!(Checkpoint, "shared fd hold and data are both 0");
+        return None;
+    }
+
+    Some((fd, next_off_hole, next_off_data))
+}
+
+fn write_area(
+    writer: &mut SnapshotWriter,
+    area: &MemoryMap,
+    page_map: &mut ProcPagemap,
+) -> Result<()> {
+    let meta = write_area_meta(writer, area, page_map)?;
+    if meta.skip || meta.uncommitted {
+        debug!(Checkpoint, "Skip   {}", area);
+        structured::events::save_area(area, true);
+
+        return Ok(());
+    }
+    structured::events::save_area(area, false);
+
+    debug!(Checkpoint, "Saving {}", area);
+
+    let mut stats = AreaStats::default();
+
     #[cfg(feature = "structured-log")]
-    let mut pagemap_run = structured::events::checkpoint_pagemap_run(area.address.start);
+    let (mut log_saved_flags, mut log_page_flags) = (
+        structured::events::checkpoint_saved_page_run(area),
+        structured::events::checkpoint_mem_page_run(area),
+    );
 
-    let mut save_page_flags = |snapshot_meta: &mut File, flag: PageFlag| -> std::io::Result<()> {
+    let mut save_page_flags = |snapshot_meta: &mut File, flag: PageFlag| {
+        #[cfg(feature = "structured-log")]
+        log_saved_flags.record(flag);
+
         // todo buffer
-        snapshot_meta.write_all(&[flag as u8])?;
-        structured_run.record(flag);
-        Ok(())
+        snapshot_meta.write_all(&[flag as u8])
     };
+
+    let mut shared_fd = area
+        .perms
+        .contains(MemoryMapPermissions::SHARED)
+        .then(|| area_fd(area))
+        .flatten();
+    structured::events::shared_fd_initial(area.address.start, shared_fd.as_ref());
 
     page_map.seek(area.page())?;
 
-    for page in area.pages() {
+    let mut write_area_page = |page: PageIndex| -> Result<(), std::io::Error> {
         let addr = std::ptr::with_exposed_provenance(page * PAGE_SIZE);
         let page_flags = page_map.read_single()?; // TODO buffer
+
         #[cfg(feature = "structured-log")]
-        pagemap_run.record(structured::events::pagemap_log_bits(page_flags));
+        log_page_flags.record(page_flags);
 
         /*if page_flags.contains(PageFlags::SWAP) {
             todo!("swap: {page_flags:?}");
@@ -178,7 +195,7 @@ fn write_area(
 
         if page_guard_region {
             save_page_flags(&mut writer.snapshot_meta, PageFlag::Guard)?;
-            continue;
+            return Ok(());
         }
 
         if area.perms.contains(MemoryMapPermissions::PRIVATE) {
@@ -187,7 +204,7 @@ fn write_area(
             {
                 stats.unmapped += 1;
                 save_page_flags(&mut writer.snapshot_meta, PageFlag::No)?;
-                continue;
+                return Ok(());
             }
 
             // TODO: is zero page
@@ -198,7 +215,7 @@ fn write_area(
                 stats.zero_or_file += 1;
                 // debug assert eq
                 save_page_flags(&mut writer.snapshot_meta, PageFlag::File)?;
-                continue;
+                return Ok(());
             }
         }
 
@@ -211,9 +228,9 @@ fn write_area(
                 && current_off > *next_off_hole
             {
                 // update data and hole
-                *next_off_data = rustix::fs::seek(fd, rustix::fs::SeekFrom::Data(current_off))
-                    .unwrap_or(u64::MAX);
-                match rustix::fs::seek(fd, rustix::fs::SeekFrom::Hole(current_off)) {
+                *next_off_data =
+                    rustix::fs::seek(fd, RSeekFrom::Data(current_off)).unwrap_or(u64::MAX);
+                match rustix::fs::seek(fd, RSeekFrom::Hole(current_off)) {
                     Err(_) => {
                         warn!(
                             Checkpoint,
@@ -236,7 +253,7 @@ fn write_area(
                     save_page_flags(&mut writer.snapshot_meta, PageFlag::No)?;
                     stats.unmapped += 1;
 
-                    continue;
+                    return Ok(());
                 } else {
                     todo!();
                 }
@@ -245,12 +262,12 @@ fn write_area(
             if !page_present && !matches!(area.path_kind, MMapPath::MemFd) {
                 stats.zero_or_file += 1;
                 save_page_flags(&mut writer.snapshot_meta, PageFlag::File)?;
-                continue;
+                return Ok(());
             }
             if is_zero_page() {
                 stats.zero_or_file += 1;
                 save_page_flags(&mut writer.snapshot_meta, PageFlag::Zero)?;
-                continue;
+                return Ok(());
             }
         }
 
@@ -263,13 +280,18 @@ fn write_area(
             todo!();
         } else {
             // todo: queue + bigger reads
+            // SAFETY: todo
             let page_data = unsafe { std::slice::from_raw_parts(addr, PAGE_SIZE) };
             writer.snapshot_pages.write_all(page_data)?;
 
             stats.full += 1;
             save_page_flags(&mut writer.snapshot_meta, PageFlag::Full)?;
-            continue;
+            Ok(())
         }
+    };
+
+    for page in area.pages() {
+        write_area_page(page)?;
     }
 
     debug!(
