@@ -8,7 +8,7 @@ use crate::log::structured;
 use crate::procfs_maps::{
     MMapPath, MemoryMap, MemoryMapPermissions, PageFlags, ProcMaps, ProcPagemap,
 };
-use crate::utils::{PAGE_SIZE, align_page_down, align_page_up};
+use crate::utils::{PAGE_SIZE, TrackRun, align_page_down, align_page_up};
 
 use crate::{Result, debug, info, warn};
 
@@ -139,12 +139,15 @@ fn write_area(
         modified: 0,
     };
 
-    let mut flags_written = 0;
-    let mut save_page_flags = |snapshot_meta: &mut File, flag: PageFlag| {
+    let mut structured_run = TrackRun::new(|start, length, flag: PageFlag| {
+        structured::events::save_pages(area.address.start, start as u64, length as u64, flag)
+    });
+
+    let mut save_page_flags = |snapshot_meta: &mut File, flag: PageFlag| -> std::io::Result<()> {
         // todo buffer
-        flags_written += 1;
-        snapshot_meta.write_all(&[flag as u8])
-        // snapshot_meta.write_all(&[])
+        snapshot_meta.write_all(&[flag as u8])?;
+        structured_run.record(flag);
+        Ok(())
     };
 
     page_map.seek(area.page())?;
@@ -257,8 +260,6 @@ fn write_area(
             continue;
         }
     }
-
-    debug_assert_eq!(flags_written, area.page_count());
 
     debug!(
         Checkpoint,

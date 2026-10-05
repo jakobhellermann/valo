@@ -27,11 +27,12 @@ pub(crate) mod structured;
 #[cfg(not(feature = "structured-log"))]
 pub(crate) mod structured {
     pub mod events {
-        use crate::checkpoint::SnapshotSlot;
+        use crate::checkpoint::{PageFlag, SnapshotSlot};
         use crate::procfs_maps::MemoryMap;
 
         pub fn init() {}
         pub fn save_area(_area: &MemoryMap, _skip: bool) {}
+        pub fn save_pages(_start: u64, _index: u64, _count: u64, _flag: PageFlag) {}
         pub fn restore_area(_area: &MemoryMap, _skip: bool) {}
         pub fn checkpoint_begin(_slot: SnapshotSlot) {}
         pub fn restore_begin(_slot: SnapshotSlot) {}
