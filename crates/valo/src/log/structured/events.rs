@@ -2,7 +2,7 @@
 use std::os::fd::{AsRawFd, OwnedFd};
 
 use crate::checkpoint::{PageFlag, SnapshotSlot};
-use crate::procfs_maps::{self, MemoryMap, PageFlags, ProcPagemap};
+use crate::procfs::maps::{self, MemoryMap, PageFlags, ProcPagemap};
 use crate::utils::TrackRun;
 
 use super::{StackWriter, structured_write, write_field};
@@ -58,26 +58,20 @@ pub fn save_pages(start: u64, index: u64, count: u64, flag: PageFlag) {
 
 pub fn checkpoint_mem_page_run(
     area: &MemoryMap,
-) -> TrackRun<procfs_maps::PageFlags, impl Fn(usize, usize, procfs_maps::PageFlags)> {
+) -> TrackRun<maps::PageFlags, impl Fn(usize, usize, maps::PageFlags)> {
     pagemap_run("save_pagemap_pages", area.address.start)
 }
 
 fn pagemap_run(
     event: &'static str,
     start: u64,
-) -> TrackRun<procfs_maps::PageFlags, impl Fn(usize, usize, procfs_maps::PageFlags)> {
+) -> TrackRun<maps::PageFlags, impl Fn(usize, usize, maps::PageFlags)> {
     TrackRun::new(move |index, count, flags| {
         pagemap_pages(event, start, index as u64, count as u64, flags);
     })
 }
 
-fn pagemap_pages(
-    event: &'static str,
-    start: u64,
-    index: u64,
-    count: u64,
-    flags: procfs_maps::PageFlags,
-) {
+fn pagemap_pages(event: &'static str, start: u64, index: u64, count: u64, flags: maps::PageFlags) {
     structured_write(|w| {
         write_field(w, "e", event);
         write_field(w, "start", start);

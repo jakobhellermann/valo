@@ -13,7 +13,7 @@ mod global_state;
 mod hooks;
 mod ipc;
 pub mod log;
-mod procfs_maps;
+mod procfs;
 mod sigsegv;
 mod stackio;
 mod sys;

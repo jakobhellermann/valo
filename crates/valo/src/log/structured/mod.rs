@@ -145,7 +145,7 @@ impl JsonField for bool {
     }
 }
 
-impl JsonField for crate::procfs_maps::MemoryMapPermissions {
+impl JsonField for crate::procfs::maps::MemoryMapPermissions {
     fn write_json(&self, w: &mut StackWriter) {
         let _ = w.write_str("\"");
         let _ = write!(w, "{}", self);

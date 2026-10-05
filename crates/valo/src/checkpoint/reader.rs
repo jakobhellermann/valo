@@ -9,7 +9,7 @@ use rustix::mm::{self, MprotectFlags, ProtFlags};
 
 use crate::checkpoint::{AreaMeta, Header, PageFlag, Result, SnapshotSlot};
 use crate::log::structured;
-use crate::procfs_maps::{
+use crate::procfs::maps::{
     MMapPath, MemoryMap, MemoryMapPermissions, PageFlags, PageIndex, ProcMaps, ProcPagemap,
 };
 use crate::stackio::StackBufReader;

@@ -30,7 +30,7 @@ pub(crate) mod structured {
         use std::os::fd::OwnedFd;
 
         use crate::checkpoint::SnapshotSlot;
-        use crate::procfs_maps::MemoryMap;
+        use crate::procfs::maps::MemoryMap;
 
         pub fn init() {}
         pub fn save_area(_area: &MemoryMap, _skip: bool) {}
