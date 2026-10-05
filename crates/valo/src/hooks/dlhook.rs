@@ -1,16 +1,7 @@
 use std::ffi::{CStr, c_char, c_void};
-use std::os::raw::c_int;
 use std::sync::LazyLock;
 
-use crate::{override_sym, trace};
-
-override_sym!(dlopen(file: *const c_char, mode: c_int) -> *mut c_void |real| {
-    let _name = match file.is_null() {
-        true => <&CStr>::default(),
-        false => unsafe { CStr::from_ptr(file) }
-    };
-    real(file, mode)
-});
+use crate::trace;
 
 fn find_real_dlsym() -> unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void {
     // SAFETY: dlvsym won't recurse into our hook
