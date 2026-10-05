@@ -132,6 +132,8 @@
           packages = with pkgs; [
             clang
             just
+            perf
+            perfetto
             SDL2.dev
             sdl3.dev
             vulkan-headers

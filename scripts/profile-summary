@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+
+# Text summary for a scripts/profile run
+set -euo pipefail
+
+OUT=out
+STRUCT="$OUT/perf-struct.jsonl"
+TRACE="$OUT/gpu-restore.pftrace"
+
+[[ -s "$STRUCT" ]] || {
+    echo "missing $STRUCT (run 'just profile' first)" >&2
+    exit 1
+}
+
+echo "=== valo stage durations ==="
+jq -r 'select(.e | test("^(checkpoint|restore)(\\.(memory|gpu\\.wait|freeze|fds|apply|gpu))?\\.(begin|end)$")) | [.e, .ts_us] | @tsv' "$STRUCT" |
+    python3 -c "
+import sys
+ev = {}
+for line in sys.stdin:
+    name, ts = line.rstrip('\n').split('\t')
+    ev.setdefault(name, int(ts))
+for base in ('checkpoint', 'restore'):
+    print(f'== {base} ==')
+    stages = sorted(set(k[len(base)+1:-6] for k in ev if k.startswith(base + '.') and k.endswith('.begin') and k != base + '.begin'))
+    for n in [''] + stages:
+        b, e = f'{base}{\".\" + n if n else \"\"}.begin', f'{base}{\".\" + n if n else \"\"}.end'
+        if b in ev and e in ev:
+            # memory and gpu nest inside apply; indent them.
+            indent = '    ' if (base, n) in (('restore', 'memory'), ('restore', 'gpu')) else '  '
+            print(f'{indent}{n or \"total\"}: {(ev[e]-ev[b])/1000:.1f} ms')"
+
+if [[ ! -s "$TRACE" ]]; then
+    exit 0
+fi
+
+command -v trace_processor_shell >/dev/null || {
+    echo "trace_processor_shell not in PATH (nix-config perfetto-tools)" >&2
+    exit 1
+}
+TP=$(command -v trace_processor_shell)
+
+echo "=== perfetto envelopes ==="
+"$TP" -q <(echo "select name, count(*) n, sum(dur)/1e6 total_ms, max(dur)/1e6 max_ms from slice where name glob 'stream_renderer_*' and name glob '*snapshot*' or name glob 'stream_renderer_restore*' group by name;") "$TRACE"
+
+read -r RTS RDUR < <("$TP" -q <(echo "select ts, dur from slice where name = 'stream_renderer_restore()' order by dur desc limit 1;") "$TRACE" 2>/dev/null | tail -n +2 | head -1 | tr ', ' '  ')
+if [[ -n "${RTS:-}" ]]; then
+    echo "=== inside largest restore ($((RDUR / 1000)) us) ==="
+    "$TP" -q <(echo "select name, count(*) n, sum(dur)/1e6 total_ms, max(dur)/1e6 max_ms from slice where ts >= $RTS and ts + dur <= $((RTS + RDUR)) group by name order by total_ms desc limit 12;") "$TRACE"
+fi

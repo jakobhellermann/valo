@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Bundle Valo events and perf samples for Perfetto's multi-trace importer."""
+
+import io
+import json
+import subprocess
+import sys
+import tarfile
+from pathlib import Path
+
+
+PROFILE_DIR = Path(__file__).resolve().parent.parent / "out"
+
+
+def add_bytes(archive: tarfile.TarFile, name: str, data: bytes) -> None:
+    info = tarfile.TarInfo(name)
+    info.size = len(data)
+    archive.addfile(info, io.BytesIO(data))
+
+
+def valo_events(path: Path) -> bytes:
+    events = []
+    pid = None
+    for line in path.read_text().splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("e") == "init":
+            pid = event.get("pid")
+            continue
+        name = event.get("e")
+        timestamp = event.get("ts_us")
+        if pid is None or not isinstance(name, str) or not isinstance(timestamp, (int, float)):
+            continue
+        base, separator, phase = name.rpartition(".")
+        if not separator or phase not in ("begin", "end"):
+            continue
+        events.append({
+            "name": base,
+            "cat": "valo",
+            "ph": "B" if phase == "begin" else "E",
+            "ts": timestamp,
+            "pid": pid,
+            "tid": 0,
+            "args": {key: value for key, value in event.items() if key not in ("e", "ts_us")},
+        })
+    return json.dumps({"traceEvents": events}, separators=(",", ":")).encode()
+
+
+def main() -> None:
+    structured = PROFILE_DIR / "perf-struct.jsonl"
+    if not structured.is_file():
+        raise FileNotFoundError(structured)
+
+    profiles = [
+        PROFILE_DIR / f"perf-{stage}.data"
+        for stage in ("checkpoint", "restore", "kumquat-checkpoint", "kumquat-restore")
+    ]
+    profiles = [path for path in profiles if path.is_file() and path.stat().st_size]
+    if not profiles:
+        raise FileNotFoundError("no perf recordings in out/")
+
+    perf_text = {"game": [], "kumquat": []}
+    with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as archive:
+        add_bytes(archive, "valo.trace.json", valo_events(structured))
+        for profile in profiles:
+            result = subprocess.run(
+                ["perf", "script", "-i", str(profile), "-F", "comm,pid,tid,time,event,ip,sym,dso"],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            who = "kumquat" if profile.stem.startswith("perf-kumquat-") else "game"
+            perf_text[who].append(result.stdout)
+        for who, parts in perf_text.items():
+            if parts:
+                add_bytes(archive, f"{who}.perf.txt", b"".join(parts))
+        gfxstream = PROFILE_DIR / "gpu-restore.pftrace"
+        if gfxstream.is_file() and gfxstream.stat().st_size:
+            archive.add(gfxstream, arcname=gfxstream.name)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (FileNotFoundError, subprocess.CalledProcessError) as error:
+        print(error, file=sys.stderr)
+        sys.exit(1)

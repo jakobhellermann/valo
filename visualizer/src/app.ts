@@ -182,7 +182,24 @@ function perfettoTrace(text: string): string {
   return JSON.stringify({ traceEvents });
 }
 
-function openInPerfetto(text: string, fileName: string) {
+async function perfettoExport(
+  text: string,
+  fileName: string,
+): Promise<{ buffer: ArrayBuffer; name: string }> {
+  if (fileName === "perf-struct.jsonl") {
+    const response = await fetch("/api/profile/perfetto");
+    if (!response.ok) throw new Error(await response.text());
+    return { buffer: await response.arrayBuffer(), name: "perf-profile.tar" };
+  }
+  return {
+    buffer: new TextEncoder().encode(perfettoTrace(text)).buffer,
+    name: fileName.endsWith(".jsonl")
+      ? fileName.replace(/\.jsonl$/, ".trace.json")
+      : `${fileName}.trace.json`,
+  };
+}
+
+async function openInPerfetto(text: string, fileName: string) {
   const origin = "https://ui.perfetto.dev";
   const perfettoWindow = window.open(origin, "_blank");
   if (!perfettoWindow) {
@@ -190,7 +207,14 @@ function openInPerfetto(text: string, fileName: string) {
     return;
   }
 
-  const buffer = new TextEncoder().encode(perfettoTrace(text)).buffer;
+  let exported: { buffer: ArrayBuffer; name: string };
+  try {
+    exported = await perfettoExport(text, fileName);
+  } catch (error) {
+    perfettoWindow.close();
+    window.alert(String(error));
+    return;
+  }
   const onMessage = (event: MessageEvent) => {
     if (event.source !== perfettoWindow || event.origin !== origin || event.data !== "PONG") {
       return;
@@ -199,13 +223,13 @@ function openInPerfetto(text: string, fileName: string) {
     perfettoWindow.postMessage(
       {
         perfetto: {
-          buffer,
+          buffer: exported.buffer,
           title: fileName,
-          fileName: fileName.replace(/\.jsonl$/, ".trace.json"),
+          fileName: exported.name,
         },
       },
       origin,
-      [buffer],
+      [exported.buffer],
     );
   };
   const ping = () => {
@@ -819,11 +843,13 @@ async function main() {
 
   async function refreshFiles() {
     sel.innerHTML = "";
-    const files = await (await fetch("/api/files")).json();
+    const files: { name: string; profile: boolean; mtime: number }[] = await (
+      await fetch("/api/files")
+    ).json();
     for (const f of files) {
       const opt = document.createElement("option");
       opt.value = f.name;
-      opt.textContent = f.name;
+      opt.textContent = `${f.profile ? "profile · " : "log · "}${f.name} · ${new Date(f.mtime).toLocaleString()}`;
       sel.appendChild(opt);
     }
     return files;
@@ -839,18 +865,29 @@ async function main() {
     visibleDiffRows = [];
     renderTree();
     viewEl.innerHTML = "<p class='dim'>select a checkpoint or restore</p>";
+    openPerfetto.textContent =
+      name === "perf-struct.jsonl" ? "open profile in Perfetto" : "open log in Perfetto";
     openPerfetto.disabled = false;
     perfetto.disabled = false;
   }
 
   sel.onchange = () => load(sel.value);
-  openPerfetto.onclick = () => openInPerfetto(loadedText, sel.value);
-  perfetto.onclick = () => {
-    const blob = new Blob([perfettoTrace(loadedText)], { type: "application/json" });
+  openPerfetto.onclick = () => {
+    void openInPerfetto(loadedText, sel.value);
+  };
+  perfetto.onclick = async () => {
+    let exported: { buffer: ArrayBuffer; name: string };
+    try {
+      exported = await perfettoExport(loadedText, sel.value);
+    } catch (error) {
+      window.alert(String(error));
+      return;
+    }
+    const blob = new Blob([exported.buffer], { type: "application/octet-stream" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = sel.value.replace(/\.jsonl$/, ".trace.json");
+    link.download = exported.name;
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
@@ -873,7 +910,10 @@ async function main() {
   };
 
   const files = await refreshFiles();
-  if (files.length > 0) load(files[0].name);
+  if (files.length > 0) {
+    sel.value = files.find((file) => file.profile)?.name ?? files[0].name;
+    load(sel.value);
+  }
 }
 
 main();
