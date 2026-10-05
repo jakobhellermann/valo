@@ -249,7 +249,9 @@ fn read_area(
             unsafe { set_guard_region(addr, false)? };
         }
 
-        page_mprotect_with(MprotectFlags::READ)?;
+        if !saved_area.perms.contains(MemoryMapPermissions::READ) {
+            page_mprotect_with(MprotectFlags::READ)?;
+        }
 
         // Page was unmapped in checkpoint
         if let PageFlag::No = flag {
