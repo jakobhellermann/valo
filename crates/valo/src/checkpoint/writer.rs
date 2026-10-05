@@ -154,6 +154,7 @@ fn write_area(
 
     let mut stats = AreaStats::default();
     let mut page_saves = PageSaveQueue::default();
+    let mut page_flags = PageFlagBuffer::default();
 
     #[cfg(feature = "structured-log")]
     let (mut log_saved_flags, mut log_page_flags) = (
@@ -165,8 +166,7 @@ fn write_area(
         #[cfg(feature = "structured-log")]
         log_saved_flags.record(flag);
 
-        // todo buffer
-        snapshot_meta.write_all(&[flag as u8])
+        page_flags.push(snapshot_meta, flag)
     };
 
     let mut shared_fd = area
@@ -289,6 +289,7 @@ fn write_area(
 
     page_map.for_each_page(area.pages(), &mut write_area_page)?;
     page_saves.flush(&mut writer.snapshot_pages)?;
+    page_flags.flush(&mut writer.snapshot_meta)?;
 
     debug!(
         Checkpoint,
@@ -300,6 +301,39 @@ fn write_area(
     );
 
     Ok(())
+}
+
+struct PageFlagBuffer {
+    bytes: [u8; 4096],
+    len: usize,
+}
+
+impl Default for PageFlagBuffer {
+    fn default() -> Self {
+        Self {
+            bytes: [0; 4096],
+            len: 0,
+        }
+    }
+}
+
+impl PageFlagBuffer {
+    fn push(&mut self, file: &mut File, flag: PageFlag) -> Result<()> {
+        if self.len == self.bytes.len() {
+            self.flush(file)?;
+        }
+        self.bytes[self.len] = flag as u8;
+        self.len += 1;
+        Ok(())
+    }
+
+    fn flush(&mut self, file: &mut File) -> Result<()> {
+        if self.len > 0 {
+            file.write_all(&self.bytes[..self.len])?;
+            self.len = 0;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Default)]
