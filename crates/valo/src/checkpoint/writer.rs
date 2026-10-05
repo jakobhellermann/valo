@@ -9,6 +9,7 @@ use crate::checkpoint::threads::SavedThreads;
 use crate::checkpoint::{AreaMeta, Header, PageFlag, SnapshotSlot, fd_sync};
 use crate::global_state::{GlobalState, ReservedMemory};
 use crate::log::structured;
+use crate::procfs;
 use crate::procfs::maps::{
     MMapPath, MemoryMap, MemoryMapPermissions, PageFlags, PageIndex, ProcMaps, ProcPagemap,
 };
@@ -43,8 +44,6 @@ pub fn write_all_areas(
     writer: &mut SnapshotWriter,
     threads: SavedThreads,
 ) -> Result<()> {
-    // TODO proc.clear_refs(ClearRefs::SoftDirty)?;
-
     let mut maps = ProcMaps::new_self_copy()?;
     let mut page_map = ProcPagemap::new_self()?;
 
@@ -65,6 +64,7 @@ pub fn write_all_areas(
 
     writer.snapshot_meta.seek(SeekFrom::Start(header_pos))?;
     writer.snapshot_meta.write_all(header.as_bytes())?;
+    procfs::clear_soft_dirty()?;
 
     Ok(())
 }
