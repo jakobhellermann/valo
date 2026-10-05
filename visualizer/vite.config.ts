@@ -2,7 +2,11 @@ import { defineConfig } from "vite";
 import { readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+
+const execFileAsync = promisify(execFile);
 
 // Direct host runs default to VALO_HOME=/tmp/valo-$PID with the structured
 // log at <home>/valo-struct.jsonl. Steam-run runs escape the sandbox tmpfs
@@ -90,6 +94,23 @@ const valoApi = () => ({
         }
         res.setHeader("Content-Type", "application/json");
         res.end(JSON.stringify({ deleted }));
+        return;
+      }
+
+      if (req.url === "/api/profile/perfetto") {
+        const exporter = fileURLToPath(new URL("../scripts/perfetto-export", import.meta.url));
+        void execFileAsync("python3", [exporter], {
+          encoding: "buffer",
+          maxBuffer: 128 * 1024 * 1024,
+        })
+          .then(({ stdout }) => {
+            res.setHeader("Content-Type", "application/x-tar");
+            res.end(stdout);
+          })
+          .catch((error) => {
+            res.statusCode = 500;
+            res.end(`Perfetto export failed: ${error.stderr || error.message}`);
+          });
         return;
       }
 

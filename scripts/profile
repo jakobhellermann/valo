@@ -1,0 +1,328 @@
+#!/usr/bin/env bash
+# Checkpoint/restore profiling in one run.
+#
+# GPU mode (default): perf windows on the game around msg checkpoint/restore,
+# additionally perf on kumquat and, when the Perfetto tools are available,
+# capture gfxstream track events. Set PROFILE_NO_GPU=1 below for a CPU-only run.
+#
+# Output in out/: perf-checkpoint.data / perf-restore.data (+ .jslb.gz when
+# samply is in PATH), perf-kumquat-<stage>.data in GPU mode,
+# perf-struct.jsonl, perf-timings.txt, perf-history.tsv.
+set -euo pipefail
+
+# 0: GPU mode (default). 1: CPU-only run.
+PROFILE_NO_GPU=0
+
+if [[ $# -lt 1 ]]; then
+    echo "usage: profile <game> [checkpoint-frame] [restore-frame]" >&2
+    exit 1
+fi
+GAME="$1"
+CP="${2:-240}"
+RS="${3:-300}"
+STATE_DIR="$HOME/.local/state/valo"
+PERFETTO_DIR="$STATE_DIR/perfetto"
+
+msg() { "$valo_bin" msg --sock "$sock" "$@"; }
+
+valo_bin=""
+
+wait_for_restore() {
+    local deadline=$((SECONDS + 180))
+    until rg -q '"restore.end"' "$log_path"; do
+        kill -0 "$game_pid" 2>/dev/null || {
+            echo "Game exited during restore" >&2
+            return 1
+        }
+        ((SECONDS < deadline)) || {
+            echo "Restore did not finish" >&2
+            return 1
+        }
+        sleep 0.1
+    done
+}
+
+wait_for_kumquat() {
+    local deadline=$((SECONDS + 120))
+    until kumquat_pid=$(rg -o 'kumquat pid ([0-9]+)' -r '$1' "$valo_log" 2>/dev/null | tail -1); do
+        kill -0 "$game_pid" 2>/dev/null || {
+            echo "Game exited before kumquat appeared" >&2
+            return 1
+        }
+        ((SECONDS < deadline)) || {
+            echo "kumquat did not appear" >&2
+            return 1
+        }
+        sleep 0.5
+    done
+}
+
+# perf on the game: start disabled, enable/disable around the msg trigger.
+record_start() {
+    local stage="$1" pid="$2" out="$3"
+    coproc PERF { perf record -m 1024 -F 999 -g --call-graph dwarf,32768 --clockid mono -D -1 \
+        --control fd:0,1 -p "$pid" -o "$out" 2>"out/perf-$stage.log"; }
+    perf_pid=$!
+    perf_read="${PERF[0]}"
+    perf_write="${PERF[1]}"
+    perf_control ping
+    perf_control enable
+}
+record_stop() {
+    perf_control disable
+    perf_control stop
+    wait "$perf_pid"
+    exec {perf_read}<&-
+    exec {perf_write}>&-
+    unset perf_pid
+}
+perf_control() {
+    local reply
+    printf '%s\n' "$1" >&"$perf_write"
+    IFS= read -r -t 10 reply <&"$perf_read"
+    [[ "$reply" == *ack* ]] || {
+        echo "perf did not acknowledge $1: $reply" >&2
+        return 1
+    }
+}
+
+# Leftover detection: pgrep -f alone also matches this script's own command
+# line (the game path is passed as an argument), so require the game path as
+# argv[0] of a candidate process.
+game_running() {
+    local pid argv0
+    for pid in $(pgrep -f "$GAME" 2>/dev/null || true); do
+        argv0=$(tr '\0' '\n' 2>/dev/null </proc/"$pid"/cmdline | head -1)
+        [[ "$argv0" == "$GAME" ]] && return 0
+    done
+    return 1
+}
+
+# perf on kumquat: same control-fd flow, separate coproc and output file.
+record_gk_start() {
+    local stage="$1" pid="$2"
+    coproc PERF_GK { perf record -m 1024 -F 999 -g --call-graph dwarf,32768 --clockid mono -D -1 \
+        --control fd:0,1 -p "$pid" -o "out/perf-kumquat-$stage.data" 2>"out/perf-kumquat-$stage.log"; }
+    perf_gk_pid=$!
+    perf_gk_read="${PERF_GK[0]}"
+    perf_gk_write="${PERF_GK[1]}"
+    gk_control ping
+    gk_control enable
+}
+record_gk_stop() {
+    gk_control disable
+    gk_control stop
+    wait "$perf_gk_pid"
+    exec {perf_gk_read}<&-
+    exec {perf_gk_write}>&-
+    unset perf_gk_pid
+}
+gk_control() {
+    local reply
+    printf '%s\n' "$1" >&"$perf_gk_write"
+    IFS= read -r -t 10 reply <&"$perf_gk_read"
+    [[ "$reply" == *ack* ]] || {
+        echo "perf (kumquat) did not acknowledge $1: $reply" >&2
+        return 1
+    }
+}
+
+print_durations() {
+    jq -r 'select(.e | test("^(checkpoint|restore)(\\.memory)?\\.(begin|end)$")) | [.e, .ts_us] | @tsv' "$log_path" |
+        awk '
+            { ts[$1] = $2 }
+            END {
+                for (i = 1; i <= 2; i++) {
+                    stage = i == 1 ? "checkpoint" : "restore"
+                    printf "%s: %.1f ms (memory: %.1f ms)\n", stage,
+                        (ts[stage ".end"] - ts[stage ".begin"]) / 1000,
+                        (ts[stage ".memory.end"] - ts[stage ".memory.begin"]) / 1000
+                }
+            }'
+}
+
+append_history() {
+    local history=out/perf-history.tsv
+    if [[ ! -s "$history" ]]; then
+        printf 'utc\tjj_revision\tmode\tcheckpoint_ms\tcheckpoint_memory_ms\trestore_ms\trestore_memory_ms\n' >"$history"
+    fi
+    awk -v utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        -v revision="$(jj log -r @ --no-graph -T 'commit_id.short()')" \
+        -v mode="${use_gpu:+gpu}" '
+        $1 == "checkpoint:" { checkpoint = $2; checkpoint_memory = $5 }
+        $1 == "restore:" { restore = $2; restore_memory = $5 }
+        END { printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", utc, revision, mode, checkpoint, checkpoint_memory, restore, restore_memory }
+    ' out/perf-timings.txt >>"$history"
+}
+
+cleanup() {
+    if [[ -n "${perf_pid:-}" ]]; then
+        printf 'stop\n' 1>&"$perf_write" 2>/dev/null || true
+        wait "$perf_pid" 2>/dev/null || true
+    fi
+    if [[ -n "${perf_gk_pid:-}" ]]; then
+        printf 'stop\n' 1>&"$perf_gk_write" 2>/dev/null || true
+        wait "$perf_gk_pid" 2>/dev/null || true
+    fi
+    if [[ -n "${perfetto_pid:-}" ]]; then
+        kill -INT "$perfetto_pid" 2>/dev/null || true
+        wait "$perfetto_pid" 2>/dev/null || true
+    fi
+    if [[ -n "${game_pid:-}" ]] && kill -0 "$game_pid" 2>/dev/null; then
+        timeout 5 "$valo_bin" msg --sock "$sock" quit >/dev/null 2>&1 || kill "$game_pid" 2>/dev/null || true
+    fi
+    if [[ -n "${traced_pid:-}" ]]; then
+        kill -TERM "$traced_pid" 2>/dev/null || true
+        wait "$traced_pid" 2>/dev/null || true
+        rm -f "$producer_socket" "$consumer_socket"
+        rmdir "$owned_perfetto_dir" 2>/dev/null || true
+    fi
+    rm -f "$sock"
+}
+
+main() {
+    mkdir -p out "$STATE_DIR"
+    log_path="$STATE_DIR/valo-struct-$$.jsonl"
+    valo_log="$STATE_DIR/valo.log"
+    sock="$STATE_DIR/profile-$$.sock"
+    game_pid=""
+    kumquat_pid=""
+    capture_gfxstream=""
+    : >"$log_path"
+    : >"$valo_log"
+    rm -f out/*.{data,jslb.gz,pftrace}
+    trap cleanup EXIT
+
+    game_args=(-force-gfx-direct)
+    use_gpu=""
+    if [[ "$PROFILE_NO_GPU" != 1 ]]; then
+        use_gpu=1
+        producer_socket="${PERFETTO_PRODUCER_SOCK_NAME:-$PERFETTO_DIR/traced-producer}"
+        consumer_socket="${PERFETTO_CONSUMER_SOCK_NAME:-$PERFETTO_DIR/traced-consumer}"
+        if command -v perfetto >/dev/null && command -v traced >/dev/null &&
+            ! PERFETTO_PRODUCER_SOCK_NAME="$producer_socket" PERFETTO_CONSUMER_SOCK_NAME="$consumer_socket" \
+                timeout 3 perfetto --query >/dev/null 2>&1; then
+            owned_perfetto_dir="$PERFETTO_DIR/profile-$$"
+            mkdir -p "$owned_perfetto_dir"
+            producer_socket="$owned_perfetto_dir/traced-producer"
+            consumer_socket="$owned_perfetto_dir/traced-consumer"
+            PERFETTO_PRODUCER_SOCK_NAME="$producer_socket" PERFETTO_CONSUMER_SOCK_NAME="$consumer_socket" \
+                traced >"$PERFETTO_DIR/traced.log" 2>&1 &
+            traced_pid=$!
+            for _ in $(seq 1 30); do
+                [[ -S "$producer_socket" && -S "$consumer_socket" ]] && break
+                kill -0 "$traced_pid" 2>/dev/null || break
+                sleep 0.1
+            done
+        fi
+        if [[ -S "$producer_socket" && -S "$consumer_socket" ]]; then
+            export PERFETTO_PRODUCER_SOCK_NAME="$producer_socket"
+            export PERFETTO_CONSUMER_SOCK_NAME="$consumer_socket"
+            if timeout 3 perfetto --query >/dev/null 2>&1; then
+                capture_gfxstream=1
+                echo "perfetto: gfxstream capture enabled ($consumer_socket)"
+            else
+                unset PERFETTO_PRODUCER_SOCK_NAME PERFETTO_CONSUMER_SOCK_NAME
+            fi
+        else
+            unset PERFETTO_PRODUCER_SOCK_NAME PERFETTO_CONSUMER_SOCK_NAME
+        fi
+    fi
+
+    if game_running; then
+        echo "The target is already running (leftover from a killed run?); stop it first:" >&2
+        echo "  pkill -f '$GAME'" >&2
+        exit 1
+    fi
+
+    cargo build --release -Zunstable-options --artifact-dir out -p valo
+    local build_log
+    build_log=$(mktemp)
+    valo_bin=$(cargo build -p valo-client --message-format json 2>"$build_log" |
+        jq -r 'select(.reason == "compiler-artifact" and .executable) | .executable' | head -1)
+    [[ -n "$valo_bin" && -x "$valo_bin" ]] || {
+        cat "$build_log" >&2
+        echo "no client binary from cargo build" >&2
+        exit 1
+    }
+    rm -f "$build_log"
+    local -a launcher=()
+    if command -v steam-run >/dev/null 2>&1; then
+        launcher=(steam-run)
+    fi
+    VALO_LOG="$valo_log" VALO_STRUCTURED_LOG="$log_path" \
+        "${launcher[@]}" "$valo_bin" spawn --paused ${use_gpu:+--use-gpu} \
+        --sock "$sock" --lib "$PWD/out/libvalo.so" "$GAME" "${game_args[@]}" >out/perf-spawn.txt
+    local spawned
+    spawned=$(<out/perf-spawn.txt)
+    echo "$spawned"
+    [[ "$spawned" =~ pid=([0-9]+) ]] || {
+        echo "no pid in spawn output" >&2
+        exit 1
+    }
+    game_pid=${BASH_REMATCH[1]}
+    echo "game pid $game_pid"
+
+    msg advance "$CP"
+    [[ -z "$use_gpu" ]] || wait_for_kumquat
+    if [[ -n "$kumquat_pid" ]]; then
+        echo "kumquat pid $kumquat_pid"
+        record_gk_start checkpoint "$kumquat_pid"
+    fi
+    record_start checkpoint "$game_pid" out/perf-checkpoint.data
+    msg checkpoint
+    record_stop
+    [[ -z "$kumquat_pid" ]] || record_gk_stop
+
+    msg advance $((RS - CP))
+
+    if [[ -n "$kumquat_pid" && -n "${capture_gfxstream:-}" ]]; then
+        perfetto --txt -o out/gpu-restore.pftrace -c - <<'EOF' &
+buffers { size_kb: 65536 }
+data_sources { config { name: "track_event" } }
+duration_ms: 300000
+EOF
+        perfetto_pid=$!
+    fi
+    if [[ -n "$kumquat_pid" ]]; then
+        record_gk_start restore "$kumquat_pid"
+    fi
+    record_start restore "$game_pid" out/perf-restore.data
+    msg restore
+    wait_for_restore
+    record_stop
+    [[ -z "$kumquat_pid" ]] || record_gk_stop
+
+    # Let the restored state run visibly before tearing the session down.
+    msg advance 10
+    msg state
+    msg quit
+    if [[ -n "${perfetto_pid:-}" ]]; then
+        kill -INT "$perfetto_pid" 2>/dev/null || true
+        wait "$perfetto_pid" 2>/dev/null || true
+    fi
+
+    cp "$log_path" out/perf-struct.jsonl
+    print_durations | tee out/perf-timings.txt
+    append_history
+    for stage in checkpoint restore; do
+        [[ -s "out/perf-$stage.data" ]] || {
+            echo "perf $stage data is empty" >&2
+            exit 1
+        }
+    done
+    if command -v samply >/dev/null; then
+        for stage in checkpoint restore kumquat-checkpoint kumquat-restore; do
+            [[ -s "out/perf-$stage.data" ]] &&
+                samply import --save-only --presymbolicate -o "out/perf-$stage.jslb.gz" "out/perf-$stage.data" 2>/dev/null || true
+        done
+    fi
+    if [[ -n "${capture_gfxstream:-}" && -n "$kumquat_pid" && ! -s out/gpu-restore.pftrace ]]; then
+        echo "optional gfxstream trace is empty; perf profiles are available" >&2
+    fi
+    [[ -z "$kumquat_pid" ]] || echo "gpu: perf-kumquat-{checkpoint,restore}.jslb.gz"
+    echo "Perfetto export: open perf-struct.jsonl in the visualizer or run 'just profile-perfetto'"
+    echo "done: perf-{checkpoint,restore}[.jslb.gz], perf-struct.jsonl, perf-timings.txt"
+}
+
+main "$@"
