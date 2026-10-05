@@ -43,9 +43,20 @@
 
       #layout {
         display: grid;
-        grid-template-columns: 320px 1fr;
+        grid-template-columns: 320px minmax(0, 1fr);
         gap: 1.5rem;
         align-items: start;
+      }
+      #view {
+        min-width: 0;
+      }
+      #view > table {
+        width: 100%;
+      }
+      #view > table > tbody > tr:first-child > th:not(:last-child),
+      #view > table > tbody > tr.area-row > td:not(:last-child) {
+        width: 1%;
+        white-space: nowrap;
       }
 
       .run {
@@ -123,8 +134,12 @@
       .bad td {
         background: #301;
       }
+      .bad.skip td {
+        background: transparent;
+      }
       .area-detail td {
         padding: 0 8px;
+        overflow-wrap: anywhere;
       }
       .area-detail:not(:has(details[open])) {
         display: none;
@@ -165,6 +180,21 @@
       }
       .page-nav {
         margin: 8px 0;
+      }
+      .global-stats {
+        margin: 2rem 0;
+        border-top: 1px solid #444;
+      }
+      .global-stats h3 {
+        color: #9cf;
+        font-size: 1rem;
+      }
+      .global-stats th {
+        color: #999;
+        font-weight: normal;
+      }
+      .global-stats td {
+        text-align: right;
       }
     </style>
   </head>

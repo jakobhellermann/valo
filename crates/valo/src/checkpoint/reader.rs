@@ -104,8 +104,8 @@ pub fn read_all_areas(reader: &mut SnapshotReader) -> Result<()> {
 
     #[cfg(feature = "structured-log")]
     {
-        for area in (0..reader.header.area_count).map(|_| reader.read().unwrap().0) {
-            structured::events::saved_area(&area);
+        for (area, meta) in (0..reader.header.area_count).map(|_| reader.read().unwrap()) {
+            structured::events::saved_area(&area, meta.skip || meta.uncommitted);
         }
         reader.restart()?;
     }
@@ -146,7 +146,7 @@ pub fn read_all_areas(reader: &mut SnapshotReader) -> Result<()> {
     #[cfg(feature = "structured-log")]
     {
         while let Some(area) = maps.next()? {
-            structured::events::current_area(&area);
+            structured::events::log_current_area(&area, &mut page_map);
         }
         maps.reset()?;
     }
@@ -252,6 +252,9 @@ fn read_area(
     } else {
         None
     };
+    if saved_area.perms.contains(MemoryMapPermissions::SHARED) {
+        structured::events::shared_fd_initial(saved_area.address.start, shared_fd.as_ref());
+    }
 
     reader
         .snapshot_page_data

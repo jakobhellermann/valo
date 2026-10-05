@@ -128,6 +128,9 @@ fn write_area(
             )
         }
     }
+    if area.perms.contains(MemoryMapPermissions::SHARED) {
+        structured::events::shared_fd_initial(area.address.start, shared_fd.as_ref());
+    }
     #[derive(Debug)]
     struct Stats {
         unmapped: usize,
@@ -146,6 +149,8 @@ fn write_area(
     let mut structured_run = TrackRun::new(|start, length, flag: PageFlag| {
         structured::events::save_pages(area.address.start, start as u64, length as u64, flag)
     });
+    #[cfg(feature = "structured-log")]
+    let mut pagemap_run = structured::events::checkpoint_pagemap_run(area.address.start);
 
     let mut save_page_flags = |snapshot_meta: &mut File, flag: PageFlag| -> std::io::Result<()> {
         // todo buffer
@@ -159,6 +164,8 @@ fn write_area(
     for page in area.pages() {
         let addr = std::ptr::with_exposed_provenance(page * PAGE_SIZE);
         let page_flags = page_map.read_single()?; // TODO buffer
+        #[cfg(feature = "structured-log")]
+        pagemap_run.record(structured::events::pagemap_log_bits(page_flags));
 
         /*if page_flags.contains(PageFlags::SWAP) {
             todo!("swap: {page_flags:?}");
