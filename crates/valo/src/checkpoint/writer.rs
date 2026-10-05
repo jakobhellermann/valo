@@ -153,6 +153,7 @@ fn write_area(
     debug!(Checkpoint, "Saving {}", area);
 
     let mut stats = AreaStats::default();
+    let mut page_saves = PageSaveQueue::default();
 
     #[cfg(feature = "structured-log")]
     let (mut log_saved_flags, mut log_page_flags) = (
@@ -278,10 +279,7 @@ fn write_area(
         if !page_softdirty && false {
             todo!();
         } else {
-            // todo: queue + bigger reads
-            // SAFETY: todo
-            let page_data = unsafe { std::slice::from_raw_parts(addr, PAGE_SIZE) };
-            writer.snapshot_pages.write_all(page_data)?;
+            page_saves.push(&mut writer.snapshot_pages, addr)?;
 
             stats.full += 1;
             save_page_flags(&mut writer.snapshot_meta, PageFlag::Full)?;
@@ -290,6 +288,7 @@ fn write_area(
     };
 
     page_map.for_each_page(area.pages(), &mut write_area_page)?;
+    page_saves.flush(&mut writer.snapshot_pages)?;
 
     debug!(
         Checkpoint,
@@ -301,6 +300,40 @@ fn write_area(
     );
 
     Ok(())
+}
+
+#[derive(Default)]
+struct PageSaveQueue {
+    start: *const u8,
+    pages: usize,
+}
+
+impl PageSaveQueue {
+    fn push(&mut self, file: &mut File, addr: *const u8) -> Result<()> {
+        const MAX_PAGES: usize = 256;
+        if self.pages > 0
+            && (addr != self.start.wrapping_add(self.pages * PAGE_SIZE) || self.pages == MAX_PAGES)
+        {
+            self.flush(file)?;
+        }
+        if self.pages == 0 {
+            self.start = addr;
+        }
+        self.pages += 1;
+        Ok(())
+    }
+
+    fn flush(&mut self, file: &mut File) -> Result<()> {
+        if self.pages == 0 {
+            return Ok(());
+        }
+        // SAFETY: each queued Full page is readable when pushed, the queue only
+        // contains consecutive pages, and other guest threads are suspended.
+        let src = unsafe { std::slice::from_raw_parts(self.start, self.pages * PAGE_SIZE) };
+        file.write_all(src)?;
+        self.pages = 0;
+        Ok(())
+    }
 }
 
 fn area_is_uncommmited(area: &MemoryMap, page_map: &mut ProcPagemap) -> Result<bool> {
