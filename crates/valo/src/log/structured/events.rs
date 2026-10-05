@@ -2,7 +2,7 @@
 use std::os::fd::{AsRawFd, OwnedFd};
 
 use crate::checkpoint::{PageFlag, SnapshotSlot};
-use crate::procfs_maps::{MemoryMap, PageFlags, ProcPagemap};
+use crate::procfs_maps::{self, MemoryMap, PageFlags, ProcPagemap};
 use crate::utils::TrackRun;
 
 use super::{StackWriter, structured_write, write_field};
@@ -38,6 +38,14 @@ pub fn shared_fd_initial(start: u64, shared_fd: Option<&(OwnedFd, u64, u64)>) {
     });
 }
 
+pub fn checkpoint_saved_page_run(
+    area: &MemoryMap,
+) -> TrackRun<PageFlag, impl Fn(usize, usize, PageFlag)> {
+    TrackRun::<PageFlag, _>::new(|start, length, flag| {
+        save_pages(area.address.start, start as u64, length as u64, flag)
+    })
+}
+
 pub fn save_pages(start: u64, index: u64, count: u64, flag: PageFlag) {
     structured_write(|w| {
         write_field(w, "e", "save_pages");
@@ -48,23 +56,34 @@ pub fn save_pages(start: u64, index: u64, count: u64, flag: PageFlag) {
     });
 }
 
-pub fn checkpoint_pagemap_run(start: u64) -> TrackRun<u8, impl Fn(usize, usize, u8)> {
-    pagemap_run("save_pagemap_pages", start)
+pub fn checkpoint_mem_page_run(
+    area: &MemoryMap,
+) -> TrackRun<procfs_maps::PageFlags, impl Fn(usize, usize, procfs_maps::PageFlags)> {
+    pagemap_run("save_pagemap_pages", area.address.start)
 }
 
-fn pagemap_run(event: &'static str, start: u64) -> TrackRun<u8, impl Fn(usize, usize, u8)> {
-    TrackRun::new(move |index, count, bits| {
-        pagemap_pages(event, start, index as u64, count as u64, bits);
+fn pagemap_run(
+    event: &'static str,
+    start: u64,
+) -> TrackRun<procfs_maps::PageFlags, impl Fn(usize, usize, procfs_maps::PageFlags)> {
+    TrackRun::new(move |index, count, flags| {
+        pagemap_pages(event, start, index as u64, count as u64, flags);
     })
 }
 
-fn pagemap_pages(event: &'static str, start: u64, index: u64, count: u64, bits: u8) {
+fn pagemap_pages(
+    event: &'static str,
+    start: u64,
+    index: u64,
+    count: u64,
+    flags: procfs_maps::PageFlags,
+) {
     structured_write(|w| {
         write_field(w, "e", event);
         write_field(w, "start", start);
         write_field(w, "index", index);
         write_field(w, "count", count);
-        write_field(w, "bits", bits as u64);
+        write_field(w, "bits", pagemap_log_bits(flags));
     });
 }
 
@@ -86,7 +105,7 @@ pub fn log_current_area(area: &MemoryMap, pagemap: &mut ProcPagemap) {
             let count = remaining.min(chunk.len());
             pagemap.read(&mut chunk[..count])?;
             for flags in &chunk[..count] {
-                run.record(pagemap_log_bits(*flags));
+                run.record(*flags);
             }
             remaining -= count;
         }
@@ -104,7 +123,7 @@ const PAGEMAP_GUARD_REGION: u64 = 1 << 58;
 /// Compact structured-log format for pagemap runs (`bits` in JSON):
 /// bit 0 = present, 1 = file/shared-anon, 2 = swapped, 3 = guard region,
 /// 4 = soft-dirty, 5 = exclusively mapped. PFN and swap location are omitted.
-pub fn pagemap_log_bits(flags: PageFlags) -> u8 {
+fn pagemap_log_bits(flags: PageFlags) -> u8 {
     u8::from(flags.contains(PageFlags::PRESENT))
         | (u8::from(flags.contains(PageFlags::FILE)) << 1)
         | (u8::from(flags.contains(PageFlags::SWAP)) << 2)
@@ -187,7 +206,7 @@ fn trace_event(event: &'static str) {
 }
 
 fn trace_slot_event(event: &'static str, slot: SnapshotSlot) {
-    trace_event_with(event, |w| write_field(w, "slot", slot.0 as u64));
+    trace_event_with(event, |w| write_field(w, "slot", slot.0));
 }
 
 fn trace_event_with(event: &'static str, fields: impl FnOnce(&mut StackWriter)) {

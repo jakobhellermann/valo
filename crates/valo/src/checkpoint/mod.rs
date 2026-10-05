@@ -69,6 +69,12 @@ pub struct Header {
     area_count: u64,
     pub(crate) threads: threads::SavedThreads,
 }
+impl Header {
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        // SAFETY: repr(C)
+        unsafe { std::slice::from_raw_parts(std::ptr::from_ref(self).cast(), size_of::<Self>()) }
+    }
+}
 
 // # Safety
 // - Must not be called concurrently

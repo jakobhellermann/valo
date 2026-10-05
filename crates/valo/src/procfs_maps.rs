@@ -8,6 +8,7 @@ use std::str::FromStr;
 type Result<T, E = std::io::Error> = std::result::Result<T, E>;
 
 use rustix::fs::{Mode, OFlags};
+use rustix::mm::{MapFlags, MprotectFlags};
 
 use crate::PAGE_SIZE;
 use crate::stackio::StackBufReader;
@@ -43,13 +44,13 @@ impl std::fmt::Display for MemoryMap {
     }
 }
 impl MemoryMap {
-    pub fn page(&self) -> usize {
+    pub fn page(&self) -> PageIndex {
         self.address.start as usize / PAGE_SIZE
     }
     pub fn page_count(&self) -> usize {
         ((self.address.end - self.address.start) as usize).div_ceil(PAGE_SIZE)
     }
-    pub fn pages(&self) -> Range<usize> {
+    pub fn pages(&self) -> Range<PageIndex> {
         let page = self.page();
         let page_count = self.page_count();
         page..page + page_count
@@ -219,6 +220,8 @@ fn classify_path(path: &str) -> Option<MMapPath> {
 
 pub struct ProcPagemap(File);
 
+pub type PageIndex = usize;
+
 impl ProcPagemap {
     pub fn new(file: File) -> Self {
         Self(file)
@@ -229,7 +232,7 @@ impl ProcPagemap {
         Ok(Self::new(file))
     }
 
-    pub fn seek(&mut self, page: usize) -> Result<()> {
+    pub fn seek(&mut self, page: PageIndex) -> Result<()> {
         let position = page as u64 * size_of::<u64>() as u64;
         self.0.seek(SeekFrom::Start(position))?;
         Ok(())
@@ -321,8 +324,37 @@ bitflags::bitflags! {
     }
 }
 
+impl From<MemoryMapPermissions> for MprotectFlags {
+    fn from(perms: MemoryMapPermissions) -> Self {
+        let mut prot = MprotectFlags::empty();
+        if perms.contains(MemoryMapPermissions::READ) {
+            prot.insert(MprotectFlags::READ);
+        }
+        if perms.contains(MemoryMapPermissions::WRITE) {
+            prot.insert(MprotectFlags::WRITE);
+        }
+        if perms.contains(MemoryMapPermissions::EXECUTE) {
+            prot.insert(MprotectFlags::EXEC);
+        }
+        prot
+    }
+}
+
+impl From<MemoryMapPermissions> for MapFlags {
+    fn from(perms: MemoryMapPermissions) -> Self {
+        let mut flags = MapFlags::empty();
+        if perms.contains(MemoryMapPermissions::SHARED) {
+            flags.insert(MapFlags::SHARED);
+        }
+        if perms.contains(MemoryMapPermissions::PRIVATE) {
+            flags.insert(MapFlags::PRIVATE);
+        }
+        flags
+    }
+}
+
 bitflags::bitflags! {
-    #[derive(Debug, Clone, Copy, Default)]
+    #[derive(Debug, Clone, Copy, Default, PartialEq)]
     pub struct PageFlags: u64 {
        /// Page frame number if present
        #[doc(hidden)]

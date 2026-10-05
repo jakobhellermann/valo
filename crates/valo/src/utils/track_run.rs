@@ -1,3 +1,4 @@
+#![cfg_attr(not(feature = "structured-log"), allow(dead_code))]
 pub struct TrackRun<T: PartialEq + Copy, F: Fn(usize, usize, T)> {
     start: usize,
     written: usize,

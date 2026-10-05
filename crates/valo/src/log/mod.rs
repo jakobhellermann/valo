@@ -29,12 +29,11 @@ pub(crate) mod structured {
     pub mod events {
         use std::os::fd::OwnedFd;
 
-        use crate::checkpoint::{PageFlag, SnapshotSlot};
+        use crate::checkpoint::SnapshotSlot;
         use crate::procfs_maps::MemoryMap;
 
         pub fn init() {}
         pub fn save_area(_area: &MemoryMap, _skip: bool) {}
-        pub fn save_pages(_start: u64, _index: u64, _count: u64, _flag: PageFlag) {}
         pub fn shared_fd_initial(_start: u64, _shared_fd: Option<&(OwnedFd, u64, u64)>) {}
         pub fn restore_area(_area: &MemoryMap, _skip: bool) {}
         pub fn restore_area_done(_area: &MemoryMap) {}
