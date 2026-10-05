@@ -204,7 +204,6 @@ fn read_area(
 
     debug!(Restore, "restore {}", saved_area);
 
-    current_pagemap.seek(saved_area.page())?;
     reader
         .snapshot_page_data
         .seek(SeekFrom::Start(meta.page_data_offset))?;
@@ -215,9 +214,10 @@ fn read_area(
 
     let mut orig_fd = None;
 
-    let mut read_area_page = |page: PageIndex| -> Result<(), std::io::Error> {
+    let mut read_area_page = |page: PageIndex,
+                              current_pageflag: PageFlags|
+     -> Result<(), std::io::Error> {
         let addr = std::ptr::with_exposed_provenance_mut::<u8>(page * PAGE_SIZE);
-        let current_pageflag = current_pagemap.read_at_single(page)?; // TODO buffer
         let page_relative = page - saved_area.page();
 
         let flag = match meta.uncommitted {
@@ -392,9 +392,7 @@ fn read_area(
         Ok(())
     };
 
-    for page in saved_area.pages() {
-        read_area_page(page)?;
-    }
+    current_pagemap.for_each_page(saved_area.pages(), &mut read_area_page)?;
     page_loads.flush(&mut reader.snapshot_page_data)?;
 
     if !saved_area.perms.contains(MemoryMapPermissions::WRITE)

@@ -255,7 +255,6 @@ impl ProcPagemap {
         Ok(flags[0])
     }
 
-    #[allow(dead_code)]
     pub fn read_at(&mut self, page: usize, page_flags: &mut [PageFlags]) -> Result<()> {
         self.seek(page)?;
         self.read(page_flags)
@@ -266,37 +265,20 @@ impl ProcPagemap {
         self.read_single()
     }
 
-    #[allow(dead_code)]
-    pub fn for_each_page_chunked_at<const CHUNK_SIZE: usize>(
+    pub fn for_each_page(
         &mut self,
-        page: usize,
-        page_count: usize,
-        f: impl Fn(PageFlags),
+        pages: Range<PageIndex>,
+        mut f: impl FnMut(PageIndex, PageFlags) -> Result<()>,
     ) -> Result<()> {
-        self.seek(page)?;
-        self.for_each_page_chunked::<CHUNK_SIZE>(page_count, f)
-    }
-
-    pub fn for_each_page_chunked<const CHUNK_SIZE: usize>(
-        &mut self,
-        page_count: usize,
-        f: impl Fn(PageFlags),
-    ) -> Result<()> {
-        let mut remaining = page_count;
-
-        while remaining > 0 {
-            let mut chunk = [PageFlags::default(); CHUNK_SIZE];
-            let n_chunk = remaining.min(chunk.len());
-            let flags = &mut chunk[0..n_chunk];
-            self.read(flags)?;
-
-            for flag in flags {
-                f(*flag);
+        const CHUNK_SIZE: usize = 512;
+        let mut chunk = [PageFlags::default(); CHUNK_SIZE];
+        for first in (pages.start..pages.end).step_by(CHUNK_SIZE) {
+            let count = (pages.end - first).min(CHUNK_SIZE);
+            self.read_at(first, &mut chunk[..count])?;
+            for (offset, flags) in chunk[..count].iter().enumerate() {
+                f(first + offset, *flags)?;
             }
-
-            remaining -= n_chunk;
         }
-
         Ok(())
     }
 }
