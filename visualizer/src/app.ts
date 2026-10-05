@@ -5,7 +5,14 @@ type Area = {
   perms: string;
   path: string;
   skip?: boolean;
+  pages?: PageRun[];
 };
+
+type PageRun = { index: number; count: number; flag: number };
+
+const PAGE_SIZE = 4096;
+const PAGE_SIZE_LIMIT = 100;
+const PAGE_FLAGS = ["No", "Zero", "Full", "File", "Guard"];
 
 type Segment = {
   kind: "checkpoint" | "restore";
@@ -45,6 +52,10 @@ function parseFile(text: string): Run[] {
           cur.areas.push(ev);
         else if (ev.e === "saved_area") cur.savedDump.push(ev);
         else if (ev.e === "current_area") cur.currentDump.push(ev);
+        else if (ev.e === "save_pages" && cur.kind === "checkpoint") {
+          const area = cur.areas.findLast((area) => area.start === ev.start);
+          if (area) (area.pages ??= []).push({ index: ev.index, count: ev.count, flag: ev.flag });
+        }
       }
     }
   }
@@ -182,39 +193,96 @@ function fmtSize(bytes: number): string {
   return bytes + " B";
 }
 
+function escapeHtml(value: string): string {
+  return value.replace(
+    /[&<>"']/g,
+    (char) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      })[char]!,
+  );
+}
+
+function pageDetails(area: Area, page: number): string {
+  const count = Math.ceil((area.end - area.start) / PAGE_SIZE);
+  const pageCount = Math.ceil(count / PAGE_SIZE_LIMIT);
+  const runs = area.pages ?? [];
+  const counts = PAGE_FLAGS.map((_, flag) =>
+    runs.filter((run) => run.flag === flag).reduce((sum, run) => sum + run.count, 0),
+  );
+  const summary = runs.length
+    ? PAGE_FLAGS.map((flag, i) => `${flag}: ${counts[i]}`).join(" · ")
+    : area.skip
+      ? "Übersprungen: keine Page-Flags gespeichert"
+      : "Keine Page-Flags im Log vorhanden";
+  const first = page * PAGE_SIZE_LIMIT;
+  const last = Math.min(first + PAGE_SIZE_LIMIT, count);
+  let runIndex = 0;
+  const rows: string[] = [];
+  for (let index = first; index < last; index++) {
+    while (runIndex < runs.length && runs[runIndex].index + runs[runIndex].count <= index)
+      runIndex++;
+    const run = runs[runIndex];
+    const flag = run && run.index <= index ? (PAGE_FLAGS[run.flag] ?? "Unknown") : "—";
+    rows.push(
+      `<tr><td>${index}</td><td>${hex(area.start + index * PAGE_SIZE)}</td><td>${flag}</td></tr>`,
+    );
+  }
+  return `<p class="dim">${count} Pages · ${summary}</p>
+    <table><tr><th>#</th><th>address</th><th>flag</th></tr>${rows.join("")}</table>
+    ${
+      pageCount > 1
+        ? `<div class="page-nav"><button type="button" data-page="${page - 1}" ${page === 0 ? "disabled" : ""}>←</button>
+      ${page + 1} / ${pageCount}
+      <button type="button" data-page="${page + 1}" ${page + 1 >= pageCount ? "disabled" : ""}>→</button></div>`
+        : ""
+    }`;
+}
+
+function detailRow(area: Area, index: number): string {
+  return `<tr class="area-detail"><td colspan="5"><details id="area-pages-${index}" data-area="${index}">
+    <summary>Page details · ${hex(area.start)}–${hex(area.end)}</summary>
+    <div class="page-content"></div>
+  </details></td></tr>`;
+}
+
 function areaTable(areas: Area[]): string {
   const maxSpan = Math.max(...areas.map((a) => a.end - a.start), 1);
   return `<table>
-    <tr><th>start</th><th>perms</th><th>size</th><th>path</th></tr>
+    <tr><th>start</th><th>perms</th><th colspan="2">size</th><th>path</th></tr>
     ${areas
-      .map((a) => {
+      .map((a, index) => {
         const span = a.end - a.start;
         const width = Math.max(2, Math.round((Math.log2(span) / Math.log2(maxSpan)) * 90));
-        return `<tr class="${a.skip ? "skip" : ""}">
-          <td>${hex(a.start)}</td>
+        return `<tr class="area-row ${a.skip ? "skip" : ""}" data-area="${index}">
+          <td><button type="button" class="area-toggle" data-area="${index}" aria-expanded="false" aria-controls="area-pages-${index}" aria-label="Page details for area ${hex(a.start)}">${hex(a.start)}</button></td>
           <td>${a.perms}</td>
           <td><span class="bar ${a.skip ? "skip" : ""}" title="${fmtSize(span)}" style="width:${width}px"></span></td>
           <td class="size">${fmtSize(span)}</td>
-          <td>${a.path || ""}</td>
-        </tr>`;
+          <td>${escapeHtml(a.path || "")}</td>
+        </tr>${detailRow(a, index)}`;
       })
       .join("")}
   </table>`;
 }
 
-function diffTable(rows: DiffRow[], leftName: string, rightName: string): string {
+function diffTable(rows: DiffRow[], leftName: string, rightName: string, areas: Area[]): string {
   return `<table>
     <tr><th>start</th><th>perms</th><th>${leftName} end</th><th>${rightName} end</th><th>path</th></tr>
     ${rows
-      .map((r) => {
+      .map((r, index) => {
         const cls = r.ok ? "" : "bad";
-        return `<tr class="${cls}">
-          <td>${hex(r.start)}</td>
+        return `<tr class="area-row ${cls}" data-area="${index}">
+          <td><button type="button" class="area-toggle" data-area="${index}" aria-expanded="false" aria-controls="area-pages-${index}" aria-label="Page details for area ${hex(r.start)}">${hex(r.start)}</button></td>
           <td>${r.perms}</td>
           <td>${hex(r.leftEnd)}</td>
           <td>${hex(r.rightEnd)}</td>
-          <td>${r.path || ""}${r.ok ? "" : " <span class='mismatch'>⟵ changed</span>"}</td>
-        </tr>`;
+          <td>${escapeHtml(r.path || "")}${r.ok ? "" : " <span class='mismatch'>⟵ changed</span>"}</td>
+        </tr>${detailRow(areas[index], index)}`;
       })
       .join("")}
   </table>`;
@@ -230,6 +298,7 @@ async function main() {
 
   let runs: Run[] = [];
   let loadedText = "";
+  let visibleAreas: Area[] = [];
   openPerfetto.disabled = true;
   perfetto.disabled = true;
 
@@ -245,7 +314,8 @@ async function main() {
         const icon = seg.kind === "checkpoint" ? "💾" : aborted ? "⚠" : "↩";
         const extra =
           seg.kind === "restore" && aborted ? " <span class='mismatch'>aborted</span>" : "";
-        const div = document.createElement("div");
+        const div = document.createElement("button");
+        div.type = "button";
         div.className = `seg ${seg.kind}${aborted ? " aborted" : ""}`;
         div.dataset.run = String(ri);
         div.dataset.seg = String(si);
@@ -268,6 +338,7 @@ async function main() {
     }
 
     if (seg.kind === "checkpoint") {
+      visibleAreas = seg.areas;
       viewEl.innerHTML = `<h2>💾 checkpoint slot ${seg.slot} — ${seg.areas.length} areas</h2>${areaTable(seg.areas)}`;
       return;
     }
@@ -276,6 +347,20 @@ async function main() {
     // (snapshot areas vs /proc/self/maps at restore time) — it shows the
     // mismatch that killed the restore even if the read loop never ran.
     const rows = diffAreas(seg.savedDump, seg.currentDump);
+    const checkpoint = run.segments
+      .slice(0, si)
+      .reverse()
+      .find((candidate) => candidate.kind === "checkpoint" && candidate.slot === seg.slot);
+    visibleAreas = rows.map(
+      (row) =>
+        checkpoint?.areas.find((area) => area.start === row.start) ?? {
+          e: "area",
+          start: row.start,
+          end: row.leftEnd ?? row.rightEnd ?? row.start,
+          perms: row.perms,
+          path: row.path,
+        },
+    );
     const changed = rows.filter((r) => !r.ok).length;
     const readNote =
       seg.areas.length > 0
@@ -284,8 +369,54 @@ async function main() {
 
     viewEl.innerHTML = `<h2>↩ restore slot ${seg.slot} — snapshot vs process <span class="${changed ? "mismatch" : ""}">${changed} changed</span></h2>
       ${readNote}
-      ${diffTable(rows, "snapshot", "process")}`;
+      ${diffTable(rows, "snapshot", "process", visibleAreas)}`;
   }
+
+  viewEl.addEventListener("click", (event) => {
+    const renderDetails = (details: HTMLDetailsElement) => {
+      const area = visibleAreas[Number(details.dataset.area)];
+      const content = details.querySelector<HTMLDivElement>(".page-content");
+      if (area && content && !content.hasChildNodes()) content.innerHTML = pageDetails(area, 0);
+    };
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-page]");
+    if (button) {
+      const details = button.closest<HTMLDetailsElement>("details[data-area]");
+      const area = details && visibleAreas[Number(details.dataset.area)];
+      const page = Number(button.dataset.page);
+      if (!area || !Number.isInteger(page) || page < 0) return;
+      const content = details.querySelector<HTMLDivElement>(".page-content");
+      if (content) content.innerHTML = pageDetails(area, page);
+      return;
+    }
+    const summary = (event.target as HTMLElement).closest("details[data-area] > summary");
+    if (summary) {
+      renderDetails(summary.parentElement as HTMLDetailsElement);
+      return;
+    }
+    const row = (event.target as HTMLElement).closest<HTMLTableRowElement>(
+      "tr.area-row[data-area]",
+    );
+    if (row) {
+      const details = row.nextElementSibling?.querySelector<HTMLDetailsElement>("details");
+      if (details) {
+        if (!details.open) renderDetails(details);
+        details.open = !details.open;
+      }
+    }
+  });
+  viewEl.addEventListener(
+    "toggle",
+    (event) => {
+      const details = event.target;
+      if (!(details instanceof HTMLDetailsElement) || !details.matches("details[data-area]"))
+        return;
+      const button = details
+        .closest("tr")
+        ?.previousElementSibling?.querySelector<HTMLButtonElement>(".area-toggle");
+      button?.setAttribute("aria-expanded", String(details.open));
+    },
+    true,
+  );
 
   async function refreshFiles() {
     sel.innerHTML = "";
@@ -305,6 +436,7 @@ async function main() {
     const text = await (await fetch(`/api/file/${name}`)).text();
     loadedText = text;
     runs = parseFile(text);
+    visibleAreas = [];
     renderTree();
     viewEl.innerHTML = "<p class='dim'>select a checkpoint or restore</p>";
     openPerfetto.disabled = false;
@@ -327,6 +459,7 @@ async function main() {
     try {
       await fetch("/api/delete-all", { method: "POST" });
       runs = [];
+      visibleAreas = [];
       loadedText = "";
       openPerfetto.disabled = true;
       perfetto.disabled = true;

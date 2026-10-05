@@ -57,6 +57,13 @@
         font-size: 0.85rem;
       }
       .seg {
+        display: block;
+        width: 100%;
+        background: transparent;
+        border: 0;
+        color: inherit;
+        text-align: left;
+        font: inherit;
         padding: 3px 8px 3px 20px;
         cursor: pointer;
       }
@@ -115,6 +122,49 @@
       }
       .bad td {
         background: #301;
+      }
+      .area-detail td {
+        padding: 0 8px;
+      }
+      .area-detail:not(:has(details[open])) {
+        display: none;
+      }
+      .area-row {
+        cursor: pointer;
+      }
+      .area-toggle {
+        background: transparent;
+        border: 0;
+        color: inherit;
+        font: inherit;
+        padding: 0;
+        text-align: left;
+      }
+      .area-toggle:hover {
+        background: transparent;
+        color: #9cf;
+      }
+      .area-toggle:active {
+        background: transparent;
+      }
+      .seg:focus-visible,
+      .area-toggle:focus-visible {
+        outline: 2px solid #9cf;
+        outline-offset: 2px;
+      }
+      .area-detail details[open] {
+        padding-bottom: 8px;
+      }
+      .area-detail summary {
+        cursor: pointer;
+        color: #9cf;
+      }
+      .page-content {
+        max-height: 400px;
+        overflow: auto;
+      }
+      .page-nav {
+        margin: 8px 0;
       }
     </style>
   </head>
