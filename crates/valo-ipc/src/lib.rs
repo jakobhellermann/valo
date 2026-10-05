@@ -71,6 +71,10 @@ impl ClientIPC {
     pub fn set_read_timeout(&self, timeout: Duration) -> Result<()> {
         self.stream.set_read_timeout(Some(timeout))
     }
+
+    pub fn clear_read_timeout(&self) -> Result<()> {
+        self.stream.set_read_timeout(None)
+    }
 }
 
 /// Connection handle for the lib side of the protocol. Sends
@@ -94,6 +98,10 @@ impl LibIPC {
 
     pub fn set_read_timeout(&self, timeout: Duration) -> Result<()> {
         self.stream.set_read_timeout(Some(timeout))
+    }
+
+    pub fn clear_read_timeout(&self) -> Result<()> {
+        self.stream.set_read_timeout(None)
     }
 
     pub fn send(&mut self, msg: &LibToClient) -> Result<()> {
@@ -166,9 +174,9 @@ mod tests {
         let t2 = thread::spawn(move || LibIPC::establish(&p2));
         let mut client = t1.join().unwrap().unwrap();
         let mut lib = t2.join().unwrap().unwrap();
-        client.send(&ClientToLib::Advance).unwrap();
+        client.send(&ClientToLib::AdvanceFrames(1)).unwrap();
         let got = lib.recv().unwrap().unwrap();
-        assert_eq!(got, ClientToLib::Advance);
+        assert_eq!(got, ClientToLib::AdvanceFrames(1));
     }
 
     /// After a session ends and both sides drop their connections, a
@@ -186,9 +194,9 @@ mod tests {
             let t2 = thread::spawn(move || LibIPC::establish(&p2));
             let mut client = t1.join().unwrap().unwrap();
             let mut lib = t2.join().unwrap().unwrap();
-            client.send(&ClientToLib::Advance).unwrap();
+            client.send(&ClientToLib::AdvanceFrames(1)).unwrap();
             let got = lib.recv().unwrap().unwrap();
-            assert_eq!(got, ClientToLib::Advance);
+            assert_eq!(got, ClientToLib::AdvanceFrames(1));
         }
     }
 
@@ -231,11 +239,12 @@ mod tests {
 
         let client_msgs = vec![
             ClientToLib::Hello(Hello::CLIENT),
-            ClientToLib::Advance,
+            ClientToLib::AdvanceFrames(1),
             ClientToLib::Checkpoint,
             ClientToLib::Restore,
             ClientToLib::GetState,
             ClientToLib::Quit,
+            ClientToLib::AdvanceFrames(42),
         ];
         for msg in &client_msgs {
             client.send(msg).unwrap();

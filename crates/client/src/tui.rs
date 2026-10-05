@@ -219,7 +219,7 @@ fn handle_event(app: &mut App, conn: &mut ClientIPC, ev: AppEvent) -> Result<()>
             if app.paused {
                 app.pending_advance = Some(frame);
             } else {
-                send(conn, app, ClientToLib::Advance)?;
+                send(conn, app, ClientToLib::AdvanceFrames(1))?;
             }
         }
         AppEvent::Ipc(LibToClient::CheckpointDone) => {
@@ -306,7 +306,7 @@ fn release_frame_if_pending(conn: &mut ClientIPC, app: &mut App) -> Result<()> {
     if !app.paused
         && let Some(_frame) = app.pending_advance.take()
     {
-        send(conn, app, ClientToLib::Advance)?;
+        send(conn, app, ClientToLib::AdvanceFrames(1))?;
     }
     Ok(())
 }
@@ -314,7 +314,7 @@ fn release_frame_if_pending(conn: &mut ClientIPC, app: &mut App) -> Result<()> {
 fn send(conn: &mut ClientIPC, app: &mut App, msg: ClientToLib) -> Result<()> {
     // `Advance` fires once per frame — too noisy for the events panel.
     // Anything else is rare and worth showing.
-    if !matches!(msg, ClientToLib::Advance) {
+    if !matches!(msg, ClientToLib::AdvanceFrames(_)) {
         app.push_event(EventKind::Send, format!("{msg:?}"));
     }
     conn.send(&msg).context("ipc send")?;

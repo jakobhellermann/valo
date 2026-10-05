@@ -26,8 +26,8 @@ impl Hello {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClientToLib {
     Hello(Hello),
-    /// Run the game until the next frame boundary.
-    Advance,
+    /// Run N frames, then stop at the next boundary.
+    AdvanceFrames(u64),
     Checkpoint,
     Restore,
     GetState,

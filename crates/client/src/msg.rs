@@ -9,11 +9,14 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
+use rustix::pipe::PipeFlags;
 use valo_ipc::messages::{ClientToLib, Hello, LibToClient};
 use valo_ipc::{ClientIPC, PROTOCOL_VERSION};
+use valo_launch::gpu_session::GpuSession;
 
 /// How long a one-shot msg client waits for a reply before reporting a hang.
 const HANG_READ_TIMEOUT: Duration = Duration::from_secs(1);
+const HELLO_TIMEOUT: Duration = Duration::from_secs(4);
 
 /// Default socket path shared between `spawn` and `msg`.
 pub const DEFAULT_SOCK: &str = "/tmp/valo-session.sock";
@@ -22,6 +25,11 @@ pub const DEFAULT_SOCK: &str = "/tmp/valo-session.sock";
 pub enum MsgCmd {
     /// Query the current frame counter.
     State,
+    /// Draw frames, then pause at the next frame boundary (default: 1).
+    Advance {
+        #[arg(default_value_t = 1)]
+        frames: u64,
+    },
     /// Checkpoint at the next frame boundary.
     Checkpoint,
     /// Restore the last checkpoint. Async mode never answers this: execution
@@ -33,10 +41,8 @@ pub enum MsgCmd {
     Quit,
 }
 
-pub fn spawn(lib: Option<PathBuf>, sock: &Path, target: &[String]) -> Result<()> {
-    if valo_launch::use_gpu() {
-        bail!("GPU sessions require `valo run`, which owns the Kumquat lifecycle");
-    }
+pub fn spawn(lib: Option<PathBuf>, sock: &Path, paused: bool, target: &[String]) -> Result<()> {
+    let use_gpu = valo_launch::use_gpu();
     let Some(program) = target.first() else {
         bail!("missing program");
     };
@@ -45,35 +51,110 @@ pub fn spawn(lib: Option<PathBuf>, sock: &Path, target: &[String]) -> Result<()>
         .with_context(|| format!("canonicalize libvalo.so path {}", lib.display()))?;
 
     let mut cmd = crate::build_command(false, &PathBuf::from(program), &target[1..], &lib);
-    valo_launch::configure_target(&mut cmd, false);
+    valo_launch::configure_target(&mut cmd, use_gpu);
     cmd.env("VALO_SOCK", sock);
     cmd.env("VALO_IPC_MODE", "async");
+    cmd.env("VALO_IPC_PAUSED", if paused { "1" } else { "0" });
 
     use std::os::unix::process::CommandExt;
     // closing the spawning terminal must not take the session down with it.
     cmd.process_group(0);
 
-    let child = cmd
-        .spawn()
-        .with_context(|| format!("spawning {}", cmd.get_program().to_string_lossy()))?;
+    if !use_gpu {
+        let child = cmd
+            .spawn()
+            .with_context(|| format!("spawning {}", cmd.get_program().to_string_lossy()))?;
+        print_spawned(child.id(), sock, paused);
+        return Ok(());
+    }
+
+    // The GPU session needs an owner that outlives this process, and the
+    // owner must be the game's parent to reap it. Fork the session daemon
+    // before spawning the game; the daemon reports the game pid (or a
+    // startup error) back through a pipe.
+    let (status_read, status_write) =
+        rustix::pipe::pipe_with(PipeFlags::CLOEXEC).map_err(std::io::Error::from)?;
+    // SAFETY: single-threaded here, no locks held across the fork.
+    let daemon = unsafe { libc::fork() };
+    if daemon < 0 {
+        bail!(std::io::Error::last_os_error());
+    }
+
+    if daemon > 0 {
+        // The parent keeps only the read end.
+        drop(status_write);
+        let mut status = String::new();
+        {
+            use std::io::Read;
+            std::fs::File::from(status_read).read_to_string(&mut status)?;
+        }
+        if let Some(pid) = status.strip_prefix("pid ") {
+            let pid: u32 = pid.trim().parse().context("daemon status message")?;
+            print_spawned(pid, sock, paused);
+            return Ok(());
+        }
+        bail!("session daemon: {}", status.trim());
+    }
+
+    // Detached daemon with no controlling terminal.
+    drop(status_read);
+    rustix::process::setsid().map_err(std::io::Error::from)?;
+    let report = |status: &str| {
+        use std::io::Write;
+        let mut writer = std::fs::File::from(status_write);
+        let _ = writer.write_all(status.as_bytes());
+    };
+    let mut gpu = match GpuSession::start() {
+        Ok(session) => session,
+        Err(e) => {
+            report(&format!("error {e:#}"));
+            std::process::exit(1);
+        }
+    };
+    gpu.configure_game(&mut cmd);
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            report(&format!("error {:#}", anyhow::Error::new(e)));
+            drop(gpu);
+            std::process::exit(1);
+        }
+    };
+    gpu.game_started();
+    report(&format!("pid {}\n", child.id()));
+    let status = child.wait().context("wait for game")?;
+    let host_died = crate::report_kumquat_exit(&mut gpu)?;
+    // std::process::exit skips destructors; the drop kills kumquat.
+    drop(gpu);
+    if host_died && !status.success() {
+        std::process::exit(1);
+    }
+    std::process::exit(0);
+}
+
+fn print_spawned(pid: u32, sock: &Path, paused: bool) {
     println!(
-        "[valo] spawned pid={} sock={} (frames pump freely; control with `valo msg --sock {} ...`)",
-        child.id(),
+        "[valo] spawned pid={} sock={}{}",
+        pid,
         sock.display(),
-        sock.display()
+        if paused {
+            " (paused before frame 0)"
+        } else {
+            ""
+        }
     );
-    Ok(())
 }
 
 pub fn msg(sock: &Path, command: &MsgCmd) -> Result<()> {
     // Connect-only: the lib owns the listener socket
     let mut conn = ClientIPC::connect(sock, Duration::from_secs(3))
         .with_context(|| format!("connect {}: no session listening", sock.display()))?;
-    conn.set_read_timeout(HANG_READ_TIMEOUT)
+    conn.set_read_timeout(HELLO_TIMEOUT)
         .context("set read timeout")?;
     conn.send(&ClientToLib::Hello(Hello::CLIENT))
         .context("send hello")?;
-    let reply = recv_reply(&mut conn, sock).context("Cannot establish connection for msg")?;
+    let reply = recv_reply(&mut conn, sock, HELLO_TIMEOUT)
+        .context("Cannot establish connection for msg")?;
     let Some(LibToClient::Hello(peer)) = reply else {
         bail!("expected Hello from lib, got {reply:?}");
     };
@@ -84,14 +165,24 @@ pub fn msg(sock: &Path, command: &MsgCmd) -> Result<()> {
             PROTOCOL_VERSION
         );
     }
+    conn.set_read_timeout(HANG_READ_TIMEOUT)
+        .context("set command timeout")?;
 
     let request = match command {
         MsgCmd::State => ClientToLib::GetState,
+        MsgCmd::Advance { frames } => ClientToLib::AdvanceFrames(*frames),
         MsgCmd::Checkpoint => ClientToLib::Checkpoint,
         MsgCmd::Restore => ClientToLib::Restore,
         MsgCmd::Quit => ClientToLib::Quit,
     };
     conn.send(&request).context("send command")?;
+
+    if matches!(
+        request,
+        ClientToLib::AdvanceFrames(_) | ClientToLib::Checkpoint
+    ) {
+        conn.clear_read_timeout().context("clear command timeout")?;
+    }
 
     // No reply in async mode, by construction: on success valo_restore
     // rewinds and resumes inside the earlier checkpoint's continuation, where
@@ -103,8 +194,9 @@ pub fn msg(sock: &Path, command: &MsgCmd) -> Result<()> {
         return Ok(());
     }
 
-    match recv_reply(&mut conn, sock).context("recv reply")? {
+    match recv_reply(&mut conn, sock, HANG_READ_TIMEOUT).context("recv reply")? {
         Some(LibToClient::State(state)) => println!("[valo] frame {}", state.frame),
+        Some(LibToClient::Error(error)) => bail!("{}", error.message),
         Some(LibToClient::CheckpointDone) => println!("[valo] checkpoint done"),
         Some(other) => println!("[valo] <- {other:?}"),
         None => {
@@ -121,7 +213,7 @@ pub fn msg(sock: &Path, command: &MsgCmd) -> Result<()> {
 /// One framed receive. On a read timeout this is not a transport error but a
 /// hung game: report the per-thread wchan state (using the pid the lib wrote
 /// next to the socket) and abort with a clear error.
-fn recv_reply(conn: &mut ClientIPC, sock: &Path) -> Result<Option<LibToClient>> {
+fn recv_reply(conn: &mut ClientIPC, sock: &Path, timeout: Duration) -> Result<Option<LibToClient>> {
     match conn.recv() {
         Ok(reply) => Ok(reply),
         Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {
@@ -142,12 +234,12 @@ fn recv_reply(conn: &mut ClientIPC, sock: &Path) -> Result<Option<LibToClient>> 
                 }
                 Err(e) => {
                     eprintln!(
-                        "[valo] no reply within {HANG_READ_TIMEOUT:?} and no pid file {}: {e}",
+                        "[valo] no reply within {timeout:?} and no pid file {}: {e}",
                         pid_path.display()
                     );
                 }
             }
-            bail!("no reply within {HANG_READ_TIMEOUT:?}");
+            bail!("no reply within {timeout:?}");
         }
         Err(e) => Err(e.into()),
     }

@@ -61,6 +61,10 @@ enum Cmd {
         #[arg(long, default_value = msg::DEFAULT_SOCK)]
         sock: PathBuf,
 
+        /// Stop before drawing the first frame; use `valo msg advance N`.
+        #[arg(long)]
+        paused: bool,
+
         /// Target program and arguments.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         target: Vec<String>,
@@ -87,9 +91,12 @@ fn main() -> Result<ExitCode> {
             program,
             args,
         } => run(lib, gdb, tui, program, args),
-        Cmd::Spawn { lib, sock, target } => {
-            msg::spawn(lib, &sock, &target).map(|_| ExitCode::SUCCESS)
-        }
+        Cmd::Spawn {
+            lib,
+            sock,
+            paused,
+            target,
+        } => msg::spawn(lib, &sock, paused, &target).map(|_| ExitCode::SUCCESS),
         Cmd::Msg { sock, command } => msg::msg(&sock, &command).map(|_| ExitCode::SUCCESS),
     }
 }
@@ -198,7 +205,7 @@ fn run(
     }
 }
 
-fn report_kumquat_exit(session: &mut GpuSession) -> Result<bool> {
+pub(crate) fn report_kumquat_exit(session: &mut GpuSession) -> Result<bool> {
     let Some(status) = session.exit_status()? else {
         return Ok(false);
     };
@@ -258,7 +265,8 @@ fn run_ipc_loop(sock: &Path, child: &mut Child, gdb: bool) -> Result<SessionEnd>
             match msg {
                 LibToClient::FrameBoundary(FrameBoundary { frame: _ }) => {
                     // std::thread::sleep_ms(200);
-                    conn.send(&ClientToLib::Advance).context("send advance")?;
+                    conn.send(&ClientToLib::AdvanceFrames(1))
+                        .context("send advance")?;
                 }
                 other => eprintln!("[valo-client] ipc <- {other:?}"),
             }

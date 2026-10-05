@@ -16,6 +16,9 @@ run-sdl *args:
 run-hollowknight *args:
     just valo run {{ args }} "/home/jakob/.apps/Heroic/Hollow Knight/game/Hollow Knight" -force-gfx-direct
 
+spawn-hollowknight *args:
+    just valo spawn {{ args }} "/home/jakob/.apps/Heroic/Hollow Knight/game/Hollow Knight" -force-gfx-direct
+
 run-hollowknight-gpu *args:
     VALO_USE_GPU=1 just valo run {{ args }} "/home/jakob/.apps/Heroic/Hollow Knight/game/Hollow Knight" -force-gfx-direct -force-vulkan
 

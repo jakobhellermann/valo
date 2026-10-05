@@ -1,9 +1,11 @@
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use valo_ipc::messages::{ClientToLib, FrameBoundary, LibToClient, State};
+use valo_ipc::messages::{ClientToLib, Error, FrameBoundary, LibToClient, State};
 
 use crate::global_state::GlobalState;
 use crate::{error, info, ipc, trace};
+
+static BLOCK_ADVANCE_UNTIL: AtomicU64 = AtomicU64::new(0);
 
 pub fn frame_boundary<T>(draw: impl FnOnce() -> T) -> T {
     let global = GlobalState::get();
@@ -28,6 +30,11 @@ fn handle_ipc(frame: u64) {
         return;
     }
 
+    if frame < BLOCK_ADVANCE_UNTIL.load(Ordering::SeqCst) {
+        return;
+    }
+    BLOCK_ADVANCE_UNTIL.store(0, Ordering::SeqCst);
+
     let Some(mut conn) = ipc::lock() else {
         return;
     };
@@ -50,10 +57,28 @@ fn handle_ipc(frame: u64) {
             }
         };
         match msg {
-            ClientToLib::Advance => {
-                trace!(Ipc, "received Advance");
-                return;
-            }
+            ClientToLib::AdvanceFrames(count) => match count {
+                0 => {
+                    if let Err(e) = conn.send(&LibToClient::State(State { frame })) {
+                        error!(Ipc, "send State: {e}");
+                        return;
+                    }
+                }
+                1 => return,
+                n => {
+                    if let Some(target) = frame.checked_add(n) {
+                        trace!(Ipc, "received AdvanceFrames({n})");
+                        BLOCK_ADVANCE_UNTIL.store(target, Ordering::SeqCst);
+                        return;
+                    }
+                    if let Err(e) = conn.send(&LibToClient::Error(Error {
+                        message: "advance frame count overflow".into(),
+                    })) {
+                        error!(Ipc, "send advance error: {e}");
+                        return;
+                    }
+                }
+            },
             ClientToLib::Checkpoint => {
                 info!(Ipc, "received Checkpoint");
                 drop(conn);
