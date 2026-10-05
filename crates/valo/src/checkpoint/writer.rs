@@ -175,11 +175,10 @@ fn write_area(
         .flatten();
     structured::events::shared_fd_initial(area.address.start, shared_fd.as_ref());
 
-    page_map.seek(area.page())?;
-
-    let mut write_area_page = |page: PageIndex| -> Result<(), std::io::Error> {
+    let mut write_area_page = |page: PageIndex,
+                               page_flags: PageFlags|
+     -> Result<(), std::io::Error> {
         let addr = std::ptr::with_exposed_provenance(page * PAGE_SIZE);
-        let page_flags = page_map.read_single()?; // TODO buffer
 
         #[cfg(feature = "structured-log")]
         log_page_flags.record(page_flags);
@@ -290,9 +289,7 @@ fn write_area(
         }
     };
 
-    for page in area.pages() {
-        write_area_page(page)?;
-    }
+    page_map.for_each_page(area.pages(), &mut write_area_page)?;
 
     debug!(
         Checkpoint,
