@@ -70,7 +70,7 @@ fn run_lib(mut conn: LibIPC) -> Result<()> {
             .context("client closed mid-session")?;
         eprintln!("[Lib] client said {cmd:?}");
         match cmd {
-            ClientToLib::Advance => {}
+            ClientToLib::AdvanceFrames(1) => {}
             ClientToLib::Quit => break,
             other => eprintln!("[Lib] ignoring {other:?}"),
         }
@@ -100,7 +100,8 @@ fn run_client(mut conn: ClientIPC) -> Result<()> {
             LibToClient::FrameBoundary(FrameBoundary { frame }) => {
                 eprintln!("[Client] frame {frame}, advancing in 250ms");
                 std::thread::sleep(Duration::from_millis(250));
-                conn.send(&ClientToLib::Advance).context("send advance")?;
+                conn.send(&ClientToLib::AdvanceFrames(1))
+                    .context("send advance")?;
             }
             other => bail!("[Client] unexpected {other:?}"),
         }
