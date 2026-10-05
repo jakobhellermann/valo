@@ -1,6 +1,9 @@
 // TODO(ai-review): generated, not yet audited
+use std::os::fd::{AsRawFd, OwnedFd};
+
 use crate::checkpoint::{PageFlag, SnapshotSlot};
-use crate::procfs_maps::MemoryMap;
+use crate::procfs_maps::{MemoryMap, PageFlags, ProcPagemap};
+use crate::utils::TrackRun;
 
 use super::{StackWriter, structured_write, write_field};
 
@@ -22,6 +25,19 @@ pub fn save_area(area: &MemoryMap, skip: bool) {
     });
 }
 
+pub fn shared_fd_initial(start: u64, shared_fd: Option<&(OwnedFd, u64, u64)>) {
+    structured_write(|w| {
+        write_field(w, "e", "shared_fd_initial");
+        write_field(w, "start", start);
+        write_field(w, "available", shared_fd.is_some());
+        if let Some((fd, next_hole, next_data)) = shared_fd {
+            write_field(w, "fd", fd.as_raw_fd() as u64);
+            write_field(w, "next_hole", *next_hole);
+            write_field(w, "next_data", *next_data);
+        }
+    });
+}
+
 pub fn save_pages(start: u64, index: u64, count: u64, flag: PageFlag) {
     structured_write(|w| {
         write_field(w, "e", "save_pages");
@@ -30,6 +46,71 @@ pub fn save_pages(start: u64, index: u64, count: u64, flag: PageFlag) {
         write_field(w, "count", count);
         write_field(w, "flag", flag as u8 as u64);
     });
+}
+
+pub fn checkpoint_pagemap_run(start: u64) -> TrackRun<u8, impl Fn(usize, usize, u8)> {
+    pagemap_run("save_pagemap_pages", start)
+}
+
+fn pagemap_run(event: &'static str, start: u64) -> TrackRun<u8, impl Fn(usize, usize, u8)> {
+    TrackRun::new(move |index, count, bits| {
+        pagemap_pages(event, start, index as u64, count as u64, bits);
+    })
+}
+
+fn pagemap_pages(event: &'static str, start: u64, index: u64, count: u64, bits: u8) {
+    structured_write(|w| {
+        write_field(w, "e", event);
+        write_field(w, "start", start);
+        write_field(w, "index", index);
+        write_field(w, "count", count);
+        write_field(w, "bits", bits as u64);
+    });
+}
+
+fn current_pagemap_error(start: u64) {
+    structured_write(|w| {
+        write_field(w, "e", "current_pagemap_error");
+        write_field(w, "start", start);
+    });
+}
+
+pub fn log_current_area(area: &MemoryMap, pagemap: &mut ProcPagemap) {
+    current_area(area);
+    let mut run = pagemap_run("current_pagemap_pages", area.address.start);
+    let result = (|| -> crate::Result<()> {
+        pagemap.seek(area.page())?;
+        let mut remaining = area.page_count();
+        while remaining > 0 {
+            let mut chunk = [PageFlags::default(); 256];
+            let count = remaining.min(chunk.len());
+            pagemap.read(&mut chunk[..count])?;
+            for flags in &chunk[..count] {
+                run.record(pagemap_log_bits(*flags));
+            }
+            remaining -= count;
+        }
+        Ok(())
+    })();
+    drop(run);
+    if result.is_err() {
+        current_pagemap_error(area.address.start);
+    }
+}
+
+// Linux pagemap bit 58 marks a guard region (since Linux 6.15).
+const PAGEMAP_GUARD_REGION: u64 = 1 << 58;
+
+/// Compact structured-log format for pagemap runs (`bits` in JSON):
+/// bit 0 = present, 1 = file/shared-anon, 2 = swapped, 3 = guard region,
+/// 4 = soft-dirty, 5 = exclusively mapped. PFN and swap location are omitted.
+pub fn pagemap_log_bits(flags: PageFlags) -> u8 {
+    u8::from(flags.contains(PageFlags::PRESENT))
+        | (u8::from(flags.contains(PageFlags::FILE)) << 1)
+        | (u8::from(flags.contains(PageFlags::SWAP)) << 2)
+        | (u8::from(flags.bits() & PAGEMAP_GUARD_REGION != 0) << 3)
+        | (u8::from(flags.contains(PageFlags::SOFT_DIRTY)) << 4)
+        | (u8::from(flags.contains(PageFlags::MMAP_EXCLUSIVE)) << 5)
 }
 
 pub fn reallocate_areas_begin() {
@@ -80,13 +161,14 @@ pub fn trace_step(event: &'static str) {
     trace_event(event);
 }
 
-pub fn saved_area(area: &MemoryMap) {
+pub fn saved_area(area: &MemoryMap, skip: bool) {
     structured_write(|w| {
         write_field(w, "e", "saved_area");
         write_field(w, "start", area.address.start);
         write_field(w, "end", area.address.end);
         write_field(w, "perms", area.perms);
         write_field(w, "path", area.pathname.as_str());
+        write_field(w, "skip", skip);
     });
 }
 
