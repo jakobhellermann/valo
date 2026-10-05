@@ -9,7 +9,7 @@ use crate::checkpoint::threads::SavedThreads;
 use crate::checkpoint::{AreaMeta, Header, PageFlag, SnapshotSlot};
 use crate::global_state::{GlobalState, ReservedMemory};
 use crate::log::structured;
-use crate::procfs_maps::{
+use crate::procfs::maps::{
     MMapPath, MemoryMap, MemoryMapPermissions, PageFlags, PageIndex, ProcMaps, ProcPagemap,
 };
 use crate::utils::{PAGE_SIZE, align_page_down, align_page_up};
