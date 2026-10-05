@@ -42,12 +42,12 @@ clean:
 # old
 .PHONY: sdl
 sdl: out/libvalo.so
-	$(VALO_RUN) /home/jakob/dev/contrib/sdl3-sample/build/sdl-min
+	$(VALO_RUN) $(HOME)/dev/contrib/sdl3-sample/build/sdl-min
 
 .PHONY: sdl-gdb
 sdl-gdb: out/libvalo.so
-	$(VALO_RUN) --gdb /home/jakob/dev/contrib/sdl3-sample/build/sdl-min
+	$(VALO_RUN) --gdb $(HOME)/dev/contrib/sdl3-sample/build/sdl-min
 
 .PHONY: breakout
 breakout: out/libvalo.so
-	$(VALO_RUN) /home/jakob/.cache/rust/release/examples/breakout
+	$(VALO_RUN) $(HOME)/.cache/rust/release/examples/breakout

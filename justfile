@@ -1,29 +1,23 @@
 set positional-arguments
 
-build:
-    @cargo build --quiet --release -Zunstable-options --artifact-dir out -p valo -p valo-client
+_default:
+    just --list
 
-test *FILTER: build
+valo *args:
+    @cargo run -- "$@"
+
+test *FILTER:
     @cargo valo test "$@"
 
-test-update *FILTER: build
-    @cargo valo test --update "$@"
-
-valo *args: build
-    @./out/valo "$@"
-
-run-sdl *args: build
+run-sdl *args:
     make out/manual/sdl2-test
-    # VALO_LOG=/dev/stderr just valo run "./out/manual/sdl2-test"
     just valo run {{ args }}"./out/manual/sdl2-test"
 
-run-hollowknight *args: build
-    # VALO_LOG=/dev/stderr just valo run "/home/jakob/.apps/Heroic/Hollow Knight/game/Hollow Knight" -force-gfx-direct
+run-hollowknight *args:
     just valo run {{ args }} "/home/jakob/.apps/Heroic/Hollow Knight/game/Hollow Knight" -force-gfx-direct
 
-run-hk-vk *args: build
-    # VALO_LOG=/dev/stderr just valo run "/home/jakob/.apps/Heroic/Hollow Knight/game/Hollow Knight" -force-gfx-direct
-    just valo run {{ args }} "/home/jakob/.apps/Heroic/Hollow Knight/game/Hollow Knight" -force-gfx-direct -force-vulkan
+run-hollowknight-gpu *args:
+    VALO_USE_GPU=1 just valo run {{ args }} "/home/jakob/.apps/Heroic/Hollow Knight/game/Hollow Knight" -force-gfx-direct -force-vulkan
 
 save-repro:
     mkdir -p repro
@@ -56,3 +50,6 @@ vendor:
     printf '// generated from `just vendor`\nconst XCB_CONN_BUF_SIZE: usize = %s;\n' "$xcb_size" > "$temp_dir/generated.rs"
     install -m 0644 "$temp_dir/xcbint.h" crates/valo/native/xcbint.h
     install -m 0644 "$temp_dir/generated.rs" crates/valo/src/hooks/xlib/generated.rs
+
+clean:
+    rm -fr /tmp/valo* /tmp/tmp-valo-maps

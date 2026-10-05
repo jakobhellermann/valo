@@ -6,6 +6,7 @@ edition = "2024"
 [workspace]
 resolver = "3"
 members = ["crates/valo", "crates/harness", "crates/client", "crates/valo-ipc", "crates/valo-launch"]
+default-members = ["crates/valo", "crates/client"]
 
 [profile.release]
 debug = "full"
