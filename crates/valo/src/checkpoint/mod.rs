@@ -22,7 +22,7 @@ fn snapshot_path(slot: SnapshotSlot, kind: &str) -> heapless::String<64> {
 }
 
 #[repr(u8)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PageFlag {
     // No physical page is mapped at the address
     No,
