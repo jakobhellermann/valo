@@ -211,6 +211,7 @@ fn read_area(
 
     let mut stats = Stats::default();
     let mut shared_seek_failed = false;
+    let mut page_loads = PageLoadQueue::default();
 
     let mut orig_fd = None;
 
@@ -223,6 +224,9 @@ fn read_area(
             true => PageFlag::No,
             false => reader.read_pageflag()?,
         };
+        if flag != PageFlag::Full {
+            page_loads.flush(&mut reader.snapshot_page_data)?;
+        }
 
         let page_present = current_pageflag.contains(PageFlags::PRESENT);
         let page_file = current_pageflag.contains(PageFlags::FILE);
@@ -383,7 +387,7 @@ fn read_area(
         // todo: base page
 
         stats.full += 1;
-        queue_page_load(reader, addr, flag)?;
+        page_loads.push(&mut reader.snapshot_page_data, addr)?;
 
         Ok(())
     };
@@ -391,6 +395,7 @@ fn read_area(
     for page in saved_area.pages() {
         read_area_page(page)?;
     }
+    page_loads.flush(&mut reader.snapshot_page_data)?;
 
     if !saved_area.perms.contains(MemoryMapPermissions::WRITE)
         || !saved_area.perms.contains(MemoryMapPermissions::READ)
@@ -413,22 +418,38 @@ fn read_area(
     Ok(())
 }
 
-fn queue_page_load(
-    reader: &mut SnapshotReader,
-    page_addr: *mut u8,
-    flag: PageFlag,
-) -> Result<(), std::io::Error> {
-    if let PageFlag::Full = flag {
-        // SAFETY: todo
-        let mut dst = unsafe { std::slice::from_raw_parts_mut(page_addr, PAGE_SIZE) };
-        std::io::copy(
-            &mut (&mut reader.snapshot_page_data).take(PAGE_SIZE as u64),
-            &mut dst,
-        )?;
-    } else {
-        unreachable!("{:?}", flag);
+#[derive(Default)]
+struct PageLoadQueue {
+    start: *mut u8,
+    pages: usize,
+}
+
+impl PageLoadQueue {
+    fn push(&mut self, file: &mut File, addr: *mut u8) -> Result<()> {
+        const MAX_PAGES: usize = 256;
+        if self.pages > 0
+            && (addr != self.start.wrapping_add(self.pages * PAGE_SIZE) || self.pages == MAX_PAGES)
+        {
+            self.flush(file)?;
+        }
+        if self.pages == 0 {
+            self.start = addr;
+        }
+        self.pages += 1;
+        Ok(())
     }
-    Ok(())
+
+    fn flush(&mut self, file: &mut File) -> Result<()> {
+        if self.pages == 0 {
+            return Ok(());
+        }
+        // SAFETY: each queued Full page is mapped and writable when pushed. The queue
+        // contains consecutive pages, and other guest threads are suspended.
+        let dst = unsafe { std::slice::from_raw_parts_mut(self.start, self.pages * PAGE_SIZE) };
+        file.read_exact(dst)?;
+        self.pages = 0;
+        Ok(())
+    }
 }
 
 fn is_zero_page() -> bool {
