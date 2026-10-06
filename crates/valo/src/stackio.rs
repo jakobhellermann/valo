@@ -92,6 +92,9 @@ const ERR_INSUFFICIENT_SIZE: std::io::Error = std::io::const_error!(
     "StackBufReader isn't big enough to fit a line"
 );
 
+const ERR_SKIP_EOF: std::io::Error =
+    std::io::const_error!(std::io::ErrorKind::UnexpectedEof, "skip past end of input");
+
 impl<R: Read, const N: usize> StackBufReader<R, N> {
     pub fn read_more(&mut self) -> Result<()> {
         self.buffer.read_more(&mut self.reader)
@@ -127,9 +130,29 @@ impl<R: Read, const N: usize> StackBufReader<R, N> {
 
 impl<R: Read + Seek, const N: usize> StackBufReader<R, N> {
     pub fn reset(&mut self) -> Result<()> {
+        self.seek_start(0)
+    }
+
+    /// Seek the reader to an absolute position and drop all
+    /// buffered bytes.
+    pub fn seek_start(&mut self, pos: u64) -> Result<()> {
         self.buffer.pos = 0;
         self.buffer.filled = 0;
-        self.reader.seek(SeekFrom::Start(0))?;
+        self.reader.seek(SeekFrom::Start(pos))?;
+        Ok(())
+    }
+
+    /// Consume `amount` bytes without materializing them
+    pub fn skip(&mut self, mut amount: usize) -> Result<()> {
+        while amount > 0 {
+            let buf = self.fill_buf()?;
+            if buf.is_empty() {
+                return Err(ERR_SKIP_EOF);
+            }
+            let n = buf.len().min(amount);
+            self.consume(n);
+            amount -= n;
+        }
         Ok(())
     }
 }

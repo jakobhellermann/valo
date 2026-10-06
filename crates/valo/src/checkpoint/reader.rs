@@ -12,12 +12,19 @@ use crate::log::structured;
 use crate::procfs_maps::{
     MMapPath, MemoryMap, MemoryMapPermissions, PageFlags, ProcMaps, ProcPagemap,
 };
+use crate::stackio::StackBufReader;
 use crate::utils::{PAGE_SIZE, align_page_down, align_page_up};
 use crate::{debug, error, info, trace, warn};
 
+/// Buffer for the meta file reads
+const META_BUF: usize = 8192;
+
 pub struct SnapshotReader {
-    snapshot_meta: File,
-    pub snapshot_page_data: File,
+    // Header, [MemoryMap Area] x n_areas, PageFlag x n_page_flags
+    snapshot_meta: StackBufReader<File, META_BUF>,
+    // PageFlag x n_page_flags
+    snapshot_page_data: File,
+
     flags_remaining: usize,
     pub header: Header,
 }
@@ -25,7 +32,9 @@ pub struct SnapshotReader {
 impl SnapshotReader {
     pub fn new(slot: SnapshotSlot) -> Result<SnapshotReader> {
         let mut reader = SnapshotReader {
-            snapshot_meta: File::open(super::snapshot_path(slot, "meta").as_str())?,
+            snapshot_meta: StackBufReader::new(File::open(
+                super::snapshot_path(slot, "meta").as_str(),
+            )?),
             snapshot_page_data: File::open(super::snapshot_path(slot, "pages").as_str())?,
             flags_remaining: 0,
             header: Header { area_count: 0 },
@@ -47,15 +56,15 @@ impl SnapshotReader {
     }
 
     pub fn restart(&mut self) -> Result<()> {
-        self.snapshot_meta
-            .seek(SeekFrom::Start(size_of::<Header>() as u64))?;
+        self.flags_remaining = 0;
+        self.snapshot_meta.seek_start(size_of::<Header>() as u64)?;
         Ok(())
     }
 
     pub fn read(&mut self) -> Result<(MemoryMap, AreaMeta)> {
         if self.flags_remaining > 0 {
             self.snapshot_meta
-                .seek_relative(self.flags_remaining as i64 * size_of::<PageFlag>() as i64)?;
+                .skip(self.flags_remaining * size_of::<PageFlag>())?;
         }
 
         // SAFETY: assume layout
@@ -76,8 +85,11 @@ impl SnapshotReader {
         if self.flags_remaining > 0 {
             self.flags_remaining -= 1;
 
-            // SAFETY: assume layout, PageFlag is just u8
-            unsafe { self.read_data::<PageFlag>() }
+            let mut byte = 0_u8;
+            self.snapshot_meta
+                .read_exact(std::slice::from_mut(&mut byte))?;
+            // SAFETY: assume savestate is untampered
+            Ok(unsafe { PageFlag::from_u8_unchecked(byte) })
         } else {
             unreachable!("attempteed to read out-of-bounds pageflag")
         }
