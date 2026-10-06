@@ -14,6 +14,7 @@ impl<const N: usize> Buffer<N> {
             debug_assert!(self.pos == self.filled);
 
             self.pos = 0;
+            self.filled = 0;
             let n = reader.read(self.unfilled())?;
             self.filled = n;
         }
