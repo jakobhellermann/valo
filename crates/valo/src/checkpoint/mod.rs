@@ -37,6 +37,18 @@ pub enum PageFlag {
     Guard,
 }
 
+impl PageFlag {
+    /// Reinterpret a flag byte without validation.
+    ///
+    /// # Safety
+    /// `byte` must be a valid `PageFlag` discriminant (0..=4)
+    #[inline]
+    pub(crate) unsafe fn from_u8_unchecked(byte: u8) -> Self {
+        // SAFETY: repr(u8) fieldless enum, valid discriminant per contract
+        unsafe { std::mem::transmute::<u8, PageFlag>(byte) }
+    }
+}
+
 #[derive(Debug)]
 #[repr(C)]
 pub struct AreaMeta {
