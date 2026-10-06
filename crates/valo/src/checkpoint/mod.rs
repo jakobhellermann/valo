@@ -14,6 +14,23 @@ use crate::{Result, abort, alt_stack, error, info, sys, thread_tracker, utils};
 
 pub(crate) const SIG_CHECKPOINT: i32 = libc::SIGSYS;
 
+/// Monotonic timestamp in nanoseconds. async-signal-safe.
+fn monotonic_ns() -> u64 {
+    let ts = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
+    ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
+}
+
+/// Allocation-free duration formatting: "123.4ms" below a second, "1.3s" above.
+fn fmt_duration(ns: u64) -> heapless::String<16> {
+    let mut s = heapless::String::new();
+    if ns < 1_000_000_000 {
+        let _ = write!(s, "{:.1}ms", ns as f64 / 1e6);
+    } else {
+        let _ = write!(s, "{:.1}s", ns as f64 / 1e9);
+    }
+    s
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct SnapshotSlot(pub u32);
 
@@ -100,6 +117,9 @@ unsafe fn snapshot_restore(ucontext: *const libc::ucontext_t, slot: SnapshotSlot
 
     let mut reader = reader::SnapshotReader::new(slot)?;
 
+    // GPU restore time: trigger + wait
+    let mut gpu_ns = 0_u64;
+
     // Restore the GPU host concurrently with the CPU memory restore:
     // Memory and kumquat handle disjoint data:
     // - the CPU restore rewrites the guest-shared memfd contents
@@ -109,15 +129,21 @@ unsafe fn snapshot_restore(ucontext: *const libc::ucontext_t, slot: SnapshotSlot
     //   control state) is identical to the snapshot content, so racing
     //   writers produce the same bytes either way.
     structured::events::trace_step("restore.gpu.trigger.begin");
+    let gpu_start = monotonic_ns();
     gpu::trigger_restore(slot)?;
+    gpu_ns += monotonic_ns() - gpu_start;
     structured::events::trace_step("restore.gpu.trigger.end");
 
+    let mem_start = monotonic_ns();
     structured::events::trace_step("restore.memory.begin");
     reader::read_all_areas(&mut reader)?;
     structured::events::trace_step("restore.memory.end");
+    let mem_ns = monotonic_ns() - mem_start;
 
     structured::events::trace_step("restore.gpu.wait.begin");
+    let gpu_start = monotonic_ns();
     gpu::wait_restore_complete()?;
+    gpu_ns += monotonic_ns() - gpu_start;
     structured::events::trace_step("restore.gpu.wait.end");
 
     // Restore threads that died since the checkpoint
@@ -130,6 +156,13 @@ unsafe fn snapshot_restore(ucontext: *const libc::ucontext_t, slot: SnapshotSlot
     crate::hooks::vulkan::queue_outofdate_swapchain();
 
     GlobalState::get().set_restore_in_progress(true);
+
+    info!(
+        Restore,
+        "snapshot restore done (memory {} + gpu wait {})",
+        fmt_duration(mem_ns),
+        fmt_duration(gpu_ns)
+    );
 
     // SAFETY: same preconditions
     unsafe { ucontext::restore(&mut *ucontext.cast_mut(), &*ucontext) };
@@ -159,7 +192,6 @@ pub fn checkpoint_handler_inner(ucontext: *const ucontext_t) -> Result<()> {
         // SAFETY: same precondition
         unsafe { snapshot_restore(ucontext, slot)? };
         structured::events::trace_step("restore.apply.end");
-        info!(Restore, "snapshot restore done");
     }
 
     Ok(())
@@ -205,8 +237,10 @@ pub unsafe fn checkpoint(slot: SnapshotSlot) -> Result<()> {
     gpu::trigger_snapshot(slot)?;
     structured::events::trace_step("checkpoint.gpu.trigger.end");
 
+    let mem_start_ns = monotonic_ns();
     // SAFETY: no preconditions
     unsafe { libc::raise(SIG_CHECKPOINT) };
+    let mem_ns = monotonic_ns() - mem_start_ns;
 
     let restoring = state.restore_in_progress();
 
@@ -215,6 +249,13 @@ pub unsafe fn checkpoint(slot: SnapshotSlot) -> Result<()> {
         structured::events::trace_step("checkpoint.gpu.wait.begin");
         gpu::wait_snapshot_complete()?; // stay frozen until gpu checkpoint is finished
         structured::events::trace_step("checkpoint.gpu.wait.end");
+        let gpu_ns = monotonic_ns() - mem_start_ns - mem_ns;
+        info!(
+            Checkpoint,
+            "snapshot done (memory {} + gpu wait {})",
+            fmt_duration(mem_ns),
+            fmt_duration(gpu_ns)
+        );
     }
 
     threads::resume_others();
