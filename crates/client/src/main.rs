@@ -16,6 +16,7 @@ use valo_ipc::ClientIPC;
 use valo_ipc::config::Config;
 use valo_ipc::messages::{ClientToLib, FrameBoundary, LibToClient};
 use valo_launch::gpu_session::GpuSession;
+use valo_launch::paths;
 
 /// How long to wait for the next FrameBoundary after sending Advance
 /// before assuming the target hung.
@@ -64,8 +65,8 @@ enum Cmd {
         lib: Option<PathBuf>,
 
         /// Socket path shared with `valo msg`.
-        #[arg(long, default_value = msg::DEFAULT_SOCK)]
-        sock: PathBuf,
+        #[arg(long)]
+        sock: Option<PathBuf>,
 
         /// Stop before drawing the first frame; use `valo msg advance N`.
         #[arg(long)]
@@ -82,8 +83,8 @@ enum Cmd {
     /// Send a command to a `valo spawn` session.
     Msg {
         /// Socket path of the spawned session.
-        #[arg(long, default_value = msg::DEFAULT_SOCK)]
-        sock: PathBuf,
+        #[arg(long)]
+        sock: Option<PathBuf>,
 
         #[command(subcommand)]
         command: msg::MsgCmd,
@@ -107,8 +108,18 @@ fn main() -> Result<ExitCode> {
             paused,
             config,
             target,
-        } => msg::spawn(lib, &sock, paused, &config, &target).map(|_| ExitCode::SUCCESS),
-        Cmd::Msg { sock, command } => msg::msg(&sock, &command).map(|_| ExitCode::SUCCESS),
+        } => msg::spawn(
+            lib,
+            sock.as_deref().unwrap_or(paths::ipc_sock()),
+            paused,
+            &config,
+            &target,
+        )
+        .map(|_| ExitCode::SUCCESS),
+        Cmd::Msg { sock, command } => {
+            msg::msg(sock.as_deref().unwrap_or(paths::ipc_sock()), &command)
+                .map(|_| ExitCode::SUCCESS)
+        }
     }
 }
 
@@ -134,7 +145,7 @@ fn run(
 
     let mut cmd = build_command(gdb, &program, &args, &lib);
     let use_gpu = config.use_gpu;
-    valo_launch::configure_target(&mut cmd, use_gpu);
+    valo_launch::command::configure_target(&mut cmd, use_gpu);
 
     if use_tui {
         // Don't let the child's stdout/stderr clobber the alternate screen.
@@ -143,15 +154,11 @@ fn run(
         cmd.stderr(std::process::Stdio::null());
     }
 
-    let sock_path = PathBuf::from(format!("/tmp/valo-{}.sock", std::process::id()));
-    let _ = std::fs::remove_file(&sock_path);
-    cmd.env("VALO_SOCK", &sock_path);
+    let sock_path = paths::ipc_sock();
+    let _ = std::fs::remove_file(sock_path);
+    cmd.env("VALO_SOCK", sock_path);
 
-    // Resolve the lib's log path so the TUI can tail it. Same defaulting
-    // as in the lib's `log::init`.
-    let log_path: Option<PathBuf> = std::env::var_os("VALO_LOG")
-        .map(PathBuf::from)
-        .or_else(|| Some(PathBuf::from("/tmp/valo.log")));
+    let log_path = paths::log_path();
 
     let mut gpu = if use_gpu {
         let session = GpuSession::start()?;
@@ -169,16 +176,21 @@ fn run(
     }
 
     let result = if use_tui {
-        tui::run(&sock_path, log_path.as_deref(), child.id(), config.config())
-            .map(|_| SessionEnd::Done)
+        tui::run(
+            sock_path,
+            Some(log_path.as_path()),
+            child.id(),
+            config.config(),
+        )
+        .map(|_| SessionEnd::Done)
     } else {
-        run_ipc_loop(&sock_path, &mut child, gdb, config.config())
+        run_ipc_loop(sock_path, &mut child, gdb, config.config())
     };
     if let Err(e) = &result {
         eprintln!("ipc loop ended: {e:#}");
     }
     // Best-effort cleanup of the socket file.
-    let _ = std::fs::remove_file(&sock_path);
+    let _ = std::fs::remove_file(sock_path);
 
     if matches!(result, Ok(SessionEnd::Hung)) && !gdb {
         let host_died = gpu

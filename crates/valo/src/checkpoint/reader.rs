@@ -32,11 +32,11 @@ pub struct SnapshotReader {
 
 impl SnapshotReader {
     pub fn new(slot: SnapshotSlot) -> Result<SnapshotReader> {
+        let (snapshot_meta, snapshot_page_data) = super::open_snapshot_files(slot)?;
+
         let mut reader = SnapshotReader {
-            snapshot_meta: StackBufReader::new(File::open(
-                super::snapshot_path(slot, "meta").as_str(),
-            )?),
-            snapshot_page_data: File::open(super::snapshot_path(slot, "pages").as_str())?,
+            snapshot_meta: StackBufReader::new(snapshot_meta),
+            snapshot_page_data,
             flags_remaining: 0,
             header: Header {
                 area_count: 0,

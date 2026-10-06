@@ -28,9 +28,10 @@ pub struct SnapshotWriter {
 
 impl SnapshotWriter {
     pub fn new(slot: SnapshotSlot) -> Result<SnapshotWriter> {
+        let (snapshot_meta, snapshot_pages) = super::open_snapshot_files(slot)?;
         Ok(SnapshotWriter {
-            snapshot_meta: File::create(super::snapshot_path(slot, "meta").as_str())?,
-            snapshot_pages: File::create(super::snapshot_path(slot, "pages").as_str())?,
+            snapshot_meta,
+            snapshot_pages,
         })
     }
 }

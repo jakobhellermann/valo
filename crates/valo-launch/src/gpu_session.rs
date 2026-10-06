@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 
+use crate::paths;
+
 static NEXT_SESSION: AtomicU32 = AtomicU32::new(0);
 
 pub struct GpuSession {
@@ -24,15 +26,15 @@ pub struct GpuSession {
 
 impl GpuSession {
     pub fn start() -> Result<Self> {
-        let runtime_dir = PathBuf::from(format!(
-            "/tmp/valo-gpu-{}-{}",
-            std::process::id(),
-            NEXT_SESSION.fetch_add(1, Ordering::Relaxed)
-        ));
+        let seq = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
+        let home = paths::valo_home();
+        let runtime_dir = home.join(format!("gpu-{seq}"));
         fs::create_dir(&runtime_dir)
             .with_context(|| format!("create {}", runtime_dir.display()))?;
         let socket = runtime_dir.join("gpu.sock");
-        let snapshot = runtime_dir.join("snapshot");
+        // TODO: support multiple gpu slots
+        let snapshot = home.join("slots/0/gpu");
+        fs::create_dir_all(&snapshot).with_context(|| format!("create {}", snapshot.display()))?;
         let log = File::create(runtime_dir.join("kumquat.log"))?;
         let (result_read, result_write) = new_pipe()?;
         let read_fd = result_read.as_raw_fd();

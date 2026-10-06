@@ -22,9 +22,6 @@ use crate::config::ConfigArgs;
 const HANG_READ_TIMEOUT: Duration = Duration::from_secs(1);
 const HELLO_TIMEOUT: Duration = Duration::from_secs(4);
 
-/// Default socket path shared between `spawn` and `msg`.
-pub const DEFAULT_SOCK: &str = "/tmp/valo-session.sock";
-
 #[derive(Subcommand)]
 pub enum MsgCmd {
     /// Query the current frame counter.
@@ -63,7 +60,7 @@ pub fn spawn(
         .with_context(|| format!("canonicalize libvalo.so path {}", lib.display()))?;
 
     let mut cmd = crate::build_command(false, &PathBuf::from(program), &target[1..], &lib);
-    valo_launch::configure_target(&mut cmd, use_gpu);
+    valo_launch::command::configure_target(&mut cmd, use_gpu);
     cmd.env("VALO_SOCK", sock);
 
     use std::os::unix::process::CommandExt;

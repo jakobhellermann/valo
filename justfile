@@ -1,8 +1,6 @@
 set positional-arguments
 
 HK := `for p in "$HOME/.apps/Heroic/Hollow Knight/game/Hollow Knight" "$HOME/.local/share/Steam/steamapps/common/Hollow Knight/hollow_knight.x86_64"; do [ -f "$p" ] && { echo "$p"; break; }; done; true`
-HK_LOGDIR := "$HOME/.local/state/valo"
-HK_WRAPPER := `if command -v steam-run >/dev/null 2>&1; then printf steam-run; fi`
 
 _default:
     just --list
@@ -17,20 +15,16 @@ run-sdl *args:
     make out/manual/sdl2-test
     just valo run {{ args }}"./out/manual/sdl2-test"
 
+STEAM_WRAPPER := `if command -v steam-run >/dev/null 2>&1; then printf steam-run; fi`
+
 run-hollowknight *args:
-    @mkdir -p {{ HK_LOGDIR }}
-    VALO_LOG={{ HK_LOGDIR }}/valo.log VALO_STRUCTURED_LOG={{ HK_LOGDIR }}/valo-struct-$$.jsonl {{ HK_WRAPPER }} just valo run {{ args }} "{{ HK }}" -force-gfx-direct
+    {{ STEAM_WRAPPER }} just valo run {{ args }} "{{ HK }}" -force-gfx-direct
 
 spawn-hollowknight *args:
-    VALO_LOG={{ HK_LOGDIR }}/valo.log VALO_STRUCTURED_LOG={{ HK_LOGDIR }}/valo-struct-$$.jsonl {{ HK_WRAPPER }} just valo spawn {{ args }} "{{ HK }}" -force-gfx-direct
+    {{ STEAM_WRAPPER }} just valo spawn --use-gpu {{ args }} "{{ HK }}" -force-gfx-direct -force-vulkan
 
 run-hollowknight-gpu *args:
-    VALO_LOG={{ HK_LOGDIR }}/valo.log VALO_STRUCTURED_LOG={{ HK_LOGDIR }}/valo-struct-$$.jsonl {{ HK_WRAPPER }} just valo run --use-gpu {{ args }} "{{ HK }}" -force-gfx-direct -force-vulkan
-
-save-repro:
-    mkdir -p repro
-    cp /tmp/valo.log ./repro
-    coredumpctl dump > repro/coredump
+    {{ STEAM_WRAPPER }} just valo run --use-gpu {{ args }} "{{ HK }}" -force-gfx-direct -force-vulkan
 
 visualizer:
     @cd visualizer && pnpm run dev
