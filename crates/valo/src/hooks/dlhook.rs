@@ -32,6 +32,15 @@ pub unsafe extern "C" fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *m
         trace!(Hooks, "dlsym({})", name.to_str().unwrap_or("<bad utf8>"));
 
         if let Some(p) = match name.to_bytes() {
+            b"SteamAPI_RestartAppIfNecessary" => {
+                Some(crate::hooks::steam::SteamAPI_RestartAppIfNecessary as *mut c_void)
+            }
+            b"SteamAPI_Init" => Some(crate::hooks::steam::SteamAPI_Init as *mut c_void),
+            b"SteamAPI_InitSafe" => Some(crate::hooks::steam::SteamAPI_InitSafe as *mut c_void),
+            b"SteamAPI_IsSteamRunning" => {
+                Some(crate::hooks::steam::SteamAPI_IsSteamRunning as *mut c_void)
+            }
+            b"SteamAPI_Shutdown" => Some(crate::hooks::steam::SteamAPI_Shutdown as *mut c_void),
             b"XOpenDisplay" => Some(crate::hooks::xlib::xdisplay::XOpenDisplay as *mut c_void),
             b"vkGetInstanceProcAddr" => {
                 Some(crate::hooks::vulkan::vkGetInstanceProcAddr as *mut c_void)

@@ -47,6 +47,7 @@ pub enum Category {
     Frame,
     Init,
     Ipc,
+    Steam,
     /// Default category for debug prints without a category (`debug!("foo")).
     Adhoc,
 }
@@ -60,6 +61,7 @@ impl Category {
             Category::Frame => "frame",
             Category::Init => "init",
             Category::Ipc => "ipc",
+            Category::Steam => "steam",
             Category::Adhoc => "adhoc",
         }
     }
