@@ -1,32 +1,60 @@
 import { defineConfig } from "vite";
-import { readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import { readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-// Direct host runs use the lib defaults (/tmp); steam-run runs escape the
-// sandbox tmpfs via the bind-mounted home (XDG state dir).
-const EVENTS_DIRS = ["/tmp", join(homedir(), ".local/state/valo")];
+// Direct host runs default to VALO_HOME=/tmp/valo-$PID with the structured
+// log at <home>/valo-struct.jsonl. Steam-run runs escape the sandbox tmpfs
+// via the bind-mounted XDG state dir (flat valo-struct-$$.jsonl from
+// scripts/profile).
+const RUNS_DIR = "/tmp";
+const STATE_DIR = join(homedir(), ".local/state/valo");
+const PROFILE_DIR = fileURLToPath(new URL("../out", import.meta.url));
 
-type ListedFile = { name: string; dir: string; mtime: number };
+type ListedFile = {
+  /** unique list key (run dir name or flat file name) */
+  name: string;
+  path: string;
+  /** file or dir removed by /api/delete-all */
+  cleanup: string;
+  profile: boolean;
+  mtime: number;
+};
 
 function listValoFiles(): ListedFile[] {
   const files: ListedFile[] = [];
-  for (const dir of EVENTS_DIRS) {
-    let names: string[];
+  const push = (name: string, path: string, cleanup: string, profile: boolean) => {
     try {
-      names = readdirSync(dir);
-    } catch {
-      continue;
-    }
-    for (const f of names) {
-      if (!f.startsWith("valo") || !f.endsWith(".jsonl")) continue;
+      files.push({ name, path, cleanup, profile, mtime: statSync(path).mtimeMs });
+    } catch {}
+  };
+
+  try {
+    for (const f of readdirSync(RUNS_DIR)) {
+      if (!f.startsWith("valo-")) continue;
+      const runDir = join(RUNS_DIR, f);
       try {
-        const p = join(dir, f);
-        if (!statSync(p).isFile()) continue;
-        files.push({ name: f, dir, mtime: statSync(p).mtimeMs });
+        if (!statSync(runDir).isDirectory()) continue;
+        // Keyed by dir name: the file name is identical across runs.
+        push(f, join(runDir, "valo-struct.jsonl"), runDir, false);
       } catch {}
     }
-  }
+  } catch {}
+
+  try {
+    for (const f of readdirSync(STATE_DIR)) {
+      if (!f.startsWith("valo") || !f.endsWith(".jsonl")) continue;
+      const p = join(STATE_DIR, f);
+      try {
+        if (!statSync(p).isFile()) continue;
+        push(f, p, p, false);
+      } catch {}
+    }
+  } catch {}
+
+  push("perf-struct.jsonl", join(PROFILE_DIR, "perf-struct.jsonl"), "", true);
+
   return files.sort((a, b) => b.mtime - a.mtime);
 }
 
@@ -39,15 +67,24 @@ const valoApi = () => ({
 
       if (req.url === "/api/files") {
         res.setHeader("Content-Type", "application/json");
-        res.end(JSON.stringify(listValoFiles().map(({ name }) => ({ name }))));
+        res.end(
+          JSON.stringify(
+            listValoFiles().map(({ name, profile, mtime }) => ({
+              name,
+              profile,
+              mtime,
+            })),
+          ),
+        );
         return;
       }
 
       if (req.url === "/api/delete-all" && req.method === "POST") {
         let deleted = 0;
-        for (const { dir, name } of listValoFiles()) {
+        for (const { cleanup, profile } of listValoFiles()) {
+          if (profile || !cleanup) continue;
           try {
-            unlinkSync(join(dir, name));
+            rmSync(cleanup, { recursive: true, force: true });
             deleted++;
           } catch {}
         }
@@ -72,7 +109,7 @@ const valoApi = () => ({
         }
         try {
           res.setHeader("Content-Type", "text/plain");
-          res.end(readFileSync(join(listed.dir, listed.name), "utf8"));
+          res.end(readFileSync(listed.path, "utf8"));
         } catch {
           res.statusCode = 404;
           res.end("not found");

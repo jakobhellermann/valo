@@ -6,7 +6,8 @@ pub mod ucontext;
 pub mod writer;
 
 use libc::{siginfo_t, ucontext_t};
-use std::fmt::Write;
+use std::fmt::{NumBuffer, Write};
+use std::fs::{File, OpenOptions};
 use std::sync::atomic::Ordering;
 
 use crate::global_state::GlobalState;
@@ -37,10 +38,23 @@ fn fmt_duration(ns: u64) -> heapless::String<16> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SnapshotSlot(pub u32);
 
-fn snapshot_path(slot: SnapshotSlot, kind: &str) -> heapless::String<64> {
-    let mut path = heapless::String::new();
-    write!(path, "/tmp/valo-snapshot-{}-{kind}", slot.0).unwrap();
-    path
+pub(crate) fn ensure_slot_dir(slot: SnapshotSlot) -> Result<()> {
+    let path = crate::home::get().join("slots").join(slot.0.to_string());
+    std::fs::create_dir_all(path)
+}
+
+fn open_snapshot_files(slot: SnapshotSlot) -> Result<(File, File), std::io::Error> {
+    let dir = crate::home::open()?;
+    let mut dir_opts = OpenOptions::new();
+    dir_opts.read(true);
+    let mut file_opts = OpenOptions::new();
+    file_opts.write(true).read(true).create(true);
+
+    let slots = dir.open_dir_with("slots", &dir_opts)?;
+    let slot = slots.open_dir_with(slot.0.format_into(&mut NumBuffer::new()), &dir_opts)?;
+    let snapshot_meta = slot.open_file_with("meta", &file_opts)?;
+    let snapshot_page_data = slot.open_file_with("pages", &file_opts)?;
+    Ok((snapshot_meta, snapshot_page_data))
 }
 
 #[repr(u8)]
@@ -248,6 +262,8 @@ pub fn checkpoint(slot: SnapshotSlot) -> Result<()> {
     state.snapshot_slot.store(slot.0, Ordering::SeqCst);
     state.set_restore_in_progress(false);
     structured::events::checkpoint_begin(slot);
+
+    ensure_slot_dir(slot)?;
 
     alt_stack::save_stack(exclusive)?;
 

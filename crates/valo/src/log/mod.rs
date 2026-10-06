@@ -4,18 +4,19 @@
 //! Writes to a log file (default `/tmp/valo.log`, override with `VALO_LOG`)
 //! using no allocations or stdio buffering.
 
-use core::ffi::CStr;
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 use std::io::IoSlice;
+use std::path::PathBuf;
 
 use rustix::fd::BorrowedFd;
 use rustix::fs::{Mode, OFlags};
 use rustix::io;
 use valo_ipc::config::LogLevel;
 
+use crate::home;
+
 const BUF_SIZE: usize = 1024;
-const DEFAULT_PATH: &CStr = c"/tmp/valo.log";
 
 /// Descriptor for log destination.
 /// -1 = uninitialized
@@ -33,7 +34,6 @@ pub(crate) mod structured {
         use rustix::fs::Dev;
 
         use crate::checkpoint::SnapshotSlot;
-        use crate::procfs::fds::OpenFd;
         use crate::procfs::maps::MemoryMap;
 
         pub fn init() {}
@@ -55,7 +55,7 @@ pub(crate) mod structured {
         ) -> crate::Result<()> {
             Ok(())
         }
-        pub fn fd(_event: &'static str, _entry: &OpenFd) {}
+        pub fn fd(_event: &'static str, _entry: &crate::procfs::fds::OpenFd) {}
         pub fn fd_action(_event: &'static str, _fd: i32) {}
         pub fn fd_pin(_fd: RawFd, _keepalive: RawFd, _dev: Dev, _ino: u64, _link: &str) {}
     }
@@ -171,7 +171,7 @@ pub fn init() {
     if LOG_FD.load(Ordering::Acquire) >= 0 {
         return;
     }
-    let path = path_from_env().unwrap_or(DEFAULT_PATH);
+    let path = path_from_env().unwrap_or_else(|| home::get().join("valo.log"));
     // APPEND: the fd sync rewinds the log fd's offset on restore.
     let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::TRUNC | OFlags::APPEND | OFlags::CLOEXEC;
     // 0644
@@ -196,14 +196,8 @@ fn init_structured() {
 #[cfg(not(feature = "structured-log"))]
 fn init_structured() {}
 
-fn path_from_env() -> Option<&'static CStr> {
-    // SAFETY: Environment is not mutated?
-    let raw = unsafe { libc::getenv(c"VALO_LOG".as_ptr()) };
-    if raw.is_null() {
-        return None;
-    }
-    // SAFETY: getenv returns a NUL-terminated C string.
-    Some(unsafe { CStr::from_ptr(raw) })
+fn path_from_env() -> Option<PathBuf> {
+    std::env::var_os("VALO_LOG").map(PathBuf::from)
 }
 
 pub(super) struct StackWriter {

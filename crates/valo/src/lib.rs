@@ -4,7 +4,8 @@
     io_const_error,
     maybe_uninit_as_bytes,
     alloc_error_hook,
-    extern_types
+    extern_types,
+    dirfd
 )]
 
 mod alt_stack;
@@ -13,6 +14,7 @@ mod debug;
 mod frame;
 mod glibc;
 mod global_state;
+mod home;
 mod hooks;
 mod ipc;
 pub mod log;
@@ -58,6 +60,7 @@ extern "C" fn _init() {
 }
 
 fn init() -> Result<()> {
+    home::init()?;
     log::init();
     install_panic_hook();
     // SAFETY: since this is an initializer there is unique access

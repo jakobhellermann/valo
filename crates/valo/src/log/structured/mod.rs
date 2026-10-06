@@ -1,14 +1,14 @@
 // TODO(ai-review): generated, not yet audited
-use core::ffi::CStr;
 use core::fmt::Write;
-use std::borrow::Cow;
-use std::ffi::CString;
 use std::io::IoSlice;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use rustix::fd::BorrowedFd;
 use rustix::fs::{Mode, OFlags};
 use rustix::io;
+
+use crate::home;
 
 /// Chunk size of the streaming event writer.
 const BUF_SIZE: usize = 1024;
@@ -16,14 +16,7 @@ const BUF_SIZE: usize = 1024;
 static STRUCTURED_FD: AtomicI32 = AtomicI32::new(-1);
 
 pub fn init() {
-    // Default /tmp/valo-{pid}.jsonl: each process run keeps its events.
-    let path: Cow<'static, CStr> = match path_from_env() {
-        Some(p) => p.into(),
-        None => {
-            let pid = std::process::id();
-            Cow::Owned(CString::new(format!("/tmp/valo-{pid}.jsonl")).unwrap())
-        }
-    };
+    let path = path_from_env().unwrap_or_else(|| home::get().join("valo-struct.jsonl"));
     // APPEND: the fd sync rewinds the log fd's offset on restore.
     let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::TRUNC | OFlags::APPEND | OFlags::CLOEXEC;
     let mode = Mode::RUSR | Mode::WUSR | Mode::RGRP | Mode::ROTH;
@@ -38,14 +31,8 @@ pub fn init() {
     }
 }
 
-fn path_from_env() -> Option<&'static CStr> {
-    // SAFETY: Environment is not mutated?
-    let raw = unsafe { libc::getenv(c"VALO_STRUCTURED_LOG".as_ptr()) };
-    if raw.is_null() {
-        return None;
-    }
-    // SAFETY: getenv returns a NUL-terminated C string.
-    Some(unsafe { CStr::from_ptr(raw) })
+fn path_from_env() -> Option<PathBuf> {
+    std::env::var_os("VALO_STRUCTURED_LOG").map(PathBuf::from)
 }
 
 /// Streaming writer for one JSON event
