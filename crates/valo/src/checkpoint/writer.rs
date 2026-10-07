@@ -2,6 +2,7 @@ use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 use std::os::fd::OwnedFd;
 
+use crate::checkpoint::threads::SavedThreads;
 use crate::checkpoint::{AreaMeta, Header, PageFlag, SnapshotSlot};
 use crate::global_state::{GlobalState, ReservedMemory};
 use crate::log::structured;
@@ -28,13 +29,16 @@ impl SnapshotWriter {
 }
 
 #[allow(clippy::undocumented_unsafe_blocks)]
-pub fn write_all_areas(writer: &mut SnapshotWriter) -> Result<()> {
+pub fn write_all_areas(writer: &mut SnapshotWriter, threads: SavedThreads) -> Result<()> {
     // TODO proc.clear_refs(ClearRefs::SoftDirty)?;
 
     let mut maps = ProcMaps::new_self_copy()?;
     let mut page_map = ProcPagemap::new_self()?;
 
-    let mut header = Header { area_count: 0 };
+    let mut header = Header {
+        area_count: 0,
+        threads,
+    };
     let header_pos = {
         let pos = writer.snapshot_meta.stream_position()?;
         writer

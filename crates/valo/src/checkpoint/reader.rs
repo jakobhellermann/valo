@@ -7,7 +7,7 @@ use std::os::fd::OwnedFd;
 use rustix::fs::SeekFrom as RSeekFrom;
 use rustix::mm::{self, MapFlags, MprotectFlags, ProtFlags};
 
-use crate::checkpoint::{AreaMeta, Header, PageFlag, Result, SnapshotSlot};
+use crate::checkpoint::{AreaMeta, Header, PageFlag, Result, SnapshotSlot, threads};
 use crate::log::structured;
 use crate::procfs_maps::{
     MMapPath, MemoryMap, MemoryMapPermissions, PageFlags, ProcMaps, ProcPagemap,
@@ -37,7 +37,10 @@ impl SnapshotReader {
             )?),
             snapshot_page_data: File::open(super::snapshot_path(slot, "pages").as_str())?,
             flags_remaining: 0,
-            header: Header { area_count: 0 },
+            header: Header {
+                area_count: 0,
+                threads: threads::SavedThreads::default(),
+            },
         };
         // SAFETY: assume layout
         reader.header = unsafe { reader.read_data::<Header>()? };
