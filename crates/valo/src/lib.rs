@@ -1,5 +1,10 @@
 #![warn(clippy::undocumented_unsafe_blocks)]
-#![feature(sync_unsafe_cell, io_const_error, maybe_uninit_as_bytes)]
+#![feature(
+    sync_unsafe_cell,
+    io_const_error,
+    maybe_uninit_as_bytes,
+    alloc_error_hook
+)]
 
 mod alt_stack;
 mod checkpoint;
@@ -23,6 +28,14 @@ fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
         error!(Adhoc, "panic: {info}");
     }));
+    std::alloc::set_alloc_error_hook(|layout| {
+        error!(
+            Adhoc,
+            "alloc error: {} bytes (align {})",
+            layout.size(),
+            layout.align()
+        );
+    });
 }
 
 pub type Result<T, E = std::io::Error> = std::result::Result<T, E>;
