@@ -1,4 +1,5 @@
 pub mod reader;
+pub(crate) mod threads;
 pub mod ucontext;
 pub mod writer;
 
@@ -8,7 +9,7 @@ use std::sync::atomic::Ordering;
 
 use crate::global_state::GlobalState;
 use crate::log::structured;
-use crate::{Result, alt_stack, error, info, sys, thread_tracker, utils};
+use crate::{Result, abort, alt_stack, error, info, sys, thread_tracker, utils};
 
 pub(crate) const SIG_CHECKPOINT: i32 = libc::SIGSYS;
 
@@ -66,6 +67,7 @@ impl AreaMeta {
 #[repr(C)]
 pub struct Header {
     area_count: u64,
+    pub(crate) threads: threads::SavedThreads,
 }
 
 // # Safety
@@ -74,7 +76,7 @@ unsafe fn snapshot_create(ucontext: *const libc::ucontext_t, slot: SnapshotSlot)
     // SAFETY: same preconditions
     unsafe { ucontext::save(ucontext) };
     let mut writer = writer::SnapshotWriter::new(slot)?;
-    writer::write_all_areas(&mut writer)?;
+    writer::write_all_areas(&mut writer, threads::saved_threads())?;
 
     Ok(())
 }
@@ -90,6 +92,9 @@ unsafe fn snapshot_restore(ucontext: *const libc::ucontext_t, slot: SnapshotSlot
     structured::events::trace_step("restore.memory.begin");
     reader::read_all_areas(&mut reader)?;
     structured::events::trace_step("restore.memory.end");
+
+    // Restore threads that died since the checkpoint
+    threads::recreate_missing();
 
     // Restore X11 connection state (sequence numbers, xcb connection)
     // Must happen after read_all_areas but before ucontext::restore
@@ -138,6 +143,7 @@ pub unsafe extern "C" fn signal_handler(
 ) {
     if let Err(e) = utils::assert_no_alloc(|| checkpoint_handler_inner(ucontext)) {
         error!(Checkpoint, "error in checkpoint handler: {}", e);
+        std::process::abort();
     }
 }
 
@@ -162,8 +168,14 @@ pub unsafe fn checkpoint(slot: SnapshotSlot) -> Result<()> {
 
     alt_stack::prepare_altstack()?;
 
+    structured::events::trace_step("checkpoint.freeze.begin");
+    threads::suspend_others(None);
+    structured::events::trace_step("checkpoint.freeze.end");
+
     // SAFETY: no preconditions
     unsafe { libc::raise(SIG_CHECKPOINT) };
+
+    threads::resume_others();
 
     let restoring = state.restore_in_progress();
 
@@ -196,14 +208,24 @@ pub unsafe fn restore(slot: SnapshotSlot) -> Result<()> {
         std::process::exit(0);
     }
 
+    let snapshot = reader::SnapshotReader::new(slot)?;
+
     state.snapshot_slot.store(slot.0, Ordering::SeqCst);
     structured::events::restore_begin(slot);
     state.set_restore_in_progress(true);
 
     alt_stack::prepare_altstack()?;
 
+    structured::events::trace_step("restore.freeze.begin");
+    threads::suspend_others(Some(&snapshot.header.threads));
+    drop(snapshot);
+    structured::events::trace_step("restore.freeze.end");
+
     // SAFETY: no preconditions
     unsafe { libc::raise(SIG_CHECKPOINT) };
 
-    Ok(())
+    abort!(
+        Checkpoint,
+        "restore returned without restoring main context"
+    );
 }
