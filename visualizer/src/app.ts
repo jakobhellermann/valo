@@ -15,6 +15,19 @@ type PageRun = { index: number; count: number; flag: number };
 type PagemapRun = { index: number; count: number; bits: number };
 type SharedFdInitial = { fd: number | null; nextHole: number | null; nextData: number | null };
 
+type FdEntry = {
+  e: string;
+  fd: number;
+  kind: string;
+  cloexec: boolean;
+  status: number;
+  offset: number | null;
+  size: number;
+  dev: number;
+  ino: number;
+  link: string;
+};
+
 const PAGE_SIZE = 4096;
 const PAGE_SIZE_LIMIT = 100;
 const PAGE_FLAGS = ["No", "Zero", "Full", "File", "Guard"];
@@ -29,6 +42,7 @@ type Segment = {
   areas: Area[]; // emitted by the read loop (empty if it aborted earlier)
   savedDump: Area[]; // pre-merge dump of the snapshot's areas
   currentDump: Area[]; // pre-merge dump of /proc/self/maps at restore time
+  fds: FdEntry[]; // open descriptors logged while the guest was frozen
 };
 
 type Run = { pid: number; segments: Segment[] };
@@ -58,6 +72,7 @@ function parseFile(text: string): Run[] {
           areas: [],
           savedDump: [],
           currentDump: [],
+          fds: [],
         };
         run.segments.push(cur);
       } else if (ev.e === "restore.begin" || ev.e === "restore_begin") {
@@ -68,10 +83,12 @@ function parseFile(text: string): Run[] {
           areas: [],
           savedDump: [],
           currentDump: [],
+          fds: [],
         };
         run.segments.push(cur);
       } else if (cur) {
-        if (ev.e === `${cur.kind}.end`) cur.endUs = ev.ts_us;
+        if (ev.e === `${cur.kind}.fds`) cur.fds.push(ev);
+        else if (ev.e === `${cur.kind}.end`) cur.endUs = ev.ts_us;
         else if (ev.e === `${cur.kind}.memory.begin`) cur.memoryStartUs = ev.ts_us;
         else if (ev.e === `${cur.kind}.memory.end`) cur.memoryEndUs = ev.ts_us;
         else if (
@@ -269,6 +286,73 @@ function changedFieldValue(row: DiffRow, field: "start" | "end" | "perms" | "pat
   if (field === "start" || field === "end")
     return diffValue(row.snapshot?.[field] ?? null, row.process?.[field] ?? null, hex);
   return diffValue(row.snapshot?.[field] ?? null, row.process?.[field] ?? null, textValue);
+}
+
+type FdDiffRow = { checkpoint: FdEntry | null; process: FdEntry | null; ok: boolean };
+
+function fdEqual(a: FdEntry, b: FdEntry): boolean {
+  return (
+    a.kind === b.kind &&
+    a.cloexec === b.cloexec &&
+    a.status === b.status &&
+    a.offset === b.offset &&
+    a.size === b.size &&
+    a.dev === b.dev &&
+    a.ino === b.ino &&
+    a.link === b.link
+  );
+}
+
+function diffFds(left: FdEntry[], right: FdEntry[]): FdDiffRow[] {
+  const byFd = new Map(right.map((entry) => [entry.fd, entry]));
+  const rows: FdDiffRow[] = [];
+  for (const l of left) {
+    const r = byFd.get(l.fd) ?? null;
+    byFd.delete(l.fd);
+    rows.push({ checkpoint: l, process: r, ok: r !== null && fdEqual(l, r) });
+  }
+  for (const r of byFd.values()) rows.push({ checkpoint: null, process: r, ok: false });
+  rows.sort((a, b) => (a.checkpoint?.fd ?? a.process!.fd) - (b.checkpoint?.fd ?? b.process!.fd));
+  return rows;
+}
+
+const fdNum = (n: number | null) => (n === null ? "—" : n.toLocaleString());
+const fdHex = (n: number | null) => (n === null ? "—" : "0x" + n.toString(16));
+const fdBool = (b: boolean | null) => (b === null ? "—" : String(b));
+const fdIdentity = (entry: FdEntry | null) => (entry === null ? null : `${entry.dev}:${entry.ino}`);
+
+function fdRowCells(checkpoint: FdEntry | null, process: FdEntry | null): string {
+  return `<td>${diffValue(checkpoint?.kind ?? null, process?.kind ?? null, textValue)}</td>
+    <td>${diffValue(checkpoint?.cloexec ?? null, process?.cloexec ?? null, fdBool)}</td>
+    <td>${diffValue(checkpoint?.status ?? null, process?.status ?? null, fdHex)}</td>
+    <td>${diffValue(checkpoint?.offset ?? null, process?.offset ?? null, fdNum)}</td>
+    <td>${diffValue(checkpoint?.size ?? null, process?.size ?? null, (n) => (n === null ? "—" : fmtSize(n)))}</td>
+    <td>${diffValue(fdIdentity(checkpoint), fdIdentity(process), textValue)}</td>
+    <td>${diffValue(checkpoint?.link ?? null, process?.link ?? null, textValue)}</td>`;
+}
+
+const FD_COLUMNS =
+  "<tr><th>fd</th><th>kind</th><th>cloexec</th><th>status</th><th>offset</th><th>size</th><th>dev:ino</th><th>link</th></tr>";
+
+function fdTable(entries: FdEntry[]): string {
+  return `<table>${FD_COLUMNS}
+    ${entries.map((entry) => `<tr><td>${entry.fd}</td>${fdRowCells(entry, entry)}</tr>`).join("")}
+  </table>`;
+}
+
+function fdDiffTable(rows: FdDiffRow[]): string {
+  return `<table>${FD_COLUMNS}
+    ${rows
+      .map((row) => {
+        const status = !row.checkpoint ? "added" : !row.process ? "removed" : "";
+        return `<tr class="${row.ok ? "" : "bad"}"><td>${row.checkpoint?.fd ?? row.process!.fd}${status ? ` <span class="mismatch">${status}</span>` : ""}</td>${fdRowCells(row.checkpoint, row.process)}</tr>`;
+      })
+      .join("")}
+  </table>`;
+}
+
+function fdSection(title: string, table: string): string {
+  return `<details class="fd-list"><summary>${title}</summary>${table}</details>`;
 }
 
 function runAt<T extends { index: number; count: number }>(
@@ -580,7 +664,7 @@ async function main() {
     if (seg.kind === "checkpoint") {
       visibleAreas = seg.areas;
       visibleDiffRows = [];
-      viewEl.innerHTML = `<h2>💾 checkpoint slot ${seg.slot} — ${seg.areas.length} areas</h2>${areaTable(seg.areas)}${globalStats(seg)}`;
+      viewEl.innerHTML = `<h2>💾 checkpoint slot ${seg.slot} — ${seg.areas.length} areas</h2>${areaTable(seg.areas)}${fdSection(`file descriptors — ${seg.fds.length}`, fdTable(seg.fds))}${globalStats(seg)}`;
       return;
     }
 
@@ -603,6 +687,17 @@ async function main() {
         row.process!,
     );
     const changed = rows.filter((r) => !r.ok).length;
+    const fdRows = diffFds(checkpoint?.fds ?? [], seg.fds);
+    const fdChanged = fdRows.filter((r) => !r.ok).length;
+    const fdView = checkpoint
+      ? fdSection(
+          `file descriptors — checkpoint ${checkpoint.fds.length} vs process ${seg.fds.length} <span class="${fdChanged ? "mismatch" : ""}">${fdChanged} changed</span>`,
+          fdDiffTable(fdRows),
+        )
+      : fdSection(
+          `file descriptors — ${seg.fds.length} (no matching checkpoint)`,
+          fdTable(seg.fds),
+        );
     const readNote =
       seg.areas.length > 0
         ? `<p class="dim">${seg.areas.length} areas read after reallocation</p>`
@@ -611,6 +706,7 @@ async function main() {
     viewEl.innerHTML = `<h2>↩ restore slot ${seg.slot} — snapshot vs process <span class="${changed ? "mismatch" : ""}">${changed} changed</span></h2>
       ${readNote}
       ${diffTable(rows, visibleAreas)}
+      ${fdView}
       ${globalStats(seg, changed, checkpoint, rows)}`;
   }
 

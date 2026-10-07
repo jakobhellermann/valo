@@ -185,6 +185,26 @@
         margin: 2rem 0;
         border-top: 1px solid #444;
       }
+      .fd-list {
+        margin: 1rem 0;
+        border-top: 1px solid #444;
+      }
+      .fd-list summary {
+        cursor: pointer;
+        color: #9cf;
+        padding: 4px 0;
+      }
+      .fd-list table {
+        margin: 4px 0 8px;
+      }
+      .fd-list table > tbody > tr:first-child > th:not(:last-child),
+      .fd-list table > tbody > tr > td:not(:last-child) {
+        width: 1%;
+        white-space: nowrap;
+      }
+      .fd-list table > tbody > tr > td:last-child {
+        overflow-wrap: anywhere;
+      }
       .global-stats h3 {
         color: #9cf;
         font-size: 1rem;

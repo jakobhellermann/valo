@@ -1,11 +1,15 @@
 // TODO(ai-review): generated, not yet audited
 use std::os::fd::{AsRawFd, OwnedFd};
 
+use rustix::io::FdFlags;
+
+use crate::Result;
 use crate::checkpoint::{PageFlag, SnapshotSlot};
+use crate::procfs::fds::{OpenFd, ProcFds};
 use crate::procfs::maps::{self, MemoryMap, PageFlags, ProcPagemap};
 use crate::utils::TrackRun;
 
-use super::{StackWriter, structured_write, write_field};
+use super::{EventWriter, structured_write, write_field};
 
 pub fn init() {
     structured_write(|w| {
@@ -170,6 +174,29 @@ pub fn restore_end(slot: SnapshotSlot) {
     trace_slot_event("restore.end", slot);
 }
 
+pub fn fd(event: &'static str, entry: &OpenFd) {
+    structured_write(|w| {
+        write_field(w, "e", event);
+        write_field(w, "fd", entry.fd as u32);
+        write_field(w, "kind", entry.kind);
+        write_field(w, "cloexec", entry.fd_flags.contains(FdFlags::CLOEXEC));
+        write_field(w, "status", entry.status_flags.bits() as u64);
+        write_field(w, "offset", entry.offset);
+        write_field(w, "size", entry.size);
+        write_field(w, "dev", entry.dev);
+        write_field(w, "ino", entry.ino);
+        write_field(w, "link", entry.link);
+    });
+}
+
+pub fn log_fd_list(event: &'static str) -> Result<()> {
+    let mut fds = ProcFds::new_self()?;
+    while let Some(entry) = fds.next()? {
+        fd(event, &entry);
+    }
+    Ok(())
+}
+
 pub fn trace_step(event: &'static str) {
     trace_event(event);
 }
@@ -203,7 +230,7 @@ fn trace_slot_event(event: &'static str, slot: SnapshotSlot) {
     trace_event_with(event, |w| write_field(w, "slot", slot.0));
 }
 
-fn trace_event_with(event: &'static str, fields: impl FnOnce(&mut StackWriter)) {
+fn trace_event_with(event: &'static str, fields: impl FnOnce(&mut EventWriter)) {
     structured_write(|w| {
         write_field(w, "e", event);
         write_field(w, "ts_us", timestamp_us());

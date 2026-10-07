@@ -240,6 +240,10 @@ pub unsafe fn checkpoint(slot: SnapshotSlot) -> Result<()> {
     threads::suspend_others(None);
     structured::events::trace_step("checkpoint.freeze.end");
 
+    structured::events::trace_step("checkpoint.fds.begin");
+    structured::events::log_fd_list("checkpoint.fds")?;
+    structured::events::trace_step("checkpoint.fds.end");
+
     structured::events::trace_step("checkpoint.gpu.trigger.begin");
     gpu::trigger_snapshot(slot)?;
     structured::events::trace_step("checkpoint.gpu.trigger.end");
@@ -310,6 +314,10 @@ pub unsafe fn restore(slot: SnapshotSlot) -> Result<()> {
     threads::suspend_others(Some(&snapshot.header.threads));
     drop(snapshot);
     structured::events::trace_step("restore.freeze.end");
+
+    structured::events::trace_step("restore.fds.begin");
+    structured::events::log_fd_list("restore.fds")?;
+    structured::events::trace_step("restore.fds.end");
 
     // SAFETY: no preconditions
     unsafe { libc::raise(SIG_CHECKPOINT) };
