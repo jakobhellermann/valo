@@ -12,8 +12,7 @@ use crate::log::structured;
 use crate::procfs::maps::{
     MMapPath, MemoryMap, MemoryMapPermissions, PageFlags, PageIndex, ProcMaps, ProcPagemap,
 };
-use crate::stackio::StackBufReader;
-use crate::utils::{PAGE_SIZE, align_page_down, align_page_up};
+use crate::utils::{PAGE_SIZE, StackBufReader, align_page_down, align_page_up};
 use crate::{debug, error, info, trace, warn};
 
 /// Buffer for the meta file reads

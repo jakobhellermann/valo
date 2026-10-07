@@ -15,7 +15,6 @@ mod ipc;
 pub mod log;
 mod procfs;
 mod sigsegv;
-mod stackio;
 mod sys;
 mod thread_tracker;
 mod utils;

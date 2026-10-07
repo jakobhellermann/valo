@@ -11,7 +11,7 @@ use rustix::fs::{MemfdFlags, Mode, OFlags, memfd_create};
 use rustix::mm::{MapFlags, MprotectFlags};
 
 use crate::PAGE_SIZE;
-use crate::stackio::StackBufReader;
+use crate::utils::StackBufReader;
 
 const STACK_BUF_SIZE: usize = 2048;
 pub struct ProcMaps(StackBufReader<File, STACK_BUF_SIZE>);

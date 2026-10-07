@@ -1,9 +1,11 @@
 mod atomic_ptr_vec;
+mod stackio;
 mod track_run;
 
 use std::ops::Range;
 
 pub(crate) use atomic_ptr_vec::AtomicPtrVec;
+pub(crate) use stackio::StackBufReader;
 #[allow(unused_imports)]
 pub(crate) use track_run::TrackRun;
 
