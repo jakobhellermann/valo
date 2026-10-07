@@ -7,7 +7,7 @@ use std::str::FromStr;
 
 type Result<T, E = std::io::Error> = std::result::Result<T, E>;
 
-use rustix::fs::{Mode, OFlags};
+use rustix::fs::{MemfdFlags, Mode, OFlags, memfd_create};
 use rustix::mm::{MapFlags, MprotectFlags};
 
 use crate::PAGE_SIZE;
@@ -104,13 +104,12 @@ impl ProcMaps {
     }
 
     pub fn new_self_copy() -> Result<Self> {
-        const TMP_COPY_FILEPATH: &str = "/tmp/tmp-valo-maps";
-
         let mut maps = File::open("/proc/self/maps")?;
-        let mut copy = File::create(TMP_COPY_FILEPATH).unwrap();
+        let memfd = memfd_create(c"valo-maps", MemfdFlags::CLOEXEC)?;
+        let mut copy = File::from(memfd);
         std::io::copy(&mut maps, &mut copy)?;
-
-        Ok(ProcMaps::new(File::open(TMP_COPY_FILEPATH)?))
+        copy.seek(SeekFrom::Start(0))?;
+        Ok(ProcMaps::new(copy))
     }
 
     #[allow(dead_code)]
