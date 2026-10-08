@@ -7,7 +7,7 @@ use std::str::FromStr;
 
 type Result<T, E = std::io::Error> = std::result::Result<T, E>;
 
-use rustix::fs::{MemfdFlags, Mode, OFlags, memfd_create};
+use rustix::fs::{Dev, MemfdFlags, Mode, OFlags, makedev, memfd_create};
 use rustix::mm::{MapFlags, MprotectFlags};
 
 use crate::PAGE_SIZE;
@@ -22,7 +22,7 @@ pub struct MemoryMap {
     pub address: Range<u64>,
     pub perms: MemoryMapPermissions,
     pub offset: u64,
-    pub dev: (i32, i32),
+    pub dev: Dev,
     pub inode: u64,
     pub path_kind: MMapPath,
     pub pathname: heapless::String<1024>,
@@ -142,9 +142,9 @@ fn parse_map_line(line: &str) -> Option<MemoryMap> {
     let start = u64::from_str_radix(start, 16).ok()?;
     let end = u64::from_str_radix(end, 16).ok()?;
 
-    let (minor, major) = dev.split_once(':')?;
-    let minor = i32::from_str_radix(minor, 16).ok()?;
-    let major = i32::from_str_radix(major, 16).ok()?;
+    let (major, minor) = dev.split_once(':')?;
+    let major = u32::from_str_radix(major, 16).ok()?;
+    let minor = u32::from_str_radix(minor, 16).ok()?;
 
     let perms = perms.parse().ok()?;
 
@@ -152,7 +152,7 @@ fn parse_map_line(line: &str) -> Option<MemoryMap> {
         address: start..end,
         perms,
         offset: u64::from_str_radix(offset, 16).ok()?,
-        dev: (minor, major),
+        dev: makedev(major, minor),
         inode: inode.parse().ok()?,
         pathname: heapless::String::from_str(path).ok()?,
         path_kind: classify_path(path)?,

@@ -42,3 +42,7 @@ pub fn assert_no_alloc<T, F: FnOnce() -> T>(f: F) -> T {
 pub fn assert_no_alloc<T, F: FnOnce() -> T>(f: F) -> T {
     f()
 }
+
+/// Lock for unit tests sharing the fd table.
+#[cfg(test)]
+pub(crate) static FD_TABLE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

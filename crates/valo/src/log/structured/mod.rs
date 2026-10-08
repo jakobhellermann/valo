@@ -24,7 +24,8 @@ pub fn init() {
             Cow::Owned(CString::new(format!("/tmp/valo-{pid}.jsonl")).unwrap())
         }
     };
-    let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::TRUNC | OFlags::CLOEXEC;
+    // APPEND: the fd sync rewinds the log fd's offset on restore.
+    let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::TRUNC | OFlags::APPEND | OFlags::CLOEXEC;
     let mode = Mode::RUSR | Mode::WUSR | Mode::RGRP | Mode::ROTH;
     match rustix::fs::open(path, flags, mode) {
         Ok(fd) => {
@@ -210,9 +211,10 @@ mod tests {
     fn streams_long_fields_without_truncation() {
         use rustix::fs::{MemfdFlags, SeekFrom, memfd_create};
 
-        // The memfd below mutates the fd table; the fds test enumerates it
-        // against a Frozen assumption, so both serialize on the same lock.
-        let _fds = crate::procfs::fds::FD_TABLE_LOCK.lock().unwrap();
+        // The memfd below mutates the fd table; the fd tests enumerate it
+        // against a Frozen assumption, so every fd-churning test serializes
+        // on the same lock.
+        let _fds = crate::utils::FD_TABLE_TEST_LOCK.lock().unwrap();
 
         let memfd = memfd_create(c"valo-event-writer-test", MemfdFlags::CLOEXEC).unwrap();
         let mut w = EventWriter {

@@ -31,6 +31,7 @@ pub(crate) mod structured {
         use std::os::fd::OwnedFd;
 
         use crate::checkpoint::SnapshotSlot;
+        use crate::procfs::fds::OpenFd;
         use crate::procfs::maps::MemoryMap;
 
         pub fn init() {}
@@ -51,6 +52,8 @@ pub(crate) mod structured {
         ) -> crate::Result<()> {
             Ok(())
         }
+        pub fn fd(_event: &'static str, _entry: &OpenFd) {}
+        pub fn fd_action(_event: &'static str, _fd: i32) {}
     }
 }
 
@@ -165,7 +168,8 @@ pub fn init() {
         return;
     }
     let path = path_from_env().unwrap_or(DEFAULT_PATH);
-    let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::TRUNC | OFlags::CLOEXEC;
+    // APPEND: the fd sync rewinds the log fd's offset on restore.
+    let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::TRUNC | OFlags::APPEND | OFlags::CLOEXEC;
     // 0644
     let mode = Mode::RUSR | Mode::WUSR | Mode::RGRP | Mode::ROTH;
     match rustix::fs::open(path, flags, mode) {

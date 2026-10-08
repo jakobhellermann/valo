@@ -198,6 +198,13 @@ pub fn log_fd_list(frozen: &Frozen, event: &'static str) -> Result<()> {
     Ok(())
 }
 
+pub fn fd_action(event: &'static str, fd: i32) {
+    structured_write(|w| {
+        write_field(w, "e", event);
+        write_field(w, "fd", fd as u32);
+    });
+}
+
 pub fn trace_step(event: &'static str) {
     trace_event(event);
 }
