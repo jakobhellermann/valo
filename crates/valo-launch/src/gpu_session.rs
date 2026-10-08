@@ -2,8 +2,6 @@
 //! One Kumquat GPU host and one completion pipe per `valo run` session.
 
 use std::ffi::OsStr;
-use std::fs::{self, File};
-use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
@@ -11,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
+use std::{fs, io};
 
 use anyhow::{Context, Result, bail};
 
@@ -37,7 +36,10 @@ impl GpuSession {
             .with_context(|| format!("create {}", runtime_dir.display()))?;
         let socket = runtime_dir.join("gpu.sock");
         let slots_base = home.join("slots");
-        let log = File::create(runtime_dir.join("kumquat.log"))?;
+        let log = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(runtime_dir.join("kumquat.log"))?;
         let (result_read, result_write) = new_pipe()?;
         let read_fd = result_read.as_raw_fd();
         let write_fd = result_write.as_raw_fd();
