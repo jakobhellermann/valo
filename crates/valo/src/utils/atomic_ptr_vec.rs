@@ -8,8 +8,7 @@ pub struct AtomicPtrVec<const N: usize> {
 impl<const N: usize> AtomicPtrVec<N> {
     pub const fn new() -> Self {
         Self {
-            // SAFETY: AtomicPtr<()> with null is all zeros
-            ptrs: unsafe { std::mem::zeroed() },
+            ptrs: [const { AtomicPtr::new(std::ptr::null_mut()) }; N],
         }
     }
 
