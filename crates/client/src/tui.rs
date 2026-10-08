@@ -19,6 +19,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::input::{HotkeyAction, HotkeyEvent};
+
 use anyhow::{Context, Result, bail};
 use crossterm::event::{self, Event as CtEvent, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
@@ -51,6 +53,7 @@ enum AppEvent {
     IpcEof,
     IpcError(String),
     Key(KeyEvent),
+    Hotkey(HotkeyEvent),
     LogLine(String),
 }
 
@@ -178,6 +181,12 @@ pub fn run(sock: &Path, log_path: Option<&Path>, target_pid: u32, config: Config
         reader_lock: Mutex::new(()),
     });
     spawn_keyboard_thread(tx.clone(), Arc::clone(&keyboard_input));
+    {
+        let tx = tx.clone();
+        crate::input::spawn_thread(target_pid, move |ev| {
+            let _ = tx.send(AppEvent::Hotkey(ev));
+        });
+    }
     if let Some(p) = log_path {
         spawn_log_tail_thread(tx.clone(), p.to_path_buf());
     }
@@ -315,6 +324,23 @@ fn handle_event(app: &mut App, conn: &mut ClientIPC, ev: AppEvent) -> Result<()>
             app.quitting = true;
         }
         AppEvent::Key(k) => handle_key(app, conn, k)?,
+        AppEvent::Hotkey(ev) => match ev {
+            HotkeyEvent::Attached(window) => {
+                app.push_event(
+                    EventKind::User,
+                    format!("game hotkeys attached to window {window:#x}"),
+                );
+            }
+            HotkeyEvent::Action(HotkeyAction::Save(slot)) => {
+                queue_or_send_now(app, conn, ClientToLib::Checkpoint(slot))?;
+            }
+            HotkeyEvent::Action(HotkeyAction::Load(slot)) => {
+                queue_or_send_now(app, conn, ClientToLib::Restore(slot))?;
+            }
+            HotkeyEvent::Fatal(msg) => {
+                app.push_event(EventKind::Error, format!("game hotkeys: {msg}"));
+            }
+        },
         AppEvent::LogLine(s) => {
             app.push_event(EventKind::Log, s);
         }
