@@ -64,3 +64,16 @@ pub fn restore_stack(excl: &mut Exclusive) -> Result<(), std::io::Error> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restore_stack_without_save_stack_is_rejected() {
+        let mut excl = Exclusive::enter_exclusive();
+        // withotu calling save_stack prior, restore must not be UB and reject the zeroed altstack
+        let err = restore_stack(&mut excl).unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(libc::ENOMEM));
+    }
+}

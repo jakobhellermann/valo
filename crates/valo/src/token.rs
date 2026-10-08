@@ -2,6 +2,10 @@
 
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
+use std::ops::DerefMut;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::abort;
 
 /// Proof that no other valo code runs concurrently.
 pub struct Exclusive {
@@ -10,10 +14,50 @@ pub struct Exclusive {
 
 impl Exclusive {
     /// # Safety
-    /// - the caller must be the only thread running valo code, and the
-    ///   value must not outlive that exclusivity.
+    /// - the caller must be the only thread running valo code
+    /// - the value must not outlive that exclusivity.
     pub unsafe fn assume() -> Self {
         Self { _priv: PhantomData }
+    }
+
+    /// Enters the single checkpoint/restore session, aborts on reentry.
+    pub fn enter_exclusive() -> impl DerefMut<Target = Exclusive> + Drop {
+        static SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+        pub struct ExclusiveSession {
+            excl: Exclusive,
+        }
+
+        impl Drop for ExclusiveSession {
+            fn drop(&mut self) {
+                SESSION_ACTIVE.store(false, Ordering::SeqCst);
+            }
+        }
+
+        impl std::ops::Deref for ExclusiveSession {
+            type Target = Exclusive;
+
+            fn deref(&self) -> &Exclusive {
+                &self.excl
+            }
+        }
+
+        impl std::ops::DerefMut for ExclusiveSession {
+            fn deref_mut(&mut self) -> &mut Exclusive {
+                &mut self.excl
+            }
+        }
+
+        if SESSION_ACTIVE.swap(true, Ordering::SeqCst) {
+            abort!(Checkpoint, "checkpoint/restore already active");
+        }
+
+        ExclusiveSession {
+            // SAFETY: the flag guarantees this is the only session.
+            // Technically unsound, as enter_exclusive may be called
+            // and the result be stashed away for later use.
+            excl: unsafe { Exclusive::assume() },
+        }
     }
 }
 
