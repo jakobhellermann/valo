@@ -125,7 +125,11 @@ pub fn read_all_areas(frozen: &Frozen, reader: &mut SnapshotReader) -> Result<()
 
     structured::events::reallocate_areas_begin();
     while saved_area.is_some() || current_area.is_some() {
-        let order = reallocate_area(saved_area.as_mut().map(|x| &mut x.0), current_area.as_mut())?;
+        let order = reallocate_area(
+            frozen,
+            saved_area.as_mut().map(|x| &mut x.0),
+            current_area.as_mut(),
+        )?;
 
         match order {
             Ordering::Less => saved_area = saved_maps.next(),
@@ -159,29 +163,37 @@ pub fn read_all_areas(frozen: &Frozen, reader: &mut SnapshotReader) -> Result<()
     Ok(())
 }
 
-fn area_fd(frozen: &Frozen, saved_area: &MemoryMap) -> Option<(OwnedFd, u64, u64)> {
-    // SysV segments have no fd
-    if matches!(saved_area.path_kind, MMapPath::Vsys(_)) {
-        return None;
-    }
-
-    let fd = saved_area
-        .open_file()
+/// Open the backing file of a saved area: by path first, then by identity
+/// through the live fd table (the only access path for unlinked files).
+/// The restore side must resolve live: the fd snapshot table is ordinary
+/// process memory and may already be half-rewound at this point of the
+/// memory restore.
+fn open_area_file(frozen: &Frozen, area: &MemoryMap) -> Result<OwnedFd> {
+    area.open_file()
         .or_else(|path_err| {
-            fds::open_by_identity(frozen, saved_area.dev, saved_area.inode)
+            fds::open_by_identity(frozen, area.dev, area.inode)
                 .ok()
                 .flatten()
                 .ok_or(path_err)
         })
         .inspect_err(|e| {
             warn!(
-                Checkpoint,
-                "Could not open shared map file for restore {}: {}",
-                saved_area.pathname,
-                SignalSafeFormat(e),
-            );
+                Restore,
+                "could not open backing file {}: {}",
+                area.pathname,
+                SignalSafeFormat(e)
+            )
         })
-        .ok()?;
+        .map_err(std::io::Error::from)
+}
+
+fn area_fd(frozen: &Frozen, saved_area: &MemoryMap) -> Option<(OwnedFd, u64, u64)> {
+    // SysV segments have no fd
+    if matches!(saved_area.path_kind, MMapPath::Vsys(_)) {
+        return None;
+    }
+
+    let fd = open_area_file(frozen, saved_area).ok()?;
     let mut next_off_hole = rustix::fs::seek(&fd, RSeekFrom::Hole(saved_area.offset)).ok()?;
     let mut next_off_data =
         rustix::fs::seek(&fd, RSeekFrom::Data(saved_area.offset)).unwrap_or(u64::MAX);
@@ -470,6 +482,7 @@ fn is_zero_page() -> bool {
 // greater -> advance current
 // less -> advance saved
 fn reallocate_area(
+    frozen: &Frozen,
     mut saved_area: Option<&mut MemoryMap>,
     mut current_area: Option<&mut MemoryMap>,
 ) -> Result<Ordering> {
@@ -535,30 +548,43 @@ fn reallocate_area(
     let current_after_saved = |saved_area: &MemoryMap| {
         trace!(Restore, "realloc: current after saved");
 
-        // must be allocated
-        if let MMapPath::Path = saved_area.path_kind {
-            todo!("realloc path {}", saved_area.pathname);
-        }
-
-        /*if let MMapPath::Anonymous = saved_area.path_kind {
-            todo!("anon {}", saved_area.pathname);
+        // The saved area must be allocated. File mappings must reference
+        // their file again: pages the snapshot flagged `File` are not
+        // stored — their content is assumed to equal the mapped file, so
+        // an anonymous mapping would silently zero them. Prefer a live
+        // descriptor of the same inode (the file may have been deleted
+        // since the checkpoint), then open the path (libTAS does the
+        // same for its area reallocation). Only if both fail, fall back
+        // to anonymous and accept the zeroed file pages.
+        let file_fd: Option<OwnedFd> = if let MMapPath::Path = saved_area.path_kind {
+            // Already logged; file pages will read as zeros.
+            reopen_file_area(frozen, saved_area).ok()
         } else {
-            todo!("non-anon {}", saved_area.pathname);
-        }*/
+            None
+        };
 
-        // SAFETY: todo
+        // SAFETY: the fixed address is free (the merge loop unmapped
+        // overlapping current areas first) or FIXED_NOREPLACE fails
+        // loudly instead of clobbering another mapping.
         unsafe {
-            // TODO: fd if necessary
             let flags = MapFlags::FIXED_NOREPLACE | saved_area.perms.into();
-            rustix::mm::mmap_anonymous(
-                saved_area.address.start as *mut _,
-                saved_area.len(),
-                saved_area.perms.into(),
-                flags,
-            )?;
-
-            // TODO close fd if necessary
-
+            let mapped = match &file_fd {
+                Some(fd) => rustix::mm::mmap(
+                    saved_area.address.start as *mut _,
+                    saved_area.len(),
+                    saved_area.perms.into(),
+                    flags,
+                    fd,
+                    saved_area.offset,
+                ),
+                None => rustix::mm::mmap_anonymous(
+                    saved_area.address.start as *mut _,
+                    saved_area.len(),
+                    saved_area.perms.into(),
+                    flags,
+                ),
+            };
+            mapped?;
             Ok(Ordering::Less)
         }
     };
@@ -597,6 +623,27 @@ fn reallocate_area(
     }
 
     unreachable!()
+}
+
+/// Re-open the file backing a saved file mapping whose area no longer
+/// exists at restore time, for the re-allocation in [`reallocate_area`].
+/// Adds the libTAS shrunken-file warning to [`open_area_file`].
+fn reopen_file_area(frozen: &Frozen, area: &MemoryMap) -> Result<OwnedFd> {
+    let fd = open_area_file(frozen, area)?;
+
+    // Like libTAS: warn when the file shrank below the mapped range — the
+    // mapping is still created, but accessing beyond the end SIGBUSes.
+    let stat = rustix::fs::fstat(&fd)?;
+    if (stat.st_size as u64) < area.offset + area.len() as u64 {
+        warn!(
+            Restore,
+            "file {} mapped at offset {} is smaller than the saved area ({} bytes now)",
+            area.pathname,
+            area.offset + area.len() as u64,
+            stat.st_size
+        );
+    }
+    Ok(fd)
 }
 
 impl From<MemoryMapPermissions> for ProtFlags {
