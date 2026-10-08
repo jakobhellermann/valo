@@ -17,6 +17,7 @@ mod procfs;
 mod sigsegv;
 mod sys;
 mod thread_tracker;
+mod token;
 mod utils;
 
 use crate::global_state::GlobalState;
