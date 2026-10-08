@@ -28,6 +28,10 @@ type FdEntry = {
   link: string;
 };
 
+// A descriptor that cannot be reopened at restore, pinned by valo with a
+// private duplicate: guest fd number -> keepalive fd number.
+type FdKeepalive = { fd: number; ka: number; dev: number; ino: number; link: string };
+
 const PAGE_SIZE = 4096;
 const PAGE_SIZE_LIMIT = 100;
 const PAGE_FLAGS = ["No", "Zero", "Full", "File", "Guard"];
@@ -44,6 +48,7 @@ type Segment = {
   currentDump: Area[]; // pre-merge dump of /proc/self/maps at restore time
   fds: FdEntry[]; // open descriptors logged while the guest was frozen
   fdActions: { fd: number; action: string }[]; // what the fd sync did on restore
+  keepalives: FdKeepalive[]; // pins for descriptors that cannot be reopened at restore
 };
 
 type Run = { pid: number; segments: Segment[] };
@@ -75,6 +80,7 @@ function parseFile(text: string): Run[] {
           currentDump: [],
           fds: [],
           fdActions: [],
+          keepalives: [],
         };
         run.segments.push(cur);
       } else if (ev.e === "restore.begin" || ev.e === "restore_begin") {
@@ -87,10 +93,13 @@ function parseFile(text: string): Run[] {
           currentDump: [],
           fds: [],
           fdActions: [],
+          keepalives: [],
         };
         run.segments.push(cur);
       } else if (cur) {
         if (ev.e === `${cur.kind}.fds`) cur.fds.push(ev);
+        else if (cur.kind === "checkpoint" && ev.e === "checkpoint.fds.pin")
+          cur.keepalives.push({ fd: ev.fd, ka: ev.ka, dev: ev.dev, ino: ev.ino, link: ev.link });
         else if (cur.kind === "restore" && ev.e.startsWith("restore.fds.")) {
           const action = ev.e.slice("restore.fds.".length);
           if (
@@ -365,6 +374,13 @@ function fdDiffTable(rows: FdDiffRow[]): string {
 
 function fdSection(title: string, table: string): string {
   return `<details class="fd-list"><summary>${title}</summary>${table}</details>`;
+}
+
+function keepaliveTable(entries: FdKeepalive[]): string {
+  return `<table>
+    <tr><th>fd</th><th>keepalive</th><th>dev:ino</th><th>link</th></tr>
+    ${entries.map((k) => `<tr><td>${k.fd}</td><td>${k.ka}</td><td>${k.dev}:${k.ino}</td><td>${k.link}</td></tr>`).join("")}
+  </table>`;
 }
 
 function fdRowSummary(actions: { fd: number; action: string }[]): string {
@@ -685,7 +701,13 @@ async function main() {
     if (seg.kind === "checkpoint") {
       visibleAreas = seg.areas;
       visibleDiffRows = [];
-      viewEl.innerHTML = `<h2>💾 checkpoint slot ${seg.slot} — ${seg.areas.length} areas</h2>${areaTable(seg.areas)}${fdSection(`file descriptors — ${seg.fds.length}`, fdTable(seg.fds))}${globalStats(seg)}`;
+      const kaView = seg.keepalives.length
+        ? fdSection(
+            `keepalives — ${seg.keepalives.length} pinned <span class="dim">(descriptors that cannot be reopened at restore)</span>`,
+            keepaliveTable(seg.keepalives),
+          )
+        : "";
+      viewEl.innerHTML = `<h2>💾 checkpoint slot ${seg.slot} — ${seg.areas.length} areas</h2>${areaTable(seg.areas)}${fdSection(`file descriptors — ${seg.fds.length}`, fdTable(seg.fds))}${kaView}${globalStats(seg)}`;
       return;
     }
 
@@ -714,10 +736,13 @@ async function main() {
     const fdReconcile = seg.fdActions.length
       ? `<p class="dim">fd sync: ${fdRowSummary(seg.fdActions)}${missing.length ? ` · missing: ${missing.map((a) => a.fd).join(", ")}` : ""}</p>`
       : "";
+    const kaNote = checkpoint?.keepalives.length
+      ? `<p class="dim">${checkpoint.keepalives.length} keepalives pin the descriptors that cannot be reopened (restore re-dups them onto their fd numbers)</p>`
+      : "";
     const fdView = checkpoint
       ? fdSection(
           `file descriptors — checkpoint ${checkpoint.fds.length} vs process ${seg.fds.length} <span class="${fdChanged ? "mismatch" : ""}">${fdChanged} changed</span>`,
-          `${fdDiffTable(fdRows)}${fdReconcile}`,
+          `${fdDiffTable(fdRows)}${fdReconcile}${kaNote}`,
         )
       : fdSection(
           `file descriptors — ${seg.fds.length} (no matching checkpoint)`,

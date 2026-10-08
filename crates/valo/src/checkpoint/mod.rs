@@ -34,7 +34,7 @@ fn fmt_duration(ns: u64) -> heapless::String<16> {
     s
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SnapshotSlot(pub u32);
 
 fn snapshot_path(slot: SnapshotSlot, kind: &str) -> heapless::String<64> {
@@ -258,7 +258,7 @@ pub fn checkpoint(slot: SnapshotSlot) -> Result<()> {
     structured::events::trace_step("checkpoint.freeze.end");
 
     structured::events::trace_step("checkpoint.fds.begin");
-    let fd_records = fd_sync::snapshot(frozen, slot)?;
+    let fd_records = fd_sync::snapshot(exclusive, frozen, slot)?;
     *FD_SNAPSHOT.get(exclusive) = fd_records;
     structured::events::trace_step("checkpoint.fds.end");
 
@@ -289,7 +289,7 @@ pub fn checkpoint(slot: SnapshotSlot) -> Result<()> {
         structured::events::trace_step("restore.fds.sync.begin");
         // The rewind restored the slot's records into the channel.
         let fd_records = std::mem::take(FD_SNAPSHOT.get(exclusive));
-        fd_sync::restore(frozen, &fd_records)?;
+        fd_sync::restore(exclusive, frozen, slot, &fd_records)?;
         structured::events::trace_step("restore.fds.sync.end");
     }
 
@@ -338,7 +338,7 @@ pub fn restore(slot: SnapshotSlot) -> Result<()> {
     structured::events::trace_step("restore.freeze.end");
 
     structured::events::trace_step("restore.fds.begin");
-    structured::events::log_fd_list(&frozen, "restore.fds")?;
+    structured::events::log_fd_list(&mut exclusive, &frozen, "restore.fds")?;
     structured::events::trace_step("restore.fds.end");
 
     // SAFETY: no preconditions

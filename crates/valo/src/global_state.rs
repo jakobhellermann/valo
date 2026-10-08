@@ -9,6 +9,7 @@ use rustix::mm;
 use crate::Result;
 
 use crate::alt_stack::ALT_STACK_SIZE;
+use crate::checkpoint::fd_sync::keepalive::FdKeepaliveRegistry;
 use crate::thread_tracker::MAX_THREADS;
 use crate::token::{Exclusive, ExclusiveCell};
 use crate::utils::PAGE_SIZE;
@@ -58,6 +59,14 @@ impl GlobalState {
             .exclusive
             .get(exclusive)
             .parked_threads
+    }
+
+    pub fn fd_keepalives(exclusive: &mut Exclusive) -> &mut FdKeepaliveRegistry {
+        &mut GlobalState::get()
+            .reserved
+            .exclusive
+            .get(exclusive)
+            .fd_keepalives
     }
 
     pub fn set_restore_in_progress(&self, value: bool) {
@@ -134,6 +143,8 @@ pub struct ReservedExclusive {
     /// Threads that parked in the current restore's suspend pass (see the
     /// struct docs): the "is alive" list recorded before the rewind.
     pub parked_threads: ParkedThreads,
+    /// Duplicates of path-less non-restorable file descriptors
+    pub fd_keepalives: FdKeepaliveRegistry,
 }
 
 impl GlobalState {

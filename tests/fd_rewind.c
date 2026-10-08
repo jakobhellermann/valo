@@ -36,9 +36,13 @@ int main() {
 
     struct stat before;
     assert(fstat(fd, &before) == 0);
-    int fds_before = count_fds();
 
     valo_checkpoint();
+
+    // After the checkpoint: valo pins path-less descriptors (pipes, ...
+    // dma-bufs) with private keepalive dups, which count as part of the
+    // process fd table. The restore must still not leak or lose any of it.
+    int fds_before = count_fds();
 
     // Runs again after the restore.
     struct stat after;

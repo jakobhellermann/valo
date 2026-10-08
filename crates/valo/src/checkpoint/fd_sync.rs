@@ -6,10 +6,16 @@ use rustix::fs::{self, Mode, OFlags, SeekFrom};
 use rustix::io::{self as rio, Errno, FdFlags};
 
 use crate::checkpoint::SnapshotSlot;
+use crate::global_state::GlobalState;
 use crate::log::structured;
 use crate::procfs::fds::{self, FdKind, ProcFds};
-use crate::token::Frozen;
+use crate::token::{Exclusive, Frozen};
 use crate::{Result, error, info};
+
+use self::keepalive::{FdKeepalive, FdKeepaliveRegistry};
+
+/// Base fd number for non-restorable file descriptors
+const KEEPALIVE_FD_BASE: RawFd = 1024;
 
 /// File descriptor at checkpoint time
 pub struct FdRecord {
@@ -25,10 +31,30 @@ pub struct FdRecord {
 }
 
 // Capture current fd table.
-pub(crate) fn snapshot(frozen: &Frozen, slot: SnapshotSlot) -> Result<Vec<FdRecord>> {
+pub(crate) fn snapshot(
+    exclusive: &mut Exclusive,
+    frozen: &Frozen,
+    slot: SnapshotSlot,
+) -> Result<Vec<FdRecord>> {
+    let keepalives = GlobalState::fd_keepalives(exclusive);
+    capture(frozen, slot, keepalives)
+}
+
+fn capture(
+    frozen: &Frozen,
+    slot: SnapshotSlot,
+    keepalives: &mut FdKeepaliveRegistry,
+) -> Result<Vec<FdRecord>> {
+    // The previous generation of this slot dies with the snapshot image
+    // that is about to replace it.
+    keepalives.clear_slot(slot);
+
     let mut records = Vec::new();
     let mut fds = ProcFds::new_self()?;
     while let Some(entry) = fds.next(frozen)? {
+        if keepalives.is_keepalive(entry.fd, entry.dev, entry.ino) {
+            continue;
+        }
         structured::events::fd("checkpoint.fds", &entry);
         records.push(FdRecord {
             fd: entry.fd,
@@ -41,6 +67,56 @@ pub(crate) fn snapshot(frozen: &Frozen, slot: SnapshotSlot) -> Result<Vec<FdReco
             link: entry.link.to_owned(),
         });
     }
+
+    // Stash away keepalives
+    // TODO: restore pipes normally
+    for record in &records {
+        if record.kind == FdKind::Regular {
+            continue;
+        }
+
+        if keepalives.find(slot, record.dev, record.ino).is_some() {
+            continue;
+        }
+
+        // SAFETY: all guest threads are suspended and the fd exists
+        let borrowed = unsafe { BorrowedFd::borrow_raw(record.fd) };
+
+        // TODO: only dup when not already present
+        let keepalive = match rio::fcntl_dupfd_cloexec(borrowed, KEEPALIVE_FD_BASE) {
+            Ok(keepalive) => keepalive,
+            Err(e) => {
+                error!(
+                    Checkpoint,
+                    "cannot pin fd {} ({}): {}", record.fd, record.link, e
+                );
+                continue;
+            }
+        };
+
+        let keepalive_fd = keepalive.as_raw_fd();
+        if keepalives
+            .register(slot, record.dev, record.ino, keepalive)
+            .is_err()
+        {
+            error!(
+                Checkpoint,
+                "keepalive registry full ({}): fd {} stays unrestorable after close",
+                keepalive::MAX_FDS,
+                record.fd
+            );
+            continue;
+        }
+
+        structured::events::fd_pin(
+            record.fd,
+            keepalive_fd,
+            record.dev,
+            record.ino,
+            &record.link,
+        )
+    }
+
     info!(
         Checkpoint,
         "captured {} fds for slot {}",
@@ -59,12 +135,23 @@ pub(crate) fn open_by_identity(records: &[FdRecord], dev: fs::Dev, ino: u64) -> 
 // Restore the fd table.
 // - Close newly opened FDs
 // - re-open missing fds at original number
+// - re-dup path-less fds from their keepalives
 // - restore offsets and flags
-pub(crate) fn restore(frozen: &Frozen, records: &[FdRecord]) -> Result<()> {
+pub(crate) fn restore(
+    exclusive: &mut Exclusive,
+    frozen: &Frozen,
+    slot: SnapshotSlot,
+    records: &[FdRecord],
+) -> Result<()> {
+    let keepalives = GlobalState::fd_keepalives(exclusive);
+
     let mut closed = 0;
     {
         let mut current = ProcFds::new_self()?;
         while let Some(entry) = current.next(frozen)? {
+            if keepalives.is_keepalive(entry.fd, entry.dev, entry.ino) {
+                continue;
+            }
             let known = records.iter().any(|record| {
                 record.fd == entry.fd && record.dev == entry.dev && record.ino == entry.ino
             });
@@ -98,10 +185,29 @@ pub(crate) fn restore(frozen: &Frozen, records: &[FdRecord]) -> Result<()> {
                         structured::events::fd_action("restore.fds.reopen_failed", record.fd);
                     }
                 },
-                _ => {
-                    missing += 1;
-                    structured::events::fd_action("restore.fds.missing", record.fd);
-                }
+                _ => match keepalives.find(slot, record.dev, record.ino) {
+                    Some(entry) => match restore_keepalive(entry, record) {
+                        Ok(()) => {
+                            reopened += 1;
+                            structured::events::fd_action("restore.fds.reopen", record.fd);
+                        }
+                        Err(e) => {
+                            error!(
+                                Restore,
+                                "cannot restore fd {} ({}): {}", record.fd, record.link, e
+                            );
+                            structured::events::fd_action("restore.fds.reopen_failed", record.fd);
+                        }
+                    },
+                    None => {
+                        missing += 1;
+                        error!(
+                            Restore,
+                            "no keepalive for path-less fd {} ({})", record.fd, record.link
+                        );
+                        structured::events::fd_action("restore.fds.missing", record.fd);
+                    }
+                },
             }
             continue;
         }
@@ -170,6 +276,170 @@ fn reopen(record: &FdRecord) -> Result<()> {
     Ok(())
 }
 
+fn restore_keepalive(entry: &FdKeepalive, record: &FdRecord) -> Result<()> {
+    let stat = fs::fstat(&entry.keepalive)?;
+    if stat.st_dev != record.dev || stat.st_ino != record.ino {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "keepalive no longer holds the recorded file",
+        ));
+    }
+
+    let placed = rio::fcntl_dupfd_cloexec(&entry.keepalive, record.fd)?;
+    if placed.as_raw_fd() != record.fd {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("fd {} is occupied", record.fd),
+        ));
+    }
+    rio::fcntl_setfd(&placed, record.fd_flags)?;
+    fs::fcntl_setfl(&placed, record.status_flags)?;
+
+    if let Some(offset) = record.offset {
+        fs::seek(&placed, SeekFrom::Start(offset))?;
+    }
+
+    // Transfoer ownership to restored state
+    std::mem::forget(placed);
+
+    Ok(())
+}
+
+pub(crate) mod keepalive {
+    use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+
+    use rustix::fs::Dev;
+
+    use crate::checkpoint::SnapshotSlot;
+
+    pub const MAX_FDS: usize = 4096;
+
+    pub(super) struct FdKeepalive {
+        pub slot: SnapshotSlot,
+        pub keepalive: OwnedFd,
+        pub dev: Dev,
+        pub ino: u64,
+    }
+
+    pub struct FdKeepaliveRegistry {
+        entries: heapless::Vec<FdKeepalive, MAX_FDS>,
+    }
+
+    impl FdKeepaliveRegistry {
+        pub(super) fn clear_slot(&mut self, slot: SnapshotSlot) {
+            let mut i = 0;
+            while i < self.entries.len() {
+                if self.entries[i].slot == slot {
+                    drop(self.entries.swap_remove(i));
+                } else {
+                    i += 1;
+                }
+            }
+        }
+
+        pub(super) fn register(
+            &mut self,
+            slot: SnapshotSlot,
+            dev: Dev,
+            ino: u64,
+            keepalive: OwnedFd,
+        ) -> Result<(), OwnedFd> {
+            if self.find(slot, dev, ino).is_some() {
+                drop(keepalive);
+                return Ok(());
+            }
+
+            self.entries
+                .push(FdKeepalive {
+                    slot,
+                    dev,
+                    ino,
+                    keepalive,
+                })
+                .map_err(|rejected| rejected.keepalive)
+        }
+
+        pub(super) fn find(&self, slot: SnapshotSlot, dev: Dev, ino: u64) -> Option<&FdKeepalive> {
+            self.entries
+                .iter()
+                .find(|e| e.slot == slot && e.dev == dev && e.ino == ino)
+        }
+
+        pub fn is_keepalive(&self, fd: RawFd, dev: Dev, ino: u64) -> bool {
+            self.entries
+                .iter()
+                .any(|e| e.keepalive.as_raw_fd() == fd && e.dev == dev && e.ino == ino)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::os::fd::BorrowedFd;
+
+        use rustix::fs::{MemfdFlags, fstat, memfd_create};
+
+        use super::*;
+
+        #[test]
+        fn registry_pins_and_purges_per_slot() {
+            let _guard = crate::utils::FD_TABLE_TEST_LOCK.lock().unwrap();
+            let mut registry = FdKeepaliveRegistry {
+                entries: heapless::Vec::new(),
+            };
+
+            let memfd = memfd_create(c"valo-keepalive-test", MemfdFlags::CLOEXEC).unwrap();
+            let stat = fstat(&memfd).unwrap();
+
+            let slot0 = SnapshotSlot(0);
+            let slot1 = SnapshotSlot(1);
+
+            let pinned0 = memfd.try_clone().unwrap();
+            let slot0_fd = pinned0.as_raw_fd();
+            registry
+                .register(slot0, stat.st_dev, stat.st_ino, pinned0)
+                .unwrap();
+            assert!(registry.is_keepalive(slot0_fd, stat.st_dev, stat.st_ino));
+            assert!(!registry.is_keepalive(slot0_fd, stat.st_dev, stat.st_ino ^ 1));
+            assert_eq!(
+                registry
+                    .find(slot0, stat.st_dev, stat.st_ino)
+                    .unwrap()
+                    .keepalive
+                    .as_raw_fd(),
+                slot0_fd
+            );
+            assert!(registry.find(slot1, stat.st_dev, stat.st_ino).is_none());
+
+            // One pin per fd
+            let redundant = memfd.try_clone().unwrap();
+            let redundant_fd = redundant.as_raw_fd();
+            registry
+                .register(slot0, stat.st_dev, stat.st_ino, redundant)
+                .unwrap();
+            assert!(registry.find(slot0, stat.st_dev, stat.st_ino).is_some());
+
+            // SAFETY: the borrow is only used for an EBADF; nothing can observe it, and the number is not used beyond this call.
+            let closed = unsafe { BorrowedFd::borrow_raw(redundant_fd) };
+            assert_eq!(fstat(closed).unwrap_err(), rustix::io::Errno::BADF);
+
+            let pinned1 = memfd.try_clone().unwrap();
+            registry
+                .register(slot1, stat.st_dev, stat.st_ino, pinned1)
+                .unwrap();
+
+            registry.clear_slot(slot0);
+            assert!(registry.find(slot0, stat.st_dev, stat.st_ino).is_none());
+            assert!(registry.find(slot1, stat.st_dev, stat.st_ino).is_some());
+            // SAFETY: the borrow is only used for an EBADF; nothing can observe it, and the number is not used beyond this call.
+            let closed = unsafe { BorrowedFd::borrow_raw(slot0_fd) };
+            assert_eq!(fstat(closed).unwrap_err(), rustix::io::Errno::BADF);
+
+            registry.clear_slot(slot1);
+            assert!(registry.find(slot1, stat.st_dev, stat.st_ino).is_none());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use rustix::fs::{self, MemfdFlags};
@@ -185,8 +455,10 @@ mod tests {
         let stat = fs::fstat(&memfd).unwrap();
 
         // SAFETY: the fd-table test lock serializes the only fd-churning tests.
-        let frozen = unsafe { Frozen::assume() };
-        let records = snapshot(&frozen, SnapshotSlot(0)).unwrap();
+        let frozen = &unsafe { Frozen::assume() };
+        // SAFETY: the fd-table test lock serializes the only fd-churning tests.
+        let exclusive = &mut unsafe { Exclusive::assume() };
+        let records = snapshot(exclusive, frozen, SnapshotSlot(0)).unwrap();
 
         let opened = open_by_identity(&records, stat.st_dev, stat.st_ino)
             .expect("snapshot must hold the open memfd");
