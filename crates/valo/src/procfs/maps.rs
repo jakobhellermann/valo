@@ -208,6 +208,9 @@ fn classify_path(path: &str) -> Option<MMapPath> {
             MMapPath::TStack(tid)
         }
         x if x.starts_with('[') && x.ends_with(']') => MMapPath::Other,
+        // The kernel displays MAP_SHARED|MAP_ANONYMOUS mappings through its
+        // TODO: properly document
+        "/dev/zero (deleted)" => MMapPath::Anonymous,
         x if x.starts_with("/SYSV") => {
             MMapPath::Vsys(u32::from_str_radix(&x[5..13], 16).ok()? as i32)
         }
