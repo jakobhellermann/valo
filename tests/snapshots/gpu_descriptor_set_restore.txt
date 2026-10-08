@@ -1,0 +1,11 @@
+i1: baseline (live): PASS
+i2: live after save slot0 / save slot1: PASS
+i3: after restore slot0 (the red check): PASS
+i2: live after save slot0 / save slot1: PASS
+i3: after restore slot0 (the red check): PASS
+i2: live after save slot0 / save slot1: PASS
+i3: after restore slot0 (the red check): PASS
+i2: live after save slot0 / save slot1: PASS
+i3: after restore slot0 (the red check): PASS
+i2: live after save slot0 / save slot1: PASS
+i3: after restore slot0 (the red check): PASS
