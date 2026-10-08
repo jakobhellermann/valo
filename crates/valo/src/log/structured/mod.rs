@@ -1,10 +1,10 @@
 // TODO(ai-review): generated, not yet audited
 use core::fmt::Write;
 use std::io::IoSlice;
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::OnceLock;
 
-use rustix::fd::BorrowedFd;
 use rustix::fs::{Mode, OFlags};
 use rustix::io;
 
@@ -13,22 +13,16 @@ use crate::home;
 /// Chunk size of the streaming event writer.
 const BUF_SIZE: usize = 1024;
 
-static STRUCTURED_FD: AtomicI32 = AtomicI32::new(-1);
+/// The event log destination, opened once at init.
+static STRUCTURED_FD: OnceLock<Option<OwnedFd>> = OnceLock::new();
 
 pub fn init() {
     let path = path_from_env().unwrap_or_else(|| home::get().join("valo-struct.jsonl"));
     // APPEND: the fd sync rewinds the log fd's offset on restore.
     let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::TRUNC | OFlags::APPEND | OFlags::CLOEXEC;
     let mode = Mode::RUSR | Mode::WUSR | Mode::RGRP | Mode::ROTH;
-    match rustix::fs::open(path, flags, mode) {
-        Ok(fd) => {
-            let raw = rustix::fd::IntoRawFd::into_raw_fd(fd);
-            STRUCTURED_FD.store(raw, Ordering::Release);
-        }
-        Err(_) => {
-            STRUCTURED_FD.store(-2, Ordering::Release);
-        }
-    }
+    let fd = rustix::fs::open(path, flags, mode).ok();
+    let _ = STRUCTURED_FD.set(fd);
 }
 
 fn path_from_env() -> Option<PathBuf> {
@@ -67,16 +61,12 @@ impl core::fmt::Write for EventWriter<'_> {
 
 /// Writes one JSON object as a line. Async-signal-safe.
 pub fn structured_write(fields: impl FnOnce(&mut EventWriter)) {
-    let raw_fd = STRUCTURED_FD.load(Ordering::Acquire);
-    if raw_fd < 0 {
+    let Some(fd) = STRUCTURED_FD.get().and_then(Option::as_ref) else {
         return;
-    }
+    };
 
-    // SAFETY: raw_fd is a file descriptor we opened in init() and never
-    // close. Writing to it from any thread/context is safe.
-    let fd = unsafe { BorrowedFd::borrow_raw(raw_fd) };
     let mut w = EventWriter {
-        fd,
+        fd: fd.as_fd(),
         buf: [0; BUF_SIZE],
         len: 0,
     };
