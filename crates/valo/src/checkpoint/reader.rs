@@ -5,7 +5,7 @@ use std::mem::MaybeUninit;
 use std::os::fd::OwnedFd;
 
 use rustix::fs::SeekFrom as RSeekFrom;
-use rustix::mm::{self, MprotectFlags, ProtFlags};
+use rustix::mm::{self, MapFlags, MprotectFlags, ProtFlags};
 
 use crate::checkpoint::{AreaMeta, Header, PageFlag, Result, SnapshotSlot};
 use crate::log::structured;
@@ -536,11 +536,12 @@ fn reallocate_area(
         // SAFETY: todo
         unsafe {
             // TODO: fd if necessary
+            let flags = MapFlags::FIXED_NOREPLACE | saved_area.perms.into();
             rustix::mm::mmap_anonymous(
                 saved_area.address.start as *mut _,
                 saved_area.len(),
                 saved_area.perms.into(),
-                saved_area.perms.into(),
+                flags,
             )?;
 
             // TODO close fd if necessary
