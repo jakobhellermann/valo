@@ -1,8 +1,9 @@
 // TODO(ai-review): generated, not yet audited
 //! Coordinate a frozen guest with its Kumquat GPU host. SIGUSR1/2 start an
-//! operation; one byte on the result pipe reports its completion. The pipe is
-//! read through an init-time duplicate owned by valo, independent of the
-//! guest's fd numbers and of fd_table checkpoint state.
+//! operation, carrying the savestate slot in the sigqueue value; one byte on
+//! the result pipe reports its completion. The pipe is read through an
+//! init-time duplicate owned by valo, independent of the guest's fd numbers
+//! and of fd_table checkpoint state.
 
 use std::io;
 use std::os::fd::{BorrowedFd, OwnedFd};
@@ -62,8 +63,7 @@ pub fn init() -> Result<()> {
 
 /// Start the GPU snapshot.
 pub fn trigger_snapshot(slot: SnapshotSlot) -> Result<()> {
-    ensure_supported_slot(slot)?;
-    signal_kumquat(libc::SIGUSR1)
+    signal_kumquat(libc::SIGUSR1, slot)
 }
 
 pub fn wait_snapshot_complete() -> Result<()> {
@@ -74,21 +74,12 @@ pub fn wait_snapshot_complete() -> Result<()> {
 /// Returns immediately, the restore runs in the kumquat process.
 /// Complete it with [`wait_restore_complete`].
 pub fn trigger_restore(slot: SnapshotSlot) -> Result<()> {
-    ensure_supported_slot(slot)?;
-    signal_kumquat(libc::SIGUSR2)
+    signal_kumquat(libc::SIGUSR2, slot)
 }
 
 /// Wait for the kumquat restore triggered by [`trigger_restore`] to finish.
 pub fn wait_restore_complete() -> Result<()> {
     wait_result(b'R')
-}
-
-pub(crate) fn ensure_supported_slot(slot: SnapshotSlot) -> Result<()> {
-    // TODO: support multiple slots
-    if KUMQUAT_PID.load(Ordering::SeqCst) != 0 && slot.0 != 0 {
-        return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));
-    }
-    Ok(())
 }
 
 fn wait_result(expected: u8) -> Result<()> {
@@ -149,13 +140,20 @@ fn wait_result(expected: u8) -> Result<()> {
     }
 }
 
-fn signal_kumquat(signal: i32) -> Result<()> {
+fn signal_kumquat(signal: i32, slot: SnapshotSlot) -> Result<()> {
     let pid = KUMQUAT_PID.load(Ordering::SeqCst);
     if pid == 0 {
         return Ok(());
     }
-    // SAFETY: pid was validated during init; kill reports races with exit.
-    if unsafe { libc::kill(pid, signal) } < 0 {
+    // libc's linux sigval only exposes the pointer field; the integer rides
+    // in the low 32 bits, which is what kumquat reads from ssi_int.
+    let value = libc::sigval {
+        sival_ptr: slot.0 as usize as *mut libc::c_void,
+    };
+    // SAFETY: pid was validated during init; sigqueue reports races with
+    // exit. sigqueue is not in POSIX's async-signal-safe list, but works
+    // in glibc in practice.
+    if unsafe { libc::sigqueue(pid, signal, value) } < 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())

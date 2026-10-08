@@ -70,8 +70,6 @@ struct App {
     slots: Vec<SlotInfo>,
     /// The slot `s`/`r` act on; chosen with the digit keys.
     active_slot: usize,
-    /// GPU snapshots (kumquat) only support slot 0.
-    gpu_mode: bool,
     last_frame: Option<u64>,
     last_error: Option<String>,
     events: VecDeque<EventLine>,
@@ -101,7 +99,7 @@ enum EventKind {
 }
 
 impl App {
-    fn new(target_pid: u32, gpu_mode: bool) -> Self {
+    fn new(target_pid: u32) -> Self {
         let slots = Self::scan_disk_slots();
         Self {
             target_pid,
@@ -111,7 +109,6 @@ impl App {
             pending_op_slot: None,
             slots,
             active_slot: 0,
-            gpu_mode,
             last_frame: None,
             last_error: None,
             events: VecDeque::with_capacity(MAX_EVENTS),
@@ -137,11 +134,6 @@ impl App {
                 }
             })
             .collect()
-    }
-
-    /// Whether the slot may be selected (gpu snapshots only support 0).
-    fn slot_selectable(&self, slot: usize) -> bool {
-        !self.gpu_mode || slot == 0
     }
 
     /// Re-check the active slot's snapshot file on disk; catches snapshots
@@ -172,7 +164,6 @@ impl App {
 }
 
 pub fn run(sock: &Path, log_path: Option<&Path>, target_pid: u32, config: Config) -> Result<()> {
-    let gpu_mode = config.use_gpu;
     if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
         bail!("--tui requires stdout to be a tty");
     }
@@ -197,14 +188,7 @@ pub fn run(sock: &Path, log_path: Option<&Path>, target_pid: u32, config: Config
 
     // Make sure raw mode is restored even on panic.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        main_loop(
-            &mut terminal,
-            &mut writer,
-            rx,
-            target_pid,
-            gpu_mode,
-            &keyboard_input,
-        )
+        main_loop(&mut terminal, &mut writer, rx, target_pid, &keyboard_input)
     }));
     let _ = restore_terminal(&mut terminal);
     match result {
@@ -218,10 +202,9 @@ fn main_loop(
     conn: &mut ClientIPC,
     rx: Receiver<AppEvent>,
     target_pid: u32,
-    gpu_mode: bool,
     keyboard_input: &KeyboardInput,
 ) -> Result<()> {
-    let mut app = App::new(target_pid, gpu_mode);
+    let mut app = App::new(target_pid);
     app.push_event(EventKind::User, "ipc connected; running");
 
     draw(terminal, &app)?;
@@ -368,13 +351,6 @@ fn handle_key(app: &mut App, conn: &mut ClientIPC, k: KeyEvent) -> Result<()> {
         }
         (KeyCode::Char('s'), _) => {
             let slot = app.active_slot;
-            if !app.slot_selectable(slot) {
-                app.push_event(
-                    EventKind::User,
-                    format!("slot {slot} unavailable: gpu snapshots only support slot 0"),
-                );
-                return Ok(());
-            }
             queue_or_send_now(app, conn, ClientToLib::Checkpoint(slot as u32))?;
         }
         (KeyCode::Char('r'), _) => {
@@ -388,13 +364,6 @@ fn handle_key(app: &mut App, conn: &mut ClientIPC, k: KeyEvent) -> Result<()> {
         }
         (KeyCode::Char(d @ '0'..='9'), _) => {
             let slot = (d as u8 - b'0') as usize;
-            if !app.slot_selectable(slot) {
-                app.push_event(
-                    EventKind::User,
-                    format!("slot {slot} unavailable: gpu snapshots only support slot 0"),
-                );
-                return Ok(());
-            }
             app.active_slot = slot;
             app.refresh_slot_from_disk(slot);
             let frame = app.slots[slot].frame;
@@ -499,12 +468,6 @@ fn draw(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &App) -> Result<
                 Style::default().add_modifier(Modifier::DIM)
             };
             slots_line.push(Span::styled(format!("[{i}]{label} "), style));
-        }
-        if app.gpu_mode {
-            slots_line.push(Span::styled(
-                " (gpu: slot 0 only)",
-                Style::default().add_modifier(Modifier::DIM),
-            ));
         }
         status_lines.push(Line::from(slots_line));
         if let Some(err) = &app.last_error {
