@@ -10,6 +10,7 @@ use std::sync::atomic::Ordering;
 
 use crate::global_state::GlobalState;
 use crate::log::structured;
+use crate::token::Exclusive;
 use crate::utils::SignalSafeFormat;
 use crate::{Result, abort, alt_stack, error, info, sys, thread_tracker, utils};
 
@@ -98,21 +99,20 @@ impl Header {
     }
 }
 
-// # Safety
-// - Must not be called concurrently
-unsafe fn snapshot_create(ucontext: *const libc::ucontext_t, slot: SnapshotSlot) -> Result<()> {
-    // SAFETY: same preconditions
-    unsafe { ucontext::save(ucontext) };
+fn snapshot_create(excl: &mut Exclusive, ucontext: &ucontext_t, slot: SnapshotSlot) -> Result<()> {
+    ucontext::save(excl, ucontext);
+
     let mut writer = writer::SnapshotWriter::new(slot)?;
     writer::write_all_areas(&mut writer, threads::saved_threads())?;
 
     Ok(())
 }
 
-// # Safety
-// - Must not be called concurrently
-// - `snapshot_create` must have been called prior
-unsafe fn snapshot_restore(ucontext: *const libc::ucontext_t, slot: SnapshotSlot) -> Result<()> {
+fn snapshot_restore(
+    excl: &mut Exclusive,
+    ucontext: &mut ucontext_t,
+    slot: SnapshotSlot,
+) -> Result<()> {
     // Save current X11 connection state before restore overwrites it
     let x11_state = crate::hooks::xlib::xfixup::X11SavedState::save()?;
 
@@ -165,8 +165,7 @@ unsafe fn snapshot_restore(ucontext: *const libc::ucontext_t, slot: SnapshotSlot
         fmt_duration(gpu_ns)
     );
 
-    // SAFETY: same preconditions
-    unsafe { ucontext::restore(&mut *ucontext.cast_mut(), &*ucontext) };
+    ucontext::restore(excl, ucontext);
 
     Ok(())
 }
@@ -180,18 +179,23 @@ pub fn checkpoint_handler_inner(ucontext: *const ucontext_t) -> Result<()> {
 
     utils::assert_stack_in_range(state.alt_stack_memory());
 
+    // SAFETY: runs inside the single checkpoint/restore session.
+    let exclusive = &mut unsafe { Exclusive::assume() };
+    // SAFETY: the kernel passes the live interrupted context to the handler.
+    let ucontext = unsafe { &mut *ucontext.cast_mut() };
+
     if !state.restore_in_progress() {
         info!(Checkpoint, "snapshot create begin");
         structured::events::trace_step("checkpoint.memory.begin");
         // SAFETY: same precondition
-        unsafe { snapshot_create(ucontext, slot)? }
+        snapshot_create(exclusive, ucontext, slot)?;
         structured::events::trace_step("checkpoint.memory.end");
         info!(Checkpoint, "snapshot create done");
     } else {
         info!(Restore, "snapshot restore begin");
         structured::events::trace_step("restore.apply.begin");
         // SAFETY: same precondition
-        unsafe { snapshot_restore(ucontext, slot)? };
+        snapshot_restore(exclusive, ucontext, slot)?;
         structured::events::trace_step("restore.apply.end");
     }
 
@@ -231,8 +235,10 @@ pub unsafe fn checkpoint(slot: SnapshotSlot) -> Result<()> {
     state.set_restore_in_progress(false);
     structured::events::checkpoint_begin(slot);
 
-    // Safety: function precondition
-    unsafe { alt_stack::save_stack()? };
+    // SAFETY: function contract
+    let exclusive = &mut unsafe { Exclusive::assume() };
+
+    alt_stack::save_stack(exclusive)?;
 
     alt_stack::prepare_altstack()?;
 
@@ -273,7 +279,7 @@ pub unsafe fn checkpoint(slot: SnapshotSlot) -> Result<()> {
 
     let restoring = state.restore_in_progress();
 
-    alt_stack::restore_stack()?;
+    alt_stack::restore_stack(exclusive)?;
 
     if restoring {
         structured::events::restore_end(slot);

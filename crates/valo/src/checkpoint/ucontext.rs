@@ -1,56 +1,52 @@
-use std::cell::SyncUnsafeCell;
-use std::mem::MaybeUninit;
-
 use libc::ucontext_t;
 
-use crate::utils::UnsafeSendSync;
+use crate::token::{Exclusive, ExclusiveCell};
 
-static SS_UCONTEXT: SyncUnsafeCell<MaybeUninit<UnsafeSendSync<ucontext_t>>> =
-    SyncUnsafeCell::new(MaybeUninit::uninit());
-static SS_FPREGSET: SyncUnsafeCell<MaybeUninit<_xstate>> =
-    SyncUnsafeCell::new(MaybeUninit::uninit());
-
-// # Safety
-// - Must not be called concurrently
-// - `save` must have been called prior
-pub unsafe fn restore(into: &mut ucontext_t, no_ucontext: &ucontext_t) {
-    // SAFETY:
-    // - save was called before so everything is initialized
-    unsafe {
-        let ss_ucontext = &mut (*SS_UCONTEXT.get()).assume_init_mut().0;
-        let ss_fpregset = &mut *SS_FPREGSET.get();
-
-        ss_ucontext.uc_mcontext.fpregs = no_ucontext.uc_mcontext.fpregs;
-        if ss_ucontext.uc_flags & UC_FP_XSTATE != 0 {
-            *ss_ucontext.uc_mcontext.fpregs.cast::<_xstate>() = ss_fpregset.assume_init_read();
-        } else {
-            *ss_ucontext.uc_mcontext.fpregs = (*ss_fpregset.as_mut_ptr()).fpstate;
-        }
-
-        if no_ucontext.uc_flags & UC_FP_XSTATE != 0 {
-            (*SS_FPREGSET.get()).write(*no_ucontext.uc_mcontext.fpregs.cast::<_xstate>());
-        }
-
-        *into = *ss_ucontext;
-    }
+const fn zero<T>() -> T {
+    // SAFETY: callers pass all-zero-valid C structs (pointers, integers).
+    unsafe { std::mem::MaybeUninit::zeroed().assume_init() }
 }
 
-// # Safety
-// Must not be called concurrently
-pub unsafe fn save(no_ucontext: *const ucontext_t) {
-    // SAFETY: can access as per precondition
-    // TODO: only up to __fpregs_mem
-    unsafe {
-        let ss_ucontext = SS_UCONTEXT.get().cast::<MaybeUninit<ucontext_t>>();
-        let ss_ucontext = (*ss_ucontext).write(*no_ucontext);
+static SS_UCONTEXT: ExclusiveCell<ucontext_t> = ExclusiveCell::new(zero());
+static SS_FPREGSET: ExclusiveCell<_xstate> = ExclusiveCell::new(zero());
 
-        let ss_fpregset = &mut *SS_FPREGSET.get();
-        if ss_ucontext.uc_flags & UC_FP_XSTATE != 0 {
-            ss_fpregset.write(*ss_ucontext.uc_mcontext.fpregs.cast::<_xstate>());
-        } else {
-            let fpstate_ptr = &raw mut (*(*SS_FPREGSET.get()).as_mut_ptr()).fpstate;
-            *fpstate_ptr = *ss_ucontext.uc_mcontext.fpregs;
-        }
+pub fn restore(excl: &mut Exclusive, ucontext: &mut ucontext_t) {
+    let saved_xstate = SS_UCONTEXT.get(excl).uc_flags & UC_FP_XSTATE != 0;
+    let saved_xstate = saved_xstate.then(|| *SS_FPREGSET.get(excl));
+    let saved_fpstate = if saved_xstate.is_none() {
+        Some(SS_FPREGSET.get(excl).fpstate)
+    } else {
+        None
+    };
+
+    let mut ctx = *SS_UCONTEXT.get(excl);
+    let live_fpregs = ucontext.uc_mcontext.fpregs;
+    ctx.uc_mcontext.fpregs = live_fpregs;
+    if let Some(xstate) = saved_xstate {
+        // SAFETY: fpregs points into the interrupted context's fpregs_mem.
+        unsafe { *live_fpregs.cast::<_xstate>() = xstate };
+    }
+    if let Some(fpstate) = saved_fpstate {
+        // SAFETY: fpregs points into the interrupted context's fpregs_mem.
+        unsafe { *live_fpregs = fpstate };
+    }
+    if ucontext.uc_flags & UC_FP_XSTATE != 0 {
+        // SAFETY: fpregs points into the interrupted context's fpregs_mem.
+        *SS_FPREGSET.get(excl) = unsafe { *live_fpregs.cast::<_xstate>() };
+    }
+    *ucontext = ctx;
+}
+
+pub fn save(excl: &mut Exclusive, ucontext: &ucontext_t) {
+    // TODO: only up to __fpregs_mem
+    *SS_UCONTEXT.get(excl) = *ucontext;
+
+    if ucontext.uc_flags & UC_FP_XSTATE != 0 {
+        // SAFETY: fpregs points into the interrupted context's fpregs_mem.
+        *SS_FPREGSET.get(excl) = unsafe { *ucontext.uc_mcontext.fpregs.cast::<_xstate>() };
+    } else {
+        // SAFETY: fpregs points into the interrupted context's fpregs_mem.
+        SS_FPREGSET.get(excl).fpstate = unsafe { *ucontext.uc_mcontext.fpregs };
     }
 }
 
