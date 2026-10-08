@@ -12,7 +12,7 @@ use crate::log::structured;
 use crate::procfs::maps::{
     MMapPath, MemoryMap, MemoryMapPermissions, PageFlags, PageIndex, ProcMaps, ProcPagemap,
 };
-use crate::utils::{PAGE_SIZE, StackBufReader, align_page_down, align_page_up};
+use crate::utils::{PAGE_SIZE, SignalSafeFormat, StackBufReader, align_page_down, align_page_up};
 use crate::{debug, error, info, trace, warn};
 
 /// Buffer for the meta file reads
@@ -163,9 +163,9 @@ fn area_fd(saved_area: &MemoryMap) -> Option<(OwnedFd, u64, u64)> {
         .inspect_err(|e| {
             warn!(
                 Checkpoint,
-                "Could not open shared map file for restore {}: err={}",
+                "Could not open shared map file for restore {}: {}",
                 saved_area.pathname,
-                e.raw_os_error()
+                SignalSafeFormat(e),
             );
         })
         .ok()?;

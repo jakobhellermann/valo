@@ -12,7 +12,7 @@ use crate::log::structured;
 use crate::procfs::maps::{
     MMapPath, MemoryMap, MemoryMapPermissions, PageFlags, PageIndex, ProcMaps, ProcPagemap,
 };
-use crate::utils::{PAGE_SIZE, align_page_down, align_page_up};
+use crate::utils::{PAGE_SIZE, SignalSafeFormat, align_page_down, align_page_up};
 
 use crate::{Result, debug, info, warn};
 
@@ -105,9 +105,9 @@ fn area_fd(area: &MemoryMap) -> Option<(OwnedFd, u64, u64)> {
         .inspect_err(|e| {
             warn!(
                 Checkpoint,
-                "Could not open shared map file for save {}: err={}",
+                "Could not open shared map file for save {}: {}",
                 area.pathname,
-                e.raw_os_error()
+                SignalSafeFormat(e)
             )
         })
         .ok()?;
@@ -116,9 +116,9 @@ fn area_fd(area: &MemoryMap) -> Option<(OwnedFd, u64, u64)> {
         .inspect_err(|e| {
             warn!(
                 Checkpoint,
-                "Could not seek shared map file for save {}: err={}",
+                "Could not seek shared map file for save {}: {}",
                 area.pathname,
-                e.raw_os_error()
+                SignalSafeFormat(e)
             )
         })
         .ok()?;
