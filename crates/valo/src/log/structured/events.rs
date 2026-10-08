@@ -1,13 +1,15 @@
 // TODO(ai-review): generated, not yet audited
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 
+use rustix::fs::Dev;
 use rustix::io::FdFlags;
 
 use crate::Result;
 use crate::checkpoint::{PageFlag, SnapshotSlot};
+use crate::global_state::GlobalState;
 use crate::procfs::fds::{OpenFd, ProcFds};
 use crate::procfs::maps::{self, MemoryMap, PageFlags, ProcPagemap};
-use crate::token::Frozen;
+use crate::token::{Exclusive, Frozen};
 use crate::utils::TrackRun;
 
 use super::{EventWriter, structured_write, write_field};
@@ -190,9 +192,18 @@ pub fn fd(event: &'static str, entry: &OpenFd) {
     });
 }
 
-pub fn log_fd_list(frozen: &Frozen, event: &'static str) -> Result<()> {
+pub fn log_fd_list(exclusive: &mut Exclusive, frozen: &Frozen, event: &'static str) -> Result<()> {
+    let keepalives = GlobalState::fd_keepalives(exclusive);
     let mut fds = ProcFds::new_self()?;
     while let Some(entry) = fds.next(frozen)? {
+        // Valo's fd keepalives pin descriptors that cannot be reopened at
+        // restore; the pins exist in no checkpointed fd table. The
+        // checkpoint side (fd_sync::capture) skips them the same way, so
+        // both sides of the visualizer's fd diff show the guest timelines'
+        // tables only.
+        if keepalives.is_keepalive(entry.fd, entry.dev, entry.ino) {
+            continue;
+        }
         fd(event, &entry);
     }
     Ok(())
@@ -202,6 +213,19 @@ pub fn fd_action(event: &'static str, fd: i32) {
     structured_write(|w| {
         write_field(w, "e", event);
         write_field(w, "fd", fd as u32);
+    });
+}
+
+/// Valo pinned a path-less descriptor at checkpoint: the guest fd number,
+/// the keepalive duplicate holding the kernel file open, and its identity.
+pub fn fd_pin(fd: RawFd, keepalive: RawFd, dev: Dev, ino: u64, link: &str) {
+    structured_write(|w| {
+        write_field(w, "e", "checkpoint.fds.pin");
+        write_field(w, "fd", fd as u32);
+        write_field(w, "ka", keepalive as u32);
+        write_field(w, "dev", dev);
+        write_field(w, "ino", ino);
+        write_field(w, "link", link);
     });
 }
 

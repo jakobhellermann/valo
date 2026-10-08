@@ -28,7 +28,9 @@ pub(crate) mod structured;
 #[cfg(not(feature = "structured-log"))]
 pub(crate) mod structured {
     pub mod events {
-        use std::os::fd::OwnedFd;
+        use std::os::fd::{OwnedFd, RawFd};
+
+        use rustix::fs::Dev;
 
         use crate::checkpoint::SnapshotSlot;
         use crate::procfs::fds::OpenFd;
@@ -47,6 +49,7 @@ pub(crate) mod structured {
         pub fn reallocate_areas_begin() {}
         pub fn reallocate_areas_end() {}
         pub fn log_fd_list(
+            _exclusive: &mut crate::token::Exclusive,
             _frozen: &crate::token::Frozen,
             _event: &'static str,
         ) -> crate::Result<()> {
@@ -54,6 +57,7 @@ pub(crate) mod structured {
         }
         pub fn fd(_event: &'static str, _entry: &OpenFd) {}
         pub fn fd_action(_event: &'static str, _fd: i32) {}
+        pub fn fd_pin(_fd: RawFd, _keepalive: RawFd, _dev: Dev, _ino: u64, _link: &str) {}
     }
 }
 
@@ -189,6 +193,9 @@ fn init_structured() {
     structured::init();
 }
 
+#[cfg(not(feature = "structured-log"))]
+fn init_structured() {}
+
 fn path_from_env() -> Option<&'static CStr> {
     // SAFETY: Environment is not mutated?
     let raw = unsafe { libc::getenv(c"VALO_LOG".as_ptr()) };
@@ -198,9 +205,6 @@ fn path_from_env() -> Option<&'static CStr> {
     // SAFETY: getenv returns a NUL-terminated C string.
     Some(unsafe { CStr::from_ptr(raw) })
 }
-
-#[cfg(not(feature = "structured-log"))]
-fn init_structured() {}
 
 pub(super) struct StackWriter {
     buf: [u8; BUF_SIZE],
