@@ -37,6 +37,9 @@ use valo_ipc::messages::{ClientToLib, FrameBoundary, LibToClient};
 
 const MAX_EVENTS: usize = 1000;
 
+/// Savestate slots addressable with the digit keys `0`-`9`.
+const SLOT_COUNT: usize = 10;
+
 struct KeyboardInput {
     suspended: AtomicBool,
     reader_lock: Mutex<()>,
@@ -60,11 +63,26 @@ struct App {
     /// Queued one-shot command to send at the next FrameBoundary, before
     /// `Advance`. Only one slot — overwriting it is fine for now.
     queued_command: Option<ClientToLib>,
+    /// Slot of the savestate command most recently queued or sent, used to
+    /// match `CheckpointDone`/`RestoreSucceeded` replies.
+    pending_op_slot: Option<u32>,
+    /// Per-slot savestate bookkeeping for the status display.
+    slots: Vec<SlotInfo>,
+    /// The slot `s`/`r` act on; chosen with the digit keys.
+    active_slot: usize,
+    /// GPU snapshots (kumquat) only support slot 0.
+    gpu_mode: bool,
     last_frame: Option<u64>,
-    last_savestate: Option<u64>,
     last_error: Option<String>,
     events: VecDeque<EventLine>,
     quitting: bool,
+}
+
+struct SlotInfo {
+    /// A snapshot exists (saved this session or found on disk).
+    exists: bool,
+    /// Frame at save time; only known for saves made this session.
+    frame: Option<u64>,
 }
 
 struct EventLine {
@@ -83,18 +101,62 @@ enum EventKind {
 }
 
 impl App {
-    fn new(target_pid: u32) -> Self {
+    fn new(target_pid: u32, gpu_mode: bool) -> Self {
+        let slots = Self::scan_disk_slots();
         Self {
             target_pid,
             paused: false,
             pending_advance: None,
             queued_command: None,
+            pending_op_slot: None,
+            slots,
+            active_slot: 0,
+            gpu_mode,
             last_frame: None,
-            last_savestate: None,
             last_error: None,
             events: VecDeque::with_capacity(MAX_EVENTS),
             quitting: false,
         }
+    }
+
+    /// Mark slots that already have snapshot files on disk (e.g. written by
+    /// `VALO_CHECKPOINT_FRAME` or a pinned `VALO_HOME`). Frame numbers are
+    /// not recoverable from disk; the event log shows them for session
+    /// saves.
+    fn scan_disk_slots() -> Vec<SlotInfo> {
+        let slots_dir = valo_launch::paths::valo_home().join("slots");
+        (0..SLOT_COUNT as u32)
+            .map(|slot| {
+                let meta = slots_dir.join(slot.to_string()).join("meta");
+                let exists = std::fs::metadata(&meta)
+                    .map(|m| m.len() > 0)
+                    .unwrap_or(false);
+                SlotInfo {
+                    exists,
+                    frame: None,
+                }
+            })
+            .collect()
+    }
+
+    /// Whether the slot may be selected (gpu snapshots only support 0).
+    fn slot_selectable(&self, slot: usize) -> bool {
+        !self.gpu_mode || slot == 0
+    }
+
+    /// Re-check the active slot's snapshot file on disk; catches snapshots
+    /// the TUI did not trigger itself (`VALO_CHECKPOINT_FRAME`).
+    fn refresh_slot_from_disk(&mut self, slot: usize) {
+        if self.slots[slot].exists {
+            return;
+        }
+        let meta = valo_launch::paths::valo_home()
+            .join("slots")
+            .join(slot.to_string())
+            .join("meta");
+        self.slots[slot].exists = std::fs::metadata(&meta)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false);
     }
 
     fn push_event(&mut self, kind: EventKind, text: impl Into<String>) {
@@ -110,6 +172,7 @@ impl App {
 }
 
 pub fn run(sock: &Path, log_path: Option<&Path>, target_pid: u32, config: Config) -> Result<()> {
+    let gpu_mode = config.use_gpu;
     if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
         bail!("--tui requires stdout to be a tty");
     }
@@ -134,7 +197,14 @@ pub fn run(sock: &Path, log_path: Option<&Path>, target_pid: u32, config: Config
 
     // Make sure raw mode is restored even on panic.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        main_loop(&mut terminal, &mut writer, rx, target_pid, &keyboard_input)
+        main_loop(
+            &mut terminal,
+            &mut writer,
+            rx,
+            target_pid,
+            gpu_mode,
+            &keyboard_input,
+        )
     }));
     let _ = restore_terminal(&mut terminal);
     match result {
@@ -148,9 +218,10 @@ fn main_loop(
     conn: &mut ClientIPC,
     rx: Receiver<AppEvent>,
     target_pid: u32,
+    gpu_mode: bool,
     keyboard_input: &KeyboardInput,
 ) -> Result<()> {
-    let mut app = App::new(target_pid);
+    let mut app = App::new(target_pid, gpu_mode);
     app.push_event(EventKind::User, "ipc connected; running");
 
     draw(terminal, &app)?;
@@ -209,16 +280,33 @@ fn handle_event(app: &mut App, conn: &mut ClientIPC, ev: AppEvent) -> Result<()>
             }
         }
         AppEvent::Ipc(LibToClient::CheckpointDone) => {
-            app.last_savestate = app.last_frame;
-            app.push_event(EventKind::Recv, "CheckpointDone");
+            match app.pending_op_slot.take() {
+                Some(slot) => {
+                    let frame = app.last_frame;
+                    app.slots[slot as usize].frame = frame;
+                    app.slots[slot as usize].exists = true;
+                    app.push_event(
+                        EventKind::Recv,
+                        format!(
+                            "CheckpointDone (slot {slot}, frame {})",
+                            frame
+                                .map(|f| f.to_string())
+                                .unwrap_or_else(|| "?".to_string())
+                        ),
+                    );
+                }
+                None => app.push_event(EventKind::Recv, "CheckpointDone"),
+            }
             // Now release the frame.
             release_frame_if_pending(conn, app)?;
         }
         AppEvent::Ipc(LibToClient::RestoreSucceeded) => {
+            app.pending_op_slot = None;
             // Lib's checkpoint call site got setcontext'd back here from
             // a successful Restore. The frame counter is whatever was
             // saved at checkpoint time; the next FrameBoundary will use
-            // that older number.
+            // that older number. Slot bookkeeping is unchanged: restores
+            // do not invalidate snapshots.
             app.push_event(EventKind::Recv, "RestoreSucceeded");
             release_frame_if_pending(conn, app)?;
         }
@@ -279,14 +367,67 @@ fn handle_key(app: &mut App, conn: &mut ClientIPC, k: KeyEvent) -> Result<()> {
             }
         }
         (KeyCode::Char('s'), _) => {
-            app.push_event(EventKind::User, "snapshot queued");
-            app.queued_command = Some(ClientToLib::Checkpoint);
+            let slot = app.active_slot;
+            if !app.slot_selectable(slot) {
+                app.push_event(
+                    EventKind::User,
+                    format!("slot {slot} unavailable: gpu snapshots only support slot 0"),
+                );
+                return Ok(());
+            }
+            queue_or_send_now(app, conn, ClientToLib::Checkpoint(slot as u32))?;
         }
         (KeyCode::Char('r'), _) => {
-            app.push_event(EventKind::User, "restore queued");
-            app.queued_command = Some(ClientToLib::Restore);
+            let slot = app.active_slot;
+            app.refresh_slot_from_disk(slot);
+            if !app.slots[slot].exists {
+                app.push_event(EventKind::User, format!("slot {slot} has no snapshot"));
+                return Ok(());
+            }
+            queue_or_send_now(app, conn, ClientToLib::Restore(slot as u32))?;
+        }
+        (KeyCode::Char(d @ '0'..='9'), _) => {
+            let slot = (d as u8 - b'0') as usize;
+            if !app.slot_selectable(slot) {
+                app.push_event(
+                    EventKind::User,
+                    format!("slot {slot} unavailable: gpu snapshots only support slot 0"),
+                );
+                return Ok(());
+            }
+            app.active_slot = slot;
+            app.refresh_slot_from_disk(slot);
+            let frame = app.slots[slot].frame;
+            app.push_event(
+                EventKind::User,
+                format!(
+                    "slot {slot} selected{}",
+                    frame.map(|f| format!(" (frame {f})")).unwrap_or_default()
+                ),
+            );
         }
         _ => {}
+    }
+    Ok(())
+}
+
+/// Queue a one-shot savestate command for the next frame boundary. When
+/// the lib is already parked at one (paused with a pending frame) the
+/// command is sent immediately — the lib is blocked in recv right now,
+/// so the paused state itself gets saved or restored.
+fn queue_or_send_now(app: &mut App, conn: &mut ClientIPC, cmd: ClientToLib) -> Result<()> {
+    let (name, slot) = match &cmd {
+        ClientToLib::Checkpoint(slot) => ("snapshot", *slot),
+        ClientToLib::Restore(slot) => ("restore", *slot),
+        _ => unreachable!("savestate command expected"),
+    };
+    app.pending_op_slot = Some(slot);
+    if app.paused && app.pending_advance.is_some() {
+        app.push_event(EventKind::User, format!("{name} sent (slot {slot})"));
+        send(conn, app, cmd)?;
+    } else {
+        app.push_event(EventKind::User, format!("{name} queued (slot {slot})"));
+        app.queued_command = Some(cmd);
     }
     Ok(())
 }
@@ -316,7 +457,7 @@ fn draw(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &App) -> Result<
         let layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),
+                Constraint::Length(4),
                 Constraint::Min(3),
                 Constraint::Length(3),
             ])
@@ -328,10 +469,6 @@ fn draw(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &App) -> Result<
             .last_frame
             .map(|f| f.to_string())
             .unwrap_or_else(|| "-".to_string());
-        let snap_str = app
-            .last_savestate
-            .map(|f| f.to_string())
-            .unwrap_or_else(|| "-".to_string());
         let mut status_lines = vec![Line::from(vec![
             Span::styled("state: ", Style::default().add_modifier(Modifier::DIM)),
             Span::styled(state_str, Style::default().add_modifier(Modifier::BOLD)),
@@ -339,9 +476,37 @@ fn draw(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &App) -> Result<
             Span::styled("frame: ", Style::default().add_modifier(Modifier::DIM)),
             Span::raw(frame_str),
             Span::raw("   "),
-            Span::styled("savestate: ", Style::default().add_modifier(Modifier::DIM)),
-            Span::raw(snap_str),
+            Span::styled("slot: ", Style::default().add_modifier(Modifier::DIM)),
+            Span::styled(
+                app.active_slot.to_string(),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
         ])];
+        // Slots overview: `[n]x` for slots holding a snapshot, `[n]-`
+        // for empty ones. The frame at save time stays visible in the
+        // event log; the active slot is bold.
+        let mut slots_line = vec![Span::styled(
+            "slots: ",
+            Style::default().add_modifier(Modifier::DIM),
+        )];
+        for (i, slot) in app.slots.iter().enumerate() {
+            let label = if slot.exists { "x" } else { "-" };
+            let style = if i == app.active_slot {
+                Style::default().add_modifier(Modifier::BOLD)
+            } else if slot.exists {
+                Style::default()
+            } else {
+                Style::default().add_modifier(Modifier::DIM)
+            };
+            slots_line.push(Span::styled(format!("[{i}]{label} "), style));
+        }
+        if app.gpu_mode {
+            slots_line.push(Span::styled(
+                " (gpu: slot 0 only)",
+                Style::default().add_modifier(Modifier::DIM),
+            ));
+        }
+        status_lines.push(Line::from(slots_line));
         if let Some(err) = &app.last_error {
             status_lines.push(Line::from(Span::raw(format!("error: {err}"))));
         }
@@ -390,6 +555,8 @@ fn draw(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &App) -> Result<
         let hints = Line::from(vec![
             Span::styled("[space]", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(" play/pause   "),
+            Span::styled("[0-9]", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(" slot   "),
             Span::styled("[s]", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(" snapshot   "),
             Span::styled("[r]", Style::default().add_modifier(Modifier::BOLD)),

@@ -56,8 +56,10 @@ pub enum ClientToLib {
     SetConfig(Config),
     /// held → free: frames run by default.
     Detach,
-    Checkpoint,
-    Restore,
+    /// Snapshot into the given savestate slot.
+    Checkpoint(u32),
+    /// Rewind to the snapshot in the given slot.
+    Restore(u32),
     GetState,
     Quit,
 }
