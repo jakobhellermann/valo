@@ -29,12 +29,14 @@ impl GpuSession {
         let seq = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
         let home = paths::valo_home();
         let runtime_dir = home.join(format!("gpu-{seq}"));
+        if runtime_dir.exists() {
+            fs::remove_dir_all(&runtime_dir)
+                .with_context(|| format!("remove stale {}", runtime_dir.display()))?;
+        }
         fs::create_dir(&runtime_dir)
             .with_context(|| format!("create {}", runtime_dir.display()))?;
         let socket = runtime_dir.join("gpu.sock");
-        // TODO: support multiple gpu slots
-        let snapshot = home.join("slots/0/gpu");
-        fs::create_dir_all(&snapshot).with_context(|| format!("create {}", snapshot.display()))?;
+        let slots_base = home.join("slots");
         let log = File::create(runtime_dir.join("kumquat.log"))?;
         let (result_read, result_write) = new_pipe()?;
         let read_fd = result_read.as_raw_fd();
@@ -45,7 +47,7 @@ impl GpuSession {
         let mut cmd = Command::new(kumquat_bin);
         cmd.arg("--capset-names=gfxstream-vulkan")
             .arg(format!("--gpu-socket-path={}", socket.display()))
-            .arg(format!("--snapshot-dir={}", snapshot.display()))
+            .arg(format!("--snapshot-base={}", slots_base.display()))
             .arg(format!("--result-fd={write_fd}"))
             .env_remove("VK_DRIVER_FILES")
             .env_remove("VN_DEBUG")

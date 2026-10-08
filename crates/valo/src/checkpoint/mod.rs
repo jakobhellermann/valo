@@ -75,12 +75,6 @@ pub fn preflight_restore(slot: SnapshotSlot) -> Result<(), String> {
     if !slot_exists(slot) {
         return Err(format!("no snapshot in slot {}", slot.0));
     }
-    if let Err(e) = gpu::ensure_supported_slot(slot) {
-        return Err(format!(
-            "restore of slot {} unsupported in gpu mode: {e}",
-            slot.0
-        ));
-    }
     Ok(())
 }
 
