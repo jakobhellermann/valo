@@ -530,8 +530,7 @@ fn attach_gdb(
 }
 
 fn run_gdb(pid: u32) -> Result<()> {
-    // SAFETY: getpgrp has no preconditions.
-    let client_group = unsafe { libc::getpgrp() };
+    let client_group = rustix::process::getpgrp().as_raw_pid();
     let mut command = Command::new("gdb");
     command.arg("-p").arg(pid.to_string()).process_group(0);
     let mut debugger = command.spawn().context("start gdb")?;
