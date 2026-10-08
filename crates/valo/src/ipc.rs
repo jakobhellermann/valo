@@ -22,8 +22,9 @@ use valo_ipc::config::{Config, FrameConfig, LogConfig};
 use valo_ipc::messages::{ClientToLib, Error, FrameBoundary, LibHello, LibToClient, State};
 use valo_ipc::{LibIPC, PROTOCOL_VERSION};
 
+use crate::checkpoint::SnapshotSlot;
 use crate::global_state::GlobalState;
-use crate::{Result, error, info, trace, warn};
+use crate::{Result, checkpoint, error, info, trace, warn};
 
 /// How long a free session waits for a command from a connected client
 /// before the frame runs.
@@ -330,9 +331,9 @@ fn handle_command(
             session.release = Release::Free;
             Action::Run
         }
-        ClientToLib::Checkpoint => {
-            info!(Ipc, "checkpoint requested at frame {frame}");
-            crate::valo_checkpoint();
+        ClientToLib::Checkpoint(slot) => {
+            info!(Ipc, "checkpoint slot {slot} requested at frame {frame}");
+            crate::valo_checkpoint_slot(slot);
             // valo_checkpoint returns a second time when a later restore jumps back into it
             let response = match GlobalState::get().restore_in_progress() {
                 true => LibToClient::RestoreSucceeded,
@@ -343,11 +344,19 @@ fn handle_command(
             }
             Action::Hold
         }
-        ClientToLib::Restore => {
-            info!(Ipc, "restore requested at frame {frame}");
+        ClientToLib::Restore(slot) => {
+            info!(Ipc, "restore slot {slot} requested at frame {frame}");
+            // a failed restore past the preflight aborts the target
+            if let Err(message) = checkpoint::preflight_restore(SnapshotSlot(slot)) {
+                error!(Ipc, "restore preflight failed: {message}");
+                if let Err(e) = conn.send(&LibToClient::Error(Error { message })) {
+                    warn!(Ipc, "send restore error: {e}");
+                }
+                return Action::Hold;
+            }
             // On success valo_restore jumps into the saved ucontext and never
             // returns here; on failure it aborts. The client observes EOF.
-            crate::valo_restore();
+            crate::valo_restore_slot(slot);
             unreachable!("valo_restore never returns")
         }
     }

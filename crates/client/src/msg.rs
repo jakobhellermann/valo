@@ -31,13 +31,18 @@ pub enum MsgCmd {
         #[arg(default_value_t = 1)]
         frames: u64,
     },
-    /// Checkpoint at the next frame boundary.
-    Checkpoint,
-    /// Restore the last checkpoint. Async mode never answers this: execution
-    /// resumes inside the earlier checkpoint's continuation, where the stored
-    /// connection is the checkpoint-time one (long gone). Block mode does
-    /// reply with `RestoreSucceeded`. Verify with `msg state`.
-    Restore,
+    /// Checkpoint into a savestate slot at the next frame boundary.
+    Checkpoint {
+        /// Savestate slot to write.
+        #[arg(long, default_value_t = 0)]
+        slot: u32,
+    },
+    /// Restore the snapshot in a slot.
+    Restore {
+        /// Savestate slot to rewind to.
+        #[arg(long, default_value_t = 0)]
+        slot: u32,
+    },
     /// Stop pausing at frame boundaries
     Detach,
     /// Tell the game to quit.
@@ -192,8 +197,8 @@ pub fn msg(sock: &Path, command: &MsgCmd) -> Result<()> {
     let request = match command {
         MsgCmd::State => ClientToLib::GetState,
         MsgCmd::Advance { frames } => ClientToLib::AdvanceFrames(*frames),
-        MsgCmd::Checkpoint => ClientToLib::Checkpoint,
-        MsgCmd::Restore => ClientToLib::Restore,
+        MsgCmd::Checkpoint { slot } => ClientToLib::Checkpoint(*slot),
+        MsgCmd::Restore { slot } => ClientToLib::Restore(*slot),
         MsgCmd::Detach => ClientToLib::Detach,
         MsgCmd::Quit => ClientToLib::Quit,
     };
@@ -201,7 +206,7 @@ pub fn msg(sock: &Path, command: &MsgCmd) -> Result<()> {
 
     if matches!(
         request,
-        ClientToLib::AdvanceFrames(_) | ClientToLib::Checkpoint
+        ClientToLib::AdvanceFrames(_) | ClientToLib::Checkpoint(_)
     ) {
         conn.clear_read_timeout().context("clear command timeout")?;
     }
@@ -211,7 +216,8 @@ pub fn msg(sock: &Path, command: &MsgCmd) -> Result<()> {
     // the stored connection is the checkpoint-time one-shot stream (dead).
     // Block mode replies with RestoreSucceeded on its persistent connection;
     // this restore client's stream becomes an orphaned fd on the lib side.
-    if matches!(request, ClientToLib::Restore) {
+    // TODO: check for failed preflight
+    if matches!(request, ClientToLib::Restore(_)) {
         println!("[valo] restore sent (verify with: valo msg state)");
         return Ok(());
     }

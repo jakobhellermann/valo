@@ -117,8 +117,8 @@ pub enum ClientToLib {
     AdvanceFrames(u64),   // 0 = query, n = run n frames, then hold
     SetConfig(Config),    // full replacement of the runtime config
     Detach,               // held → free
-    Checkpoint,
-    Restore,
+    Checkpoint(u32),      // snapshot into savestate slot N
+    Restore(u32),         // rewind to the snapshot in slot N
     GetState,
     Quit,
 }
@@ -175,13 +175,17 @@ Command semantics inside a held boundary:
   notified.
 - `AdvanceFrames(0)` → `State` reply, stays held.
 - `Detach` → `Release::Free`, the held frame runs.
-- `Checkpoint` → `valo_checkpoint()`. `valo_checkpoint` returns twice:
+- `Checkpoint(slot)` → `valo_checkpoint_slot(slot)`. It returns twice:
   on the save return the reply is `CheckpointDone`, when a later restore
   jumps back into this call it is `RestoreSucceeded`. The session lock is held across the
   call; that is consistent through a restore (the lock state rewinds
   with everything else).
-- `Restore` → `valo_restore()` jumps into the saved context and never
-  returns (it aborts on error); the client observes EOF.
+- `Restore(slot)` → a slot that cannot restore (missing snapshot, gpu-mode
+  slot restriction) is answered with an `Error` and stays held. Otherwise
+  `valo_restore_slot(slot)` jumps into the saved context and never returns
+  (it aborts on error); the client observes EOF.
+
+Slots persist under `$VALO_HOME/slots/<n>/`.
 
 ## Stale socket files
 

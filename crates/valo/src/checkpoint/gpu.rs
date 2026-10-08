@@ -83,7 +83,7 @@ pub fn wait_restore_complete() -> Result<()> {
     wait_result(b'R')
 }
 
-fn ensure_supported_slot(slot: SnapshotSlot) -> Result<()> {
+pub(crate) fn ensure_supported_slot(slot: SnapshotSlot) -> Result<()> {
     // TODO: support multiple slots
     if KUMQUAT_PID.load(Ordering::SeqCst) != 0 && slot.0 != 0 {
         return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));

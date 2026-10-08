@@ -14,7 +14,7 @@ use crate::global_state::GlobalState;
 use crate::log::structured;
 use crate::token::{Exclusive, ExclusiveCell, Frozen};
 use crate::utils::SignalSafeFormat;
-use crate::{Result, abort, alt_stack, error, info, sys, thread_tracker, utils};
+use crate::{Result, abort, alt_stack, error, home, info, sys, thread_tracker, utils};
 
 pub(crate) const SIG_CHECKPOINT: i32 = libc::SIGSYS;
 
@@ -39,12 +39,12 @@ fn fmt_duration(ns: u64) -> heapless::String<16> {
 pub(crate) struct SnapshotSlot(pub u32);
 
 pub(crate) fn ensure_slot_dir(slot: SnapshotSlot) -> Result<()> {
-    let path = crate::home::get().join("slots").join(slot.0.to_string());
+    let path = home::get().join("slots").join(slot.0.to_string());
     std::fs::create_dir_all(path)
 }
 
 fn open_snapshot_files(slot: SnapshotSlot) -> Result<(File, File), std::io::Error> {
-    let dir = crate::home::open()?;
+    let dir = home::open()?;
     let mut dir_opts = OpenOptions::new();
     dir_opts.read(true);
     let mut file_opts = OpenOptions::new();
@@ -55,6 +55,33 @@ fn open_snapshot_files(slot: SnapshotSlot) -> Result<(File, File), std::io::Erro
     let snapshot_meta = slot.open_file_with("meta", &file_opts)?;
     let snapshot_page_data = slot.open_file_with("pages", &file_opts)?;
     Ok((snapshot_meta, snapshot_page_data))
+}
+
+/// Whether `slot` holds a completed snapshot.
+pub fn slot_exists(slot: SnapshotSlot) -> bool {
+    let Ok(meta) = std::fs::metadata(
+        home::get()
+            .join("slots")
+            .join(slot.0.to_string())
+            .join("meta"),
+    ) else {
+        return false;
+    };
+    meta.len() >= size_of::<Header>() as u64
+}
+
+/// Check whether a restore can be done
+pub fn preflight_restore(slot: SnapshotSlot) -> Result<(), String> {
+    if !slot_exists(slot) {
+        return Err(format!("no snapshot in slot {}", slot.0));
+    }
+    if let Err(e) = gpu::ensure_supported_slot(slot) {
+        return Err(format!(
+            "restore of slot {} unsupported in gpu mode: {e}",
+            slot.0
+        ));
+    }
+    Ok(())
 }
 
 #[repr(u8)]
