@@ -8,7 +8,6 @@
 //! - `async`: init only binds a listener; frames pump freely and one-shot
 //!   `valo msg` clients connect, issue a command, and disconnect.
 
-use std::ffi::CStr;
 use std::io::ErrorKind;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
@@ -44,17 +43,16 @@ const ASYNC_READ_TIMEOUT: Duration = Duration::from_millis(100);
 /// exchanges Hello messages, and stores the connection in a `OnceLock` for
 /// the rest of the process.
 pub fn init() -> Result<()> {
-    // SAFETY: called from `_init` before any threads or env mutation, doesn't escape function
-    let Some(path) = (unsafe { path_from_env() }) else {
+    let Some(path) = std::env::var_os("VALO_SOCK").map(PathBuf::from) else {
         info!(Ipc, "VALO_SOCK not set, IPC disabled");
         return Ok(());
     };
     if async_mode_requested() {
-        return init_async(path);
+        return init_async(&path);
     }
     info!(Ipc, "establishing on {}", path.display());
 
-    let mut ipc = LibIPC::establish(path)?;
+    let mut ipc = LibIPC::establish(&path)?;
     ipc.send(&LibToClient::Hello(Hello::LIB))?;
     let peer = ipc
         .recv()?
@@ -238,35 +236,5 @@ fn pid_file(sock: &Path) -> PathBuf {
 
 /// Whether `VALO_IPC_MODE=async` was set (default: block).
 fn async_mode_requested() -> bool {
-    // SAFETY: getenv has no preconditions of its own.
-    let raw = unsafe { libc::getenv(c"VALO_IPC_MODE".as_ptr()) };
-    if raw.is_null() {
-        return false;
-    }
-    // SAFETY: getenv returns a NUL-terminated C string.
-    let value: &CStr = unsafe { CStr::from_ptr(raw) };
-    value.to_bytes() == b"async"
-}
-
-/// Read `VALO_SOCK` environment variable.
-///
-/// # Safety
-///
-/// For the duration of the lifetime, `getenv` must not be invalidated
-/// by `setenv/putenv/unsetenv`.
-unsafe fn path_from_env<'a>() -> Option<&'a Path> {
-    use std::os::unix::ffi::OsStrExt;
-    // SAFETY: getenv has no preconditions of its own.
-    let raw = unsafe { libc::getenv(c"VALO_SOCK".as_ptr()) };
-    if raw.is_null() {
-        return None;
-    }
-    // SAFETY: getenv returns a NUL-terminated C string.
-    // The function-level contract justifies the lifetime.
-    let cstr: &'a CStr = unsafe { CStr::from_ptr(raw) };
-    let bytes = cstr.to_bytes();
-    if bytes.is_empty() {
-        return None;
-    }
-    Some(Path::new(std::ffi::OsStr::from_bytes(bytes)))
+    std::env::var_os("VALO_IPC_MODE").as_deref() == Some(std::ffi::OsStr::new("async"))
 }

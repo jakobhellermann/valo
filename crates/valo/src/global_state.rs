@@ -1,6 +1,5 @@
-use std::ffi::CStr;
-
 use std::cell::SyncUnsafeCell;
+
 use std::mem::MaybeUninit;
 use std::ops::Range;
 use std::ptr::addr_of_mut;
@@ -10,15 +9,11 @@ use rustix::mm;
 
 use crate::Result;
 
-fn parse_env_u64(name: &CStr) -> u64 {
-    // SAFETY: name is a valid C string, and we don't modify the environment
-    let ptr = unsafe { libc::getenv(name.as_ptr()) };
-    if ptr.is_null() {
-        return 0;
-    }
-    // SAFETY: getenv returns a valid C string if non-null
-    let s = unsafe { CStr::from_ptr(ptr) };
-    s.to_str().ok().and_then(|s| s.parse().ok()).unwrap_or(0)
+fn parse_env_u64(name: &str) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
 }
 use crate::alt_stack::ALT_STACK_SIZE;
 use crate::utils::PAGE_SIZE;
@@ -106,9 +101,9 @@ impl GlobalState {
             }
             inner
         };
-        let max_restores = parse_env_u64(c"VALO_MAX_RESTORES");
-        let checkpoint_frame = parse_env_u64(c"VALO_CHECKPOINT_FRAME");
-        let restore_frame = parse_env_u64(c"VALO_RESTORE_FRAME");
+        let max_restores = parse_env_u64("VALO_MAX_RESTORES");
+        let checkpoint_frame = parse_env_u64("VALO_CHECKPOINT_FRAME");
+        let restore_frame = parse_env_u64("VALO_RESTORE_FRAME");
 
         Ok(GlobalState {
             reserved: reserved.cast(),
