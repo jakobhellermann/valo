@@ -176,13 +176,27 @@ fn run(
     }
 
     let result = if use_tui {
-        tui::run(
+        let tui_result = tui::run(
             sock_path,
             Some(log_path.as_path()),
             child.id(),
             config.config(),
-        )
-        .map(|_| SessionEnd::Done)
+        );
+        // The alternate screen is gone; report where this session's files landed
+        eprintln!(
+            "[valo-client] session ended: target pid {}, home {}",
+            child.id(),
+            paths::valo_home().display()
+        );
+        eprintln!("[valo-client] log: {}", log_path.display());
+        if let Some(gpu) = &gpu {
+            eprintln!(
+                "[valo-client] kumquat log: {} (host pid {})",
+                gpu.log_path().display(),
+                gpu.pid()
+            );
+        }
+        tui_result.map(|_| SessionEnd::Done)
     } else {
         run_ipc_loop(sock_path, &mut child, gdb, config.config())
     };
