@@ -1,8 +1,11 @@
 mod atomic_ptr_vec;
+mod sigsafe;
 mod stackio;
 mod track_run;
 
 use std::ops::Range;
+
+pub use sigsafe::SignalSafeFormat;
 
 pub(crate) use atomic_ptr_vec::AtomicPtrVec;
 pub(crate) use stackio::StackBufReader;

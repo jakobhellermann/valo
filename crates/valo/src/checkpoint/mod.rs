@@ -10,6 +10,7 @@ use std::sync::atomic::Ordering;
 
 use crate::global_state::GlobalState;
 use crate::log::structured;
+use crate::utils::SignalSafeFormat;
 use crate::{Result, abort, alt_stack, error, info, sys, thread_tracker, utils};
 
 pub(crate) const SIG_CHECKPOINT: i32 = libc::SIGSYS;
@@ -203,7 +204,13 @@ pub unsafe extern "C" fn signal_handler(
     ucontext: *const ucontext_t,
 ) {
     if let Err(e) = utils::assert_no_alloc(|| checkpoint_handler_inner(ucontext)) {
-        error!(Checkpoint, "error in checkpoint handler: {}", e);
+        // SignalSafeError: io::Error's Display calls strerror, which
+        // allocates and would trip the guard before this line is logged.
+        error!(
+            Checkpoint,
+            "error in checkpoint handler: {}",
+            SignalSafeFormat(&e)
+        );
         std::process::abort();
     }
 }
