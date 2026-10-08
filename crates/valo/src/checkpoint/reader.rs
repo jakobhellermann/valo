@@ -90,8 +90,7 @@ impl SnapshotReader {
             let mut byte = 0_u8;
             self.snapshot_meta
                 .read_exact(std::slice::from_mut(&mut byte))?;
-            // SAFETY: assume savestate is untampered
-            Ok(unsafe { PageFlag::from_u8_unchecked(byte) })
+            Ok(PageFlag::from_u8(byte).ok_or(std::io::ErrorKind::InvalidData)?)
         } else {
             unreachable!("attempteed to read out-of-bounds pageflag")
         }

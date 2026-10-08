@@ -39,14 +39,17 @@ pub enum PageFlag {
 }
 
 impl PageFlag {
-    /// Reinterpret a flag byte without validation.
-    ///
-    /// # Safety
-    /// `byte` must be a valid `PageFlag` discriminant (0..=4)
+    /// Parse a flag byte; `None` means the byte is not a valid flag.
     #[inline]
-    pub(crate) unsafe fn from_u8_unchecked(byte: u8) -> Self {
-        // SAFETY: repr(u8) fieldless enum, valid discriminant per contract
-        unsafe { std::mem::transmute::<u8, PageFlag>(byte) }
+    pub(crate) fn from_u8(byte: u8) -> Option<Self> {
+        Some(match byte {
+            0 => PageFlag::No,
+            1 => PageFlag::Zero,
+            2 => PageFlag::Full,
+            3 => PageFlag::File,
+            4 => PageFlag::Guard,
+            _ => return None,
+        })
     }
 }
 
