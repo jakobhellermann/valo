@@ -1,4 +1,5 @@
 mod config;
+mod input;
 mod msg;
 mod tui;
 
@@ -198,7 +199,11 @@ fn run(
         }
         tui_result.map(|_| SessionEnd::Done)
     } else {
-        run_ipc_loop(sock_path, &mut child, gdb, config.config())
+        let (hotkey_tx, hotkey_rx) = mpsc::channel::<input::HotkeyEvent>();
+        input::spawn_thread(child.id(), move |ev| {
+            let _ = hotkey_tx.send(ev);
+        });
+        run_ipc_loop(sock_path, &mut child, gdb, config.config(), &hotkey_rx)
     };
     if let Err(e) = &result {
         eprintln!("ipc loop ended: {e:#}");
@@ -260,7 +265,13 @@ pub(crate) fn report_kumquat_exit(session: &mut GpuSession) -> Result<bool> {
     Ok(true)
 }
 
-fn run_ipc_loop(sock: &Path, child: &mut Child, gdb: bool, config: Config) -> Result<SessionEnd> {
+fn run_ipc_loop(
+    sock: &Path,
+    child: &mut Child,
+    gdb: bool,
+    config: Config,
+    hotkeys: &mpsc::Receiver<input::HotkeyEvent>,
+) -> Result<SessionEnd> {
     loop {
         let Some(mut conn) = establish_or_child_exit(sock, child)? else {
             eprintln!("[valo-client] child exited before ipc connection");
@@ -288,7 +299,32 @@ fn run_ipc_loop(sock: &Path, child: &mut Child, gdb: bool, config: Config) -> Re
             };
             match msg {
                 LibToClient::FrameBoundary(FrameBoundary { frame: _ }) => {
-                    // std::thread::sleep_ms(200);
+                    // Send hotkey-triggered commands before advancing; the
+                    // lib executes Checkpoint/Restore synchronously and the
+                    // response arrives as the next message.
+                    while let Ok(event) = hotkeys.try_recv() {
+                        let cmd = match event {
+                            input::HotkeyEvent::Attached(window) => {
+                                eprintln!(
+                                    "[valo-client] game hotkeys: attached to window {window:#x}"
+                                );
+                                continue;
+                            }
+                            input::HotkeyEvent::Fatal(msg) => {
+                                eprintln!("[valo-client] game hotkeys: {msg}");
+                                continue;
+                            }
+                            input::HotkeyEvent::Action(input::HotkeyAction::Save(slot)) => {
+                                eprintln!("[valo-client] hotkey: checkpoint slot {slot}");
+                                ClientToLib::Checkpoint(slot)
+                            }
+                            input::HotkeyEvent::Action(input::HotkeyAction::Load(slot)) => {
+                                eprintln!("[valo-client] hotkey: restore slot {slot}");
+                                ClientToLib::Restore(slot)
+                            }
+                        };
+                        conn.send(&cmd).context("send hotkey command")?;
+                    }
                     conn.send(&ClientToLib::AdvanceFrames(1))
                         .context("send advance")?;
                 }
