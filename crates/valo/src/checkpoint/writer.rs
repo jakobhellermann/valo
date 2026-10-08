@@ -6,13 +6,13 @@ use std::os::fd::OwnedFd;
 use rustix::fs::SeekFrom as RSeekFrom;
 
 use crate::checkpoint::threads::SavedThreads;
-use crate::checkpoint::{AreaMeta, Header, PageFlag, SnapshotSlot};
+use crate::checkpoint::{AreaMeta, Header, PageFlag, SnapshotSlot, fd_sync};
 use crate::global_state::{GlobalState, ReservedMemory};
 use crate::log::structured;
 use crate::procfs::maps::{
     MMapPath, MemoryMap, MemoryMapPermissions, PageFlags, PageIndex, ProcMaps, ProcPagemap,
 };
-use crate::token::Frozen;
+use crate::token::{Exclusive, Frozen};
 use crate::utils::{PAGE_SIZE, SignalSafeFormat, align_page_down, align_page_up};
 
 use crate::{Result, debug, info, warn};
@@ -38,6 +38,7 @@ impl SnapshotWriter {
 #[allow(clippy::undocumented_unsafe_blocks)]
 pub fn write_all_areas(
     frozen: &Frozen,
+    exclusive: &mut Exclusive,
     writer: &mut SnapshotWriter,
     threads: SavedThreads,
 ) -> Result<()> {
@@ -58,7 +59,7 @@ pub fn write_all_areas(
     while let Some(area) = maps.next()? {
         header.area_count += 1;
 
-        write_area(frozen, writer, &area, &mut page_map)?;
+        write_area(frozen, exclusive, writer, &area, &mut page_map)?;
     }
 
     writer.snapshot_meta.seek(SeekFrom::Start(header_pos))?;
@@ -104,24 +105,27 @@ fn write_area_meta(
 
 // File descriptor of the shared area, whith hold information.
 // Returns offset of the next hold and next data.
-fn area_fd(area: &MemoryMap) -> Option<(OwnedFd, u64, u64)> {
+fn area_fd(excl: &mut Exclusive, area: &MemoryMap) -> Option<(OwnedFd, u64, u64)> {
     // SysV segments have no fd
     // cannot apply.
     if matches!(area.path_kind, MMapPath::Vsys(_)) {
         return None;
     }
 
-    let fd = area
-        .open_file()
-        .inspect_err(|e| {
-            warn!(
-                Checkpoint,
-                "Could not open shared map file for save {}: {}",
-                area.pathname,
-                SignalSafeFormat(e)
-            )
-        })
-        .ok()?;
+    let fd = fd_sync::open_by_identity(super::fd_snapshot(excl), area.dev, area.inode).or_else(
+        || {
+            area.open_file()
+                .inspect_err(|e| {
+                    warn!(
+                        Checkpoint,
+                        "Could not open shared map file for save {}: {}",
+                        area.pathname,
+                        SignalSafeFormat(e)
+                    )
+                })
+                .ok()
+        },
+    )?;
 
     let mut next_off_hole = rustix::fs::seek(&fd, RSeekFrom::Hole(area.offset))
         .inspect_err(|e| {
@@ -149,6 +153,7 @@ fn area_fd(area: &MemoryMap) -> Option<(OwnedFd, u64, u64)> {
 
 fn write_area(
     frozen: &Frozen,
+    exclusive: &mut Exclusive,
     writer: &mut SnapshotWriter,
     area: &MemoryMap,
     page_map: &mut ProcPagemap,
@@ -184,7 +189,7 @@ fn write_area(
     let mut shared_fd = area
         .perms
         .contains(MemoryMapPermissions::SHARED)
-        .then(|| area_fd(area))
+        .then(|| area_fd(exclusive, area))
         .flatten();
     structured::events::shared_fd_initial(area.address.start, shared_fd.as_ref());
 

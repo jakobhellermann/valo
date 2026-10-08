@@ -43,6 +43,7 @@ type Segment = {
   savedDump: Area[]; // pre-merge dump of the snapshot's areas
   currentDump: Area[]; // pre-merge dump of /proc/self/maps at restore time
   fds: FdEntry[]; // open descriptors logged while the guest was frozen
+  fdActions: { fd: number; action: string }[]; // what the fd sync did on restore
 };
 
 type Run = { pid: number; segments: Segment[] };
@@ -73,6 +74,7 @@ function parseFile(text: string): Run[] {
           savedDump: [],
           currentDump: [],
           fds: [],
+          fdActions: [],
         };
         run.segments.push(cur);
       } else if (ev.e === "restore.begin" || ev.e === "restore_begin") {
@@ -84,11 +86,21 @@ function parseFile(text: string): Run[] {
           savedDump: [],
           currentDump: [],
           fds: [],
+          fdActions: [],
         };
         run.segments.push(cur);
       } else if (cur) {
         if (ev.e === `${cur.kind}.fds`) cur.fds.push(ev);
-        else if (ev.e === `${cur.kind}.end`) cur.endUs = ev.ts_us;
+        else if (cur.kind === "restore" && ev.e.startsWith("restore.fds.")) {
+          const action = ev.e.slice("restore.fds.".length);
+          if (
+            action === "close" ||
+            action === "reopen" ||
+            action === "reopen_failed" ||
+            action === "missing"
+          )
+            cur.fdActions.push({ fd: ev.fd, action });
+        } else if (ev.e === `${cur.kind}.end`) cur.endUs = ev.ts_us;
         else if (ev.e === `${cur.kind}.memory.begin`) cur.memoryStartUs = ev.ts_us;
         else if (ev.e === `${cur.kind}.memory.end`) cur.memoryEndUs = ev.ts_us;
         else if (
@@ -353,6 +365,15 @@ function fdDiffTable(rows: FdDiffRow[]): string {
 
 function fdSection(title: string, table: string): string {
   return `<details class="fd-list"><summary>${title}</summary>${table}</details>`;
+}
+
+function fdRowSummary(actions: { fd: number; action: string }[]): string {
+  const counts = new Map<string, number>();
+  for (const { action } of actions) counts.set(action, (counts.get(action) ?? 0) + 1);
+  return [...counts]
+    .sort()
+    .map(([action, count]) => `${count} ${action}`)
+    .join(", ");
 }
 
 function runAt<T extends { index: number; count: number }>(
@@ -689,10 +710,14 @@ async function main() {
     const changed = rows.filter((r) => !r.ok).length;
     const fdRows = diffFds(checkpoint?.fds ?? [], seg.fds);
     const fdChanged = fdRows.filter((r) => !r.ok).length;
+    const missing = seg.fdActions.filter((a) => a.action === "missing");
+    const fdReconcile = seg.fdActions.length
+      ? `<p class="dim">fd sync: ${fdRowSummary(seg.fdActions)}${missing.length ? ` · missing: ${missing.map((a) => a.fd).join(", ")}` : ""}</p>`
+      : "";
     const fdView = checkpoint
       ? fdSection(
           `file descriptors — checkpoint ${checkpoint.fds.length} vs process ${seg.fds.length} <span class="${fdChanged ? "mismatch" : ""}">${fdChanged} changed</span>`,
-          fdDiffTable(fdRows),
+          `${fdDiffTable(fdRows)}${fdReconcile}`,
         )
       : fdSection(
           `file descriptors — ${seg.fds.length} (no matching checkpoint)`,

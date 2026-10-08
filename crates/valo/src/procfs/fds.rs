@@ -67,12 +67,13 @@ pub struct OpenFd<'a> {
     pub fd: RawFd,
     pub kind: FdKind,
     pub link: &'a str,
-    pub dev: u64,
+    pub dev: fs::Dev,
     pub ino: u64,
     pub fd_flags: FdFlags,
     pub status_flags: OFlags,
     /// `None` if the descriptor is not seekable.
     pub offset: Option<u64>,
+    #[cfg_attr(not(feature = "structured-log"), allow(dead_code))]
     pub size: u64,
 }
 
@@ -227,15 +228,42 @@ impl ProcFds {
     }
 }
 
+/// Opens `/proc/self/fd/<fd>`: a separate description of the same file, so
+/// seeking does not move the offset of the passed descriptor.
+pub fn open_fd_path(fd: RawFd) -> Result<OwnedFd> {
+    let dir = fs::open(
+        c"/proc/self/fd",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    Ok(fs::openat(
+        &dir,
+        rustix::path::DecInt::new(fd),
+        OFlags::RDONLY,
+        Mode::empty(),
+    )?)
+}
+
+/// Opens the file with identity `(dev, ino)` via its entry in the current fd table.
+// TODO: Don't re-scan here again
+pub fn open_by_identity(frozen: &Frozen, dev: fs::Dev, ino: u64) -> Result<Option<OwnedFd>> {
+    let mut fds = ProcFds::new_self()?;
+    let mut found = None;
+    while let Some(entry) = fds.next(frozen)? {
+        if entry.dev == dev && entry.ino == ino {
+            found = Some(entry.fd);
+            break;
+        }
+    }
+    let Some(fd) = found else {
+        return Ok(None);
+    };
+    Ok(Some(open_fd_path(fd)?))
+}
+
 fn parse_fd(name: &[u8]) -> Option<RawFd> {
     std::str::from_utf8(name).ok()?.parse().ok()
 }
-
-/// Serializes the unit tests that open or close descriptors: the fds test
-/// relies on the fd table staying untouched while it enumerates /proc/self/fd
-/// (see the Frozen assumption in its test module).
-#[cfg(test)]
-pub(crate) static FD_TABLE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod tests {
@@ -251,7 +279,7 @@ mod tests {
         // Hold the fd-table lock for the whole test: opening the fixtures and
         // enumerating /proc/self/fd must not interleave with another test
         // closing or reusing a descriptor in between.
-        let _fds = FD_TABLE_LOCK.lock().unwrap();
+        let _guard = crate::utils::FD_TABLE_TEST_LOCK.lock().unwrap();
         let (pipe_read, pipe_write) = rustix::pipe::pipe_with(
             rustix::pipe::PipeFlags::CLOEXEC | rustix::pipe::PipeFlags::NONBLOCK,
         )
@@ -275,9 +303,9 @@ mod tests {
         let mut offset_of = HashMap::new();
         let mut nonblock = HashMap::new();
         {
-            // SAFETY: FD_TABLE_LOCK serializes this test against every other
-            // test that opens or closes a descriptor, so no other thread can
-            // touch the fd table while it is enumerated.
+            // SAFETY: FD_TABLE_TEST_LOCK serializes this test against every
+            // other test that opens or closes a descriptor, so no other
+            // thread can touch the fd table while it is enumerated.
             let frozen = unsafe { crate::token::Frozen::assume() };
             let mut fds = ProcFds::new_self().unwrap();
             while let Some(entry) = fds.next(&frozen).unwrap() {
@@ -294,5 +322,32 @@ mod tests {
         assert_eq!(kinds[&file_fd], FdKind::Regular);
         assert_eq!(offset_of[&file_fd], Some(1));
         assert!(nonblock[&pipe_write]);
+    }
+
+    #[test]
+    fn opens_unlinked_file_by_identity() {
+        let _guard = crate::utils::FD_TABLE_TEST_LOCK.lock().unwrap();
+        // SAFETY: the fd-table test lock serializes the only fd-churning tests.
+        let frozen = unsafe { crate::token::Frozen::assume() };
+        let memfd = rustix::fs::memfd_create(c"valo-fds-identity", MemfdFlags::empty()).unwrap();
+        rustix::io::write(&memfd, b"abc").unwrap();
+        fs::seek(&memfd, SeekFrom::Start(0)).unwrap();
+        let stat = fs::fstat(&memfd).unwrap();
+
+        let opened = open_by_identity(&frozen, stat.st_dev, stat.st_ino)
+            .unwrap()
+            .expect("identity of an open memfd must be found");
+
+        // Separate description: reading does not move the memfd's offset.
+        let mut buf = [0u8; 3];
+        rustix::io::read(&opened, &mut buf).unwrap();
+        assert_eq!(&buf, b"abc");
+        assert_eq!(fs::seek(&memfd, SeekFrom::Current(0)).unwrap(), 0);
+
+        assert!(
+            open_by_identity(&frozen, stat.st_dev, stat.st_ino ^ 1)
+                .unwrap()
+                .is_none()
+        );
     }
 }

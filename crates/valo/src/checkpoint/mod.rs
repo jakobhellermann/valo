@@ -1,3 +1,4 @@
+pub mod fd_sync;
 pub mod gpu;
 pub mod reader;
 pub(crate) mod threads;
@@ -10,7 +11,7 @@ use std::sync::atomic::Ordering;
 
 use crate::global_state::GlobalState;
 use crate::log::structured;
-use crate::token::{Exclusive, Frozen};
+use crate::token::{Exclusive, ExclusiveCell, Frozen};
 use crate::utils::SignalSafeFormat;
 use crate::{Result, abort, alt_stack, error, info, sys, thread_tracker, utils};
 
@@ -99,6 +100,12 @@ impl Header {
     }
 }
 
+// The fd table of the checkpoint, in restorable memory.
+static FD_SNAPSHOT: ExclusiveCell<Vec<fd_sync::FdRecord>> = ExclusiveCell::new(Vec::new());
+fn fd_snapshot(excl: &mut Exclusive) -> &[fd_sync::FdRecord] {
+    FD_SNAPSHOT.get(excl).as_slice()
+}
+
 fn snapshot_create(
     excl: &mut Exclusive,
     frozen: &Frozen,
@@ -108,7 +115,7 @@ fn snapshot_create(
     ucontext::save(excl, ucontext);
 
     let mut writer = writer::SnapshotWriter::new(slot)?;
-    writer::write_all_areas(frozen, &mut writer, threads::saved_threads())?;
+    writer::write_all_areas(frozen, excl, &mut writer, threads::saved_threads())?;
 
     Ok(())
 }
@@ -251,7 +258,8 @@ pub fn checkpoint(slot: SnapshotSlot) -> Result<()> {
     structured::events::trace_step("checkpoint.freeze.end");
 
     structured::events::trace_step("checkpoint.fds.begin");
-    structured::events::log_fd_list(frozen, "checkpoint.fds")?;
+    let fd_records = fd_sync::snapshot(frozen, slot)?;
+    *FD_SNAPSHOT.get(exclusive) = fd_records;
     structured::events::trace_step("checkpoint.fds.end");
 
     structured::events::trace_step("checkpoint.gpu.trigger.begin");
@@ -277,6 +285,12 @@ pub fn checkpoint(slot: SnapshotSlot) -> Result<()> {
             fmt_duration(mem_ns),
             fmt_duration(gpu_ns)
         );
+    } else {
+        structured::events::trace_step("restore.fds.sync.begin");
+        // The rewind restored the slot's records into the channel.
+        let fd_records = std::mem::take(FD_SNAPSHOT.get(exclusive));
+        fd_sync::restore(frozen, &fd_records)?;
+        structured::events::trace_step("restore.fds.sync.end");
     }
 
     threads::resume_others();

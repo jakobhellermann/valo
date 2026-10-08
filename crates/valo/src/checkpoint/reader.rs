@@ -9,6 +9,7 @@ use rustix::mm::{self, MapFlags, MprotectFlags, ProtFlags};
 
 use crate::checkpoint::{AreaMeta, Header, PageFlag, Result, SnapshotSlot};
 use crate::log::structured;
+use crate::procfs::fds;
 use crate::procfs::maps::{
     MMapPath, MemoryMap, MemoryMapPermissions, PageFlags, PageIndex, ProcMaps, ProcPagemap,
 };
@@ -158,7 +159,7 @@ pub fn read_all_areas(frozen: &Frozen, reader: &mut SnapshotReader) -> Result<()
     Ok(())
 }
 
-fn area_fd(saved_area: &MemoryMap) -> Option<(OwnedFd, u64, u64)> {
+fn area_fd(frozen: &Frozen, saved_area: &MemoryMap) -> Option<(OwnedFd, u64, u64)> {
     // SysV segments have no fd
     if matches!(saved_area.path_kind, MMapPath::Vsys(_)) {
         return None;
@@ -166,6 +167,12 @@ fn area_fd(saved_area: &MemoryMap) -> Option<(OwnedFd, u64, u64)> {
 
     let fd = saved_area
         .open_file()
+        .or_else(|path_err| {
+            fds::open_by_identity(frozen, saved_area.dev, saved_area.inode)
+                .ok()
+                .flatten()
+                .ok_or(path_err)
+        })
         .inspect_err(|e| {
             warn!(
                 Checkpoint,
@@ -203,7 +210,7 @@ fn read_area(
     let mut shared_fd = saved_area
         .perms
         .contains(MemoryMapPermissions::SHARED)
-        .then(|| area_fd(saved_area))
+        .then(|| area_fd(frozen, saved_area))
         .flatten();
     structured::events::shared_fd_initial(saved_area.address.start, shared_fd.as_ref());
 
