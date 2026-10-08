@@ -158,6 +158,11 @@ pub fn read_all_areas(reader: &mut SnapshotReader) -> Result<()> {
 }
 
 fn area_fd(saved_area: &MemoryMap) -> Option<(OwnedFd, u64, u64)> {
+    // SysV segments have no fd
+    if matches!(saved_area.path_kind, MMapPath::Vsys(_)) {
+        return None;
+    }
+
     let fd = saved_area
         .open_file()
         .inspect_err(|e| {

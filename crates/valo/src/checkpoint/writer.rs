@@ -100,6 +100,12 @@ fn write_area_meta(
 // File descriptor of the shared area, whith hold information.
 // Returns offset of the next hold and next data.
 fn area_fd(area: &MemoryMap) -> Option<(OwnedFd, u64, u64)> {
+    // SysV segments have no fd
+    // cannot apply.
+    if matches!(area.path_kind, MMapPath::Vsys(_)) {
+        return None;
+    }
+
     let fd = area
         .open_file()
         .inspect_err(|e| {
