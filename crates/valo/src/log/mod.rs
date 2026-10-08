@@ -5,11 +5,12 @@
 //! using no allocations or stdio buffering.
 
 use core::fmt::{self, Write};
-use core::sync::atomic::{AtomicI32, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, Ordering};
 use std::io::IoSlice;
+use std::os::fd::OwnedFd;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
-use rustix::fd::BorrowedFd;
 use rustix::fs::{Mode, OFlags};
 use rustix::io;
 use valo_ipc::config::LogLevel;
@@ -18,10 +19,8 @@ use crate::home;
 
 const BUF_SIZE: usize = 1024;
 
-/// Descriptor for log destination.
-/// -1 = uninitialized
-/// -2 = failed
-static LOG_FD: AtomicI32 = AtomicI32::new(-1);
+/// The log destination, opened once at init.
+static LOG_FD: OnceLock<Option<OwnedFd>> = OnceLock::new();
 
 #[cfg(feature = "structured-log")]
 pub(crate) mod structured;
@@ -168,7 +167,7 @@ pub fn current_level() -> Level {
 ///
 /// Idempotent.
 pub fn init() {
-    if LOG_FD.load(Ordering::Acquire) >= 0 {
+    if LOG_FD.get().is_some() {
         return;
     }
     let path = path_from_env().unwrap_or_else(|| home::get().join("valo.log"));
@@ -176,15 +175,8 @@ pub fn init() {
     let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::TRUNC | OFlags::APPEND | OFlags::CLOEXEC;
     // 0644
     let mode = Mode::RUSR | Mode::WUSR | Mode::RGRP | Mode::ROTH;
-    match rustix::fs::open(path, flags, mode) {
-        Ok(fd) => {
-            let raw = rustix::fd::IntoRawFd::into_raw_fd(fd);
-            LOG_FD.store(raw, Ordering::Release);
-        }
-        Err(_) => {
-            LOG_FD.store(-2, Ordering::Release);
-        }
-    }
+    let fd = rustix::fs::open(path, flags, mode).ok();
+    let _ = LOG_FD.set(fd);
     init_structured();
 }
 
@@ -235,13 +227,11 @@ pub fn _write(category: Category, level: Level, args: fmt::Arguments<'_>) {
     if level.index() > MAX_LEVEL.load(Ordering::Relaxed) {
         return;
     }
-    let raw_fd = LOG_FD.load(Ordering::Acquire);
-    if raw_fd < 0 {
+    let Some(fd) = LOG_FD.get().and_then(Option::as_ref) else {
         return;
-    }
+    };
 
-    // SAFETY: getpid is async-signal-safe and never fails.
-    let pid = unsafe { libc::getpid() };
+    let pid = std::process::id();
 
     let mut w = StackWriter::new();
     let _ = write!(w, "[pid={} {}:{}] ", pid, category.as_str(), level.as_str());
@@ -253,9 +243,6 @@ pub fn _write(category: Category, level: Level, args: fmt::Arguments<'_>) {
         w.buf[BUF_SIZE - 1] = b'\n';
     }
 
-    // SAFETY: raw_fd is a file descriptor we opened in init() and never
-    // close. Writing to it from any thread/context is safe.
-    let fd = unsafe { BorrowedFd::borrow_raw(raw_fd) };
     let _ = io::writev(fd, &[IoSlice::new(w.as_slice())]);
 }
 
