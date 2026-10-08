@@ -78,8 +78,7 @@ pub extern "C" fn valo_checkpoint() {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn valo_checkpoint_slot(slot: u32) {
-    // SAFETY: same precondition
-    if let Err(e) = unsafe { checkpoint::checkpoint(checkpoint::SnapshotSlot(slot)) } {
+    if let Err(e) = checkpoint::checkpoint(checkpoint::SnapshotSlot(slot)) {
         error!(Checkpoint, "{}", e);
         std::process::abort();
     }
@@ -92,8 +91,7 @@ pub extern "C" fn valo_restore() {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn valo_restore_slot(slot: u32) {
-    // SAFETY: same precondition
-    if let Err(e) = unsafe { checkpoint::restore(checkpoint::SnapshotSlot(slot)) } {
+    if let Err(e) = checkpoint::restore(checkpoint::SnapshotSlot(slot)) {
         error!(Restore, "{}", e);
         std::process::abort();
     }

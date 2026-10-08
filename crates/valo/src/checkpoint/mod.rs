@@ -226,17 +226,14 @@ pub fn init_thread() -> Result<()> {
     Ok(())
 }
 
-// # Safety
-// Must not be called concurrently
-pub unsafe fn checkpoint(slot: SnapshotSlot) -> Result<()> {
+pub fn checkpoint(slot: SnapshotSlot) -> Result<()> {
+    let exclusive = &mut Exclusive::enter_exclusive();
+
     thread_tracker::require_no_cancellation();
     let state = GlobalState::get();
     state.snapshot_slot.store(slot.0, Ordering::SeqCst);
     state.set_restore_in_progress(false);
     structured::events::checkpoint_begin(slot);
-
-    // SAFETY: function contract
-    let exclusive = &mut unsafe { Exclusive::assume() };
 
     alt_stack::save_stack(exclusive)?;
 
@@ -290,9 +287,9 @@ pub unsafe fn checkpoint(slot: SnapshotSlot) -> Result<()> {
     Ok(())
 }
 
-// # Safety
-// Must not be called concurrently
-pub unsafe fn restore(slot: SnapshotSlot) -> Result<()> {
+pub fn restore(slot: SnapshotSlot) -> Result<()> {
+    let _exclusive = Exclusive::enter_exclusive();
+
     thread_tracker::require_no_cancellation();
     let state = GlobalState::get();
 
