@@ -288,15 +288,14 @@ pub fn checkpoint(slot: SnapshotSlot) -> Result<()> {
 }
 
 pub fn restore(slot: SnapshotSlot) -> Result<()> {
-    let _exclusive = Exclusive::enter_exclusive();
+    let mut exclusive = Exclusive::enter_exclusive();
 
     thread_tracker::require_no_cancellation();
     let state = GlobalState::get();
 
-    let restore_count = state
-        .reserved
-        .restore_count
-        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let reserved_state = state.reserved.exclusive.get(&mut exclusive);
+    let restore_count = reserved_state.restore_count;
+    reserved_state.restore_count += 1;
 
     if state.max_restores > 0 && restore_count >= state.max_restores {
         info!(
