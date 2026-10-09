@@ -2,7 +2,6 @@ use std::cell::SyncUnsafeCell;
 
 use std::mem::MaybeUninit;
 use std::ops::Range;
-use std::ptr::addr_of_mut;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use rustix::mm;
@@ -21,9 +20,8 @@ use crate::utils::PAGE_SIZE;
 static GLOBAL_STATE: SyncUnsafeCell<MaybeUninit<GlobalState>> =
     SyncUnsafeCell::new(MaybeUninit::zeroed());
 
-#[derive(Default)]
 pub struct GlobalState {
-    pub reserved: *mut ReservedMemory,
+    pub reserved: &'static ReservedMemory,
     pub restore_in_progress: AtomicBool,
     pub snapshot_slot: AtomicU32,
 
@@ -35,10 +33,6 @@ pub struct GlobalState {
     /// 0 means disabled
     pub restore_frame: u64,
 }
-// SAFETY: only access through `GlobalState::get`
-unsafe impl Send for GlobalState {}
-// SAFETY: only access through `GlobalState::get`
-unsafe impl Sync for GlobalState {}
 
 impl GlobalState {
     /// # Safety
@@ -70,7 +64,7 @@ impl GlobalState {
 #[repr(C)]
 pub struct ReservedMemory {
     /// In use by the restore signal handler while memory is being loaded.
-    pub alt_stack: [u8; ALT_STACK_SIZE],
+    pub alt_stack: SyncUnsafeCell<[u8; ALT_STACK_SIZE]>,
     /// Accumulates across restores and must therefore not be rewound.
     pub restore_count: AtomicU64,
 }
@@ -99,14 +93,16 @@ impl GlobalState {
                 )?;
                 libc::memset(inner, 0, len);
             }
-            inner
+            // SAFETY: inner points to allocated memory that fits a ReservedMemory
+            // which is never unmapped.
+            unsafe { &*inner.cast::<ReservedMemory>() }
         };
         let max_restores = parse_env_u64("VALO_MAX_RESTORES");
         let checkpoint_frame = parse_env_u64("VALO_CHECKPOINT_FRAME");
         let restore_frame = parse_env_u64("VALO_RESTORE_FRAME");
 
         Ok(GlobalState {
-            reserved: reserved.cast(),
+            reserved,
             restore_in_progress: AtomicBool::new(false),
             snapshot_slot: AtomicU32::new(0),
             frame_count: AtomicU64::new(0),
@@ -117,10 +113,7 @@ impl GlobalState {
     }
 
     pub fn alt_stack_memory(&self) -> Range<*const ()> {
-        // SAFETY: inbounds
-        unsafe {
-            let addr = addr_of_mut!((*self.reserved).alt_stack).cast();
-            addr..addr.byte_add(ALT_STACK_SIZE)
-        }
+        let addr = self.reserved.alt_stack.get().cast();
+        addr..addr.wrapping_byte_add(ALT_STACK_SIZE)
     }
 }

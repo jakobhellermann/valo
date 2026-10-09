@@ -38,9 +38,10 @@ pub fn save_stack(excl: &mut Exclusive) -> Result<()> {
 pub fn prepare_altstack() -> Result<(), std::io::Error> {
     let global_state = GlobalState::get();
 
-    // SAFETY: correct api usage
+    // SAFETY: correct api usage.
+    // The kernel is the only writer of the alt stack memory.
     unsafe {
-        let alt_stack = &raw mut (*global_state.reserved).alt_stack;
+        let alt_stack = global_state.reserved.alt_stack.get().cast::<u8>();
         let x = stack_t {
             ss_sp: alt_stack.cast(),
             ss_flags: 0,
