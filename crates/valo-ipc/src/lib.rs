@@ -6,6 +6,7 @@
 //! its direction. The transport itself is symmetric — see
 //! [`ClientIPC::establish`] / [`LibIPC::establish`].
 
+pub mod config;
 pub mod messages;
 mod raw;
 
@@ -15,10 +16,10 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
 
-use crate::messages::{ClientToLib, LibToClient};
+use crate::messages::{ClientHello, ClientToLib, LibToClient};
 
 /// Bumped on any breaking change to the message enums or framing.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Hard cap on a single message's payload
 pub const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
@@ -36,6 +37,32 @@ impl ClientIPC {
         })
     }
 
+    /// Hello exchange on a fresh connection: version check, and the config
+    /// the lib currently has.
+    pub fn hello(&mut self) -> Result<crate::config::Config> {
+        self.send(&ClientToLib::Hello(ClientHello::new()))?;
+        let Some(LibToClient::Hello(peer)) = self.recv()? else {
+            return Err(std::io::Error::other("lib closed before Hello"));
+        };
+        if peer.version != crate::PROTOCOL_VERSION {
+            return Err(std::io::Error::other(format!(
+                "lib protocol version {} does not match client {}",
+                peer.version,
+                crate::PROTOCOL_VERSION
+            )));
+        }
+        Ok(peer.config)
+    }
+
+    /// The init exchange every session starts with: hello, then exactly one
+    /// SetConfig — fire-and-forget, the lib applies it before anything
+    /// runs. The session starts held; a Detach sent here drains at the
+    /// first frame boundary and frees the session.
+    pub fn init(&mut self, config: &crate::config::Config) -> Result<()> {
+        self.hello()?;
+        self.send(&ClientToLib::SetConfig(config.clone()))
+    }
+
     /// Connect-only handshake for one-shot clients.
     /// Unlike [`ClientIPC::establish`] this never
     /// falls back to becoming the listener.
@@ -45,8 +72,8 @@ impl ClientIPC {
         })
     }
 
-    /// Wrap an already-accepted stream. For async-mode servers that own the
-    /// listener socket and accept connections at frame boundaries.
+    /// Wrap an already-accepted stream. For sessions that own the listener
+    /// socket and accept (re)connections at frame boundaries.
     pub fn from_accepted(stream: UnixStream) -> Self {
         Self { stream }
     }
@@ -59,6 +86,12 @@ impl ClientIPC {
     /// the next length prefix arrived.
     pub fn recv(&mut self) -> Result<Option<LibToClient>> {
         raw::recv(&mut self.stream)
+    }
+
+    /// Pid of the peer process, as recorded by the kernel at its connect/listen.
+    pub fn peer_pid(&self) -> Result<u32> {
+        let cred = rustix::net::sockopt::socket_peercred(&self.stream)?;
+        Ok(cred.pid.as_raw_nonzero().get().cast_unsigned())
     }
 
     /// Duplicate the underlying stream. Both read/write to the same socket.
@@ -90,8 +123,8 @@ impl LibIPC {
         })
     }
 
-    /// Wrap an already-accepted stream. For async-mode servers that own the
-    /// listener socket and accept connections at frame boundaries.
+    /// Wrap an already-accepted stream. For sessions that own the listener
+    /// socket and accept (re)connections at frame boundaries.
     pub fn from_accepted(stream: UnixStream) -> Self {
         Self { stream }
     }
@@ -117,6 +150,7 @@ impl LibIPC {
 
 #[cfg(test)]
 mod tests {
+    use super::config::Config;
     use super::messages::*;
     use super::*;
     use std::os::unix::net::UnixListener;
@@ -137,7 +171,7 @@ mod tests {
 
         let t_client = thread::spawn(move || -> Result<()> {
             let mut c = ClientIPC::establish(&p1)?;
-            c.send(&ClientToLib::Hello(Hello::CLIENT))?;
+            c.send(&ClientToLib::Hello(ClientHello::new()))?;
             let reply = c.recv()?.expect("eof");
             assert!(matches!(reply, LibToClient::Hello(_)));
             Ok(())
@@ -146,7 +180,7 @@ mod tests {
             let mut l = LibIPC::establish(&p2)?;
             let req = l.recv()?.expect("eof");
             assert!(matches!(req, ClientToLib::Hello(_)));
-            l.send(&LibToClient::Hello(Hello::LIB))?;
+            l.send(&LibToClient::Hello(LibHello::new(Config::default())))?;
             Ok(())
         });
 
@@ -156,6 +190,16 @@ mod tests {
 
     /// Stale socket file from a previous run should be cleaned up on the
     /// next rendezvous.
+    /// Works before the listener ever accepts, i.e. also against a hung peer.
+    #[test]
+    fn peer_pid_of_unaccepted_listener() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("valo-test.sock");
+        let _listener = UnixListener::bind(&path).unwrap();
+        let conn = ClientIPC::connect(&path, Duration::from_secs(1)).unwrap();
+        assert_eq!(conn.peer_pid().unwrap(), std::process::id());
+    }
+
     #[test]
     fn establish_cleans_stale_socket() {
         let dir = TempDir::new().unwrap();
@@ -238,8 +282,9 @@ mod tests {
         let mut lib = t2.join().unwrap().unwrap();
 
         let client_msgs = vec![
-            ClientToLib::Hello(Hello::CLIENT),
+            ClientToLib::Hello(ClientHello::new()),
             ClientToLib::AdvanceFrames(1),
+            ClientToLib::Detach,
             ClientToLib::Checkpoint,
             ClientToLib::Restore,
             ClientToLib::GetState,
@@ -253,7 +298,7 @@ mod tests {
         }
 
         let lib_msgs = vec![
-            LibToClient::Hello(Hello::LIB),
+            LibToClient::Hello(LibHello::new(Config::default())),
             LibToClient::FrameBoundary(FrameBoundary { frame: 42 }),
             LibToClient::State(State { frame: 100 }),
             LibToClient::CheckpointDone,

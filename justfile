@@ -25,7 +25,7 @@ spawn-hollowknight *args:
     VALO_LOG={{ HK_LOGDIR }}/valo.log VALO_STRUCTURED_LOG={{ HK_LOGDIR }}/valo-struct-$$.jsonl {{ HK_WRAPPER }} just valo spawn {{ args }} "{{ HK }}" -force-gfx-direct
 
 run-hollowknight-gpu *args:
-    VALO_USE_GPU=1 VALO_LOG={{ HK_LOGDIR }}/valo.log VALO_STRUCTURED_LOG={{ HK_LOGDIR }}/valo-struct-$$.jsonl {{ HK_WRAPPER }} just valo run {{ args }} "{{ HK }}" -force-gfx-direct -force-vulkan
+    VALO_LOG={{ HK_LOGDIR }}/valo.log VALO_STRUCTURED_LOG={{ HK_LOGDIR }}/valo-struct-$$.jsonl {{ HK_WRAPPER }} just valo run --use-gpu {{ args }} "{{ HK }}" -force-gfx-direct -force-vulkan
 
 save-repro:
     mkdir -p repro
@@ -76,4 +76,4 @@ repro XTRACE="": clean
         sleep 0.5
         display=":9"
     fi
-    VALO_MAX_RESTORES=1 VALO_USE_GPU=0 VALO_CHECKPOINT_FRAME=60 VALO_RESTORE_FRAME=120 just valo run "$cmd"
+    just valo run --max-restores 1 --checkpoint-frame 60 --restore-frame 120 "$cmd"

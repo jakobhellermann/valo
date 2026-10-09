@@ -13,7 +13,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
-use valo_ipc::messages::{ClientToLib, FrameBoundary, Hello, LibToClient};
+use valo_ipc::config::Config;
+use valo_ipc::messages::{ClientHello, ClientToLib, FrameBoundary, LibHello, LibToClient};
 use valo_ipc::{ClientIPC, LibIPC};
 
 #[derive(Parser)]
@@ -52,7 +53,7 @@ fn main() -> Result<()> {
 }
 
 fn run_lib(mut conn: LibIPC) -> Result<()> {
-    conn.send(&LibToClient::Hello(Hello::LIB))
+    conn.send(&LibToClient::Hello(LibHello::new(Config::default())))
         .context("send hello")?;
     let peer = conn
         .recv()
@@ -80,7 +81,7 @@ fn run_lib(mut conn: LibIPC) -> Result<()> {
 }
 
 fn run_client(mut conn: ClientIPC) -> Result<()> {
-    conn.send(&ClientToLib::Hello(Hello::CLIENT))
+    conn.send(&ClientToLib::Hello(ClientHello::new()))
         .context("send hello")?;
     let peer = conn
         .recv()

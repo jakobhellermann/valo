@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::config::Config;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Role {
     Lib,
@@ -7,27 +9,53 @@ pub enum Role {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Hello {
+pub struct ClientHello {
     pub version: u32,
     pub role: Role,
 }
 
-impl Hello {
-    pub const CLIENT: Hello = Hello {
-        version: crate::PROTOCOL_VERSION,
-        role: Role::Client,
-    };
-    pub const LIB: Hello = Hello {
-        version: crate::PROTOCOL_VERSION,
-        role: Role::Lib,
-    };
+impl ClientHello {
+    pub const fn new() -> Self {
+        Self {
+            version: crate::PROTOCOL_VERSION,
+            role: Role::Client,
+        }
+    }
+}
+
+impl Default for ClientHello {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LibHello {
+    pub version: u32,
+    pub role: Role,
+    /// The config the lib currently has (init or runtime SetConfig).
+    pub config: Config,
+}
+
+impl LibHello {
+    pub const fn new(config: Config) -> Self {
+        Self {
+            version: crate::PROTOCOL_VERSION,
+            role: Role::Lib,
+            config,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClientToLib {
-    Hello(Hello),
+    Hello(ClientHello),
     /// Run N frames, then stop at the next boundary.
     AdvanceFrames(u64),
+    /// Replace the runtime config.
+    SetConfig(Config),
+    /// held → free: frames run by default.
+    Detach,
     Checkpoint,
     Restore,
     GetState,
@@ -51,12 +79,13 @@ pub struct Error {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LibToClient {
-    Hello(Hello),
+    Hello(LibHello),
     FrameBoundary(FrameBoundary),
     State(State),
     /// Sent after a successful `Checkpoint`. The lib then loops back to
     /// recv another command (typically `Advance`).
     CheckpointDone,
     RestoreSucceeded,
+    SetConfigDone,
     Error(Error),
 }

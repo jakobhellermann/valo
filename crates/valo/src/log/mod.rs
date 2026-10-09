@@ -6,12 +6,13 @@
 
 use core::ffi::CStr;
 use core::fmt::{self, Write};
-use core::sync::atomic::{AtomicI32, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 use std::io::IoSlice;
 
 use rustix::fd::BorrowedFd;
 use rustix::fs::{Mode, OFlags};
 use rustix::io;
+use valo_ipc::config::LogLevel;
 
 const BUF_SIZE: usize = 1024;
 const DEFAULT_PATH: &CStr = c"/tmp/valo.log";
@@ -97,6 +98,60 @@ impl Level {
             Level::Trace => "TRACE",
         }
     }
+
+    fn index(self) -> u8 {
+        match self {
+            Level::Error => 0,
+            Level::Warn => 1,
+            Level::Info => 2,
+            Level::Debug => 3,
+            Level::Trace => 4,
+        }
+    }
+
+    fn from_index(index: u8) -> Self {
+        match index {
+            0 => Level::Error,
+            1 => Level::Warn,
+            2 => Level::Info,
+            3 => Level::Debug,
+            _ => Level::Trace,
+        }
+    }
+}
+
+static MAX_LEVEL: AtomicU8 = AtomicU8::new(4);
+
+pub fn set_level(level: Level) {
+    MAX_LEVEL.store(level.index(), Ordering::Release);
+}
+
+impl From<LogLevel> for Level {
+    fn from(level: LogLevel) -> Self {
+        match level {
+            LogLevel::Error => Level::Error,
+            LogLevel::Warn => Level::Warn,
+            LogLevel::Info => Level::Info,
+            LogLevel::Debug => Level::Debug,
+            LogLevel::Trace => Level::Trace,
+        }
+    }
+}
+
+impl From<Level> for LogLevel {
+    fn from(level: Level) -> Self {
+        match level {
+            Level::Error => LogLevel::Error,
+            Level::Warn => LogLevel::Warn,
+            Level::Info => LogLevel::Info,
+            Level::Debug => LogLevel::Debug,
+            Level::Trace => LogLevel::Trace,
+        }
+    }
+}
+
+pub fn current_level() -> Level {
+    Level::from_index(MAX_LEVEL.load(Ordering::Acquire))
 }
 
 /// Open the log file. Call once at init.
@@ -172,6 +227,9 @@ impl Write for StackWriter {
 
 #[doc(hidden)]
 pub fn _write(category: Category, level: Level, args: fmt::Arguments<'_>) {
+    if level.index() > MAX_LEVEL.load(Ordering::Relaxed) {
+        return;
+    }
     let raw_fd = LOG_FD.load(Ordering::Acquire);
     if raw_fd < 0 {
         return;

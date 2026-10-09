@@ -1,0 +1,62 @@
+// TODO(ai-review): generated, not yet audited
+use clap::{Args, ValueEnum};
+use valo_ipc::config::{Config, FrameConfig, LogConfig, LogLevel};
+
+#[derive(Args)]
+pub(crate) struct ConfigArgs {
+    /// Frame at which the lib checkpoints
+    #[arg(long)]
+    pub(crate) checkpoint_frame: Option<u64>,
+
+    /// Frame at which the lib restores
+    #[arg(long)]
+    pub(crate) restore_frame: Option<u64>,
+
+    /// Restore count at which the lib exits
+    #[arg(long)]
+    pub(crate) max_restores: Option<u64>,
+
+    #[arg(long, value_enum)]
+    pub(crate) log_level: Option<CliLogLevel>,
+
+    /// Enable GPU checkpoint orchestration (kumquat host)
+    #[arg(long)]
+    pub(crate) use_gpu: bool,
+}
+
+#[derive(ValueEnum, Clone, Copy)]
+pub(crate) enum CliLogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl From<CliLogLevel> for LogLevel {
+    fn from(level: CliLogLevel) -> Self {
+        match level {
+            CliLogLevel::Error => LogLevel::Error,
+            CliLogLevel::Warn => LogLevel::Warn,
+            CliLogLevel::Info => LogLevel::Info,
+            CliLogLevel::Debug => LogLevel::Debug,
+            CliLogLevel::Trace => LogLevel::Trace,
+        }
+    }
+}
+
+impl ConfigArgs {
+    pub(crate) fn config(&self) -> Config {
+        Config {
+            frames: FrameConfig {
+                checkpoint_frame: self.checkpoint_frame.unwrap_or(0),
+                restore_frame: self.restore_frame.unwrap_or(0),
+                max_restores: self.max_restores.unwrap_or(0),
+            },
+            log: LogConfig {
+                level: self.log_level.map_or(LogLevel::Trace, Into::into),
+            },
+            use_gpu: self.use_gpu,
+        }
+    }
+}

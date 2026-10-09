@@ -14,6 +14,8 @@ use rustix::event::{PollFd, PollFlags};
 use rustix::io::Errno;
 use rustix::time::Timespec;
 
+use crate::global_state::GlobalState;
+
 use crate::checkpoint::SnapshotSlot;
 use crate::{Result, error, info};
 
@@ -167,13 +169,9 @@ fn env_i32(name: &str) -> Result<i32> {
         .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))
 }
 
-/// Whether GPU orchestration is enabled: `VALO_USE_GPU` set to anything but an
-/// explicit off value. Must agree with `valo-launch`'s parser, which selects
-/// the matching renderer environment for the child.
-// TODO: use valo-launch in valo?
+/// Whether GPU orchestration is enabled. The client sets this via the init
+/// SetConfig and must match what it set up for the target (kumquat host,
+/// renderer selection).
 fn use_gpu() -> bool {
-    let Some(value) = std::env::var_os("VALO_USE_GPU") else {
-        return false;
-    };
-    !matches!(value.to_string_lossy().trim(), "" | "0" | "false" | "no")
+    GlobalState::get().use_gpu.load(Ordering::Relaxed)
 }

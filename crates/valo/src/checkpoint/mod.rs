@@ -297,11 +297,9 @@ pub fn restore(slot: SnapshotSlot) -> Result<()> {
     let restore_count = reserved_state.restore_count;
     reserved_state.restore_count += 1;
 
-    if state.max_restores > 0 && restore_count >= state.max_restores {
-        info!(
-            "VALO_MAX_RESTORES={} reached, exiting--",
-            state.max_restores
-        );
+    let max_restores = state.max_restores.load(Ordering::Relaxed);
+    if max_restores > 0 && restore_count >= max_restores {
+        info!("max_restores={max_restores} reached, exiting--");
         std::process::exit(0);
     }
 

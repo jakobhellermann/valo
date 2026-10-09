@@ -27,13 +27,13 @@ out/manual/sdl2-test: tests_manual/window-sdl2.c out/libvalo.so | out/manual
 		$(CC) $(CFLAGS) tests_manual/window-sdl2.c -lSDL2 -o out/manual/sdl2-test
 .PHONY: sdl2-test
 sdl2-test: out/manual/sdl2-test
-	VALO_CHECKPOINT_FRAME=10 VALO_RESTORE_FRAME=50 $(VALO_RUN) ./out/manual/sdl2-test
+	$(VALO_RUN) --checkpoint-frame 10 --restore-frame 50 ./out/manual/sdl2-test
 
 out/manual/x11-test: tests_manual/window-x11.c out/libvalo.so | out/manual
 		$(CC) $(CFLAGS) tests_manual/window-x11.c -lX11 -o out/manual/x11-test
 .PHONY: x11-test
 x11-test: out/manual/x11-test
-	VALO_CHECKPOINT_FRAME=10 VALO_RESTORE_FRAME=50 $(VALO_RUN) ./out/manual/x11-test
+	$(VALO_RUN) --checkpoint-frame 10 --restore-frame 50 ./out/manual/x11-test
 
 .PHONY: clean
 clean:
