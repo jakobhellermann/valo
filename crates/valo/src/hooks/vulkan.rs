@@ -13,8 +13,10 @@
 //!    libs, whose instance chains get silently flattened — no recursion,
 //!    layer gipas are only consulted once during chain building and our
 //!    answers are chain-top pointers), and
-//! 2. inside the proc-addr chain we substitute our `vkQueuePresentKHR` (the
-//!    only presentation-driven frame boundary) and forward everything else.
+//! 2. inside the proc-addr chain we substitute the frame-boundary hooks
+//!    (`vkQueuePresentKHR`, the acquire pair), the swapchain hooks for the
+//!    present-mode selection (`vkGetPhysicalDeviceSurfacePresentModesKHR`,
+//!    `vkCreateSwapchainKHR`) and forward everything else.
 //!
 //! `vkAcquireNextImageKHR`/`vkAcquireNextImage2KHR` are hooked the same way,
 //! but for a different reason: the first acquire after each restore must
@@ -53,7 +55,7 @@
 use std::ffi::{CStr, c_char, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::{info, override_sym};
+use crate::{info, override_sym, present};
 use vulkan_headers::vulkan::vulkan::*;
 
 const LIB: *const c_char = c"libvulkan.so.1".as_ptr();
@@ -91,6 +93,7 @@ override_sym!("system" vkGetInstanceProcAddr(instance: VkInstance, name: *const 
         b"vkAcquireNextImage2KHR" => vkAcquireNextImage2KHR as *const c_void,
         // TODO: debug for  post-restore swapchain recreate failure.
         b"vkGetPhysicalDeviceSurfaceCapabilitiesKHR" => vkGetPhysicalDeviceSurfaceCapabilitiesKHR as *const c_void,
+        b"vkGetPhysicalDeviceSurfacePresentModesKHR" => vkGetPhysicalDeviceSurfacePresentModesKHR as *const c_void,
         b"vkDestroySwapchainKHR" => vkDestroySwapchainKHR as *const c_void,
         _other => result,
     }
@@ -108,10 +111,32 @@ override_sym!("system" vkGetDeviceProcAddr(device: VkDevice, name: *const c_char
         b"vkQueuePresentKHR" =>  vkQueuePresentKHR as *const c_void,
         b"vkAcquireNextImageKHR" => vkAcquireNextImageKHR as *const c_void,
         b"vkAcquireNextImage2KHR" => vkAcquireNextImage2KHR as *const c_void,
+        b"vkCreateSwapchainKHR" => vkCreateSwapchainKHR as *const c_void,
         b"vkGetPhysicalDeviceSurfaceCapabilitiesKHR" => vkGetPhysicalDeviceSurfaceCapabilitiesKHR as *const c_void,
         // The destroy arms the kick budget for the swapchain-destroy joins.
         b"vkDestroySwapchainKHR" => vkDestroySwapchainKHR as *const c_void,
         _other => result,
+    }
+});
+
+override_sym!("system" vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device: VkPhysicalDevice, surface: VkSurfaceKHR, p_count: *mut u32, p_modes: *mut VkPresentModeKHR) -> VkResult, lib: LIB, |real| {
+    let res = real(physical_device, surface, p_count, p_modes);
+    if res == VK_SUCCESS && !p_count.is_null() && !p_modes.is_null() {
+        // SAFETY: on success the query wrote `*p_count` modes to `p_modes`.
+        let modes = unsafe { std::slice::from_raw_parts(p_modes, *p_count as usize) };
+        present::record_surface_modes(surface, modes);
+    }
+    res
+});
+
+override_sym!("system" vkCreateSwapchainKHR(device: VkDevice, create_info: *const VkSwapchainCreateInfoKHR, allocator: *const VkAllocationCallbacks, swapchain: *mut VkSwapchainKHR) -> VkResult, lib: LIB, |real| {
+    // SAFETY: per the vkCreateSwapchainKHR contract, `pCreateInfo` is a
+    // required (non-optional) valid pointer to a VkSwapchainCreateInfoKHR.
+    let create_info = unsafe { &*create_info };
+
+    match present::rewrite_create_info(create_info) {
+        Some(rewritten) => real(device, &rewritten, allocator, swapchain),
+        None => real(device, create_info, allocator, swapchain),
     }
 });
 
