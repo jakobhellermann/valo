@@ -58,6 +58,7 @@ impl ConfigArgs {
                 level: self.log_level.map_or(LogLevel::Trace, Into::into),
             },
             use_gpu: self.use_gpu,
+            skip_draw: false,
         }
     }
 }

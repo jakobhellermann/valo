@@ -3,6 +3,7 @@
 use std::ffi::{CStr, c_char, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::determinism::skip_draw;
 use crate::{info, override_sym};
 use vulkan_headers::vulkan::vulkan::*;
 
@@ -36,6 +37,10 @@ override_sym!("system" vkGetInstanceProcAddr(instance: VkInstance, name: *const 
     let requested = unsafe { CStr::from_ptr(name) };
     match requested.to_bytes() {
         b"vkGetDeviceProcAddr" => vkGetDeviceProcAddr as *const c_void,
+        b"vkQueueSubmit" => {
+            skip_draw::capture_submit(result);
+            result
+        }
         b"vkQueuePresentKHR" => vkQueuePresentKHR as *const c_void,
         b"vkAcquireNextImageKHR" => vkAcquireNextImageKHR as *const c_void,
         b"vkAcquireNextImage2KHR" => vkAcquireNextImage2KHR as *const c_void,
@@ -52,6 +57,10 @@ override_sym!("system" vkGetDeviceProcAddr(device: VkDevice, name: *const c_char
     // SAFETY: `name` is a NUL-terminated C string per the Vulkan spec.
     let requested = unsafe { CStr::from_ptr(name) };
     match requested.to_bytes() {
+        b"vkQueueSubmit" => {
+            skip_draw::capture_submit(result);
+            result
+        }
         b"vkQueuePresentKHR" =>  vkQueuePresentKHR as *const c_void,
         b"vkAcquireNextImageKHR" => vkAcquireNextImageKHR as *const c_void,
         b"vkAcquireNextImage2KHR" => vkAcquireNextImage2KHR as *const c_void,
@@ -59,14 +68,35 @@ override_sym!("system" vkGetDeviceProcAddr(device: VkDevice, name: *const c_char
     }
 });
 
-override_sym!("system" vkQueuePresentKHR(queue: VkQueue, present_info: *const VkPresentInfoKHR) -> VkResult, lib: LIB, |real| {
+override_sym!("system" vkQueuePresentKHR(queue: VkQueue, present_info: &VkPresentInfoKHR) -> VkResult, lib: LIB, |real| {
+    skip_draw::capture_queue(queue);
+    if skip_draw::active() {
+        let wait_semaphores = match present_info.waitSemaphoreCount {
+            0 => &[][..],
+            // SAFETY: VkPresentInfoKHR VU: a nonzero `waitSemaphoreCount` requires
+            // `pWaitSemaphores` to point to that many handles.
+            count => unsafe { std::slice::from_raw_parts(present_info.pWaitSemaphores, count as usize) },
+        };
+        // SAFETY: `queue` and `wait_semaphores` are valid per the VUs of this present.
+        if let Some(result) = unsafe { skip_draw::drain_present(queue, wait_semaphores) } {
+            return crate::frame::frame_boundary(move || result);
+        }
+    }
     crate::frame::frame_boundary(move || real(queue, present_info))
 });
 
-override_sym!("system" vkAcquireNextImageKHR( device: VkDevice, swapchain: VkSwapchainKHR, timeout: u64, semaphore: VkSemaphore, fence: VkFence, p_image_index: *mut u32 ) -> VkResult, lib: LIB, |real| {
+override_sym!("system" vkAcquireNextImageKHR( device: VkDevice, swapchain: VkSwapchainKHR, timeout: u64, semaphore: VkSemaphore, fence: VkFence, p_image_index: &mut u32 ) -> VkResult, lib: LIB, |real| {
+    // SAFETY: `semaphore` and `fence` are null or valid per the VUs of this acquire.
+    if unsafe { skip_draw::fake_acquire(semaphore, fence, p_image_index) } {
+        return VK_SUCCESS;
+    }
     acquire_next_image(move || real(device, swapchain, timeout, semaphore, fence, p_image_index))
 });
 
-override_sym!("system" vkAcquireNextImage2KHR( device: VkDevice, p_acquire_info: *const VkAcquireNextImageInfoKHR, p_image_index: *mut u32 ) -> VkResult, lib: LIB, |real| {
+override_sym!("system" vkAcquireNextImage2KHR( device: VkDevice, p_acquire_info: &VkAcquireNextImageInfoKHR, p_image_index: &mut u32 ) -> VkResult, lib: LIB, |real| {
+    // SAFETY: `semaphore` and `fence` are null or valid per the VUs of this acquire.
+    if unsafe { skip_draw::fake_acquire(p_acquire_info.semaphore, p_acquire_info.fence, p_image_index) } {
+        return VK_SUCCESS;
+    }
     acquire_next_image(move || real(device, p_acquire_info, p_image_index))
 });

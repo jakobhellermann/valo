@@ -32,6 +32,8 @@ pub struct GlobalState {
     pub restore_frame: AtomicU64,
     /// Fixed at init from the handshake config.
     pub use_gpu: AtomicBool,
+    /// Prevent drawing.
+    pub skip_draw: AtomicBool,
 }
 
 impl GlobalState {
@@ -85,6 +87,7 @@ impl GlobalState {
         self.restore_frame
             .store(config.frames.restore_frame, Ordering::Relaxed);
         self.use_gpu.store(config.use_gpu, Ordering::Relaxed);
+        self.skip_draw.store(config.skip_draw, Ordering::Relaxed);
         crate::log::set_level(config.log.level.into());
     }
 }
@@ -187,6 +190,7 @@ impl GlobalState {
             checkpoint_frame: AtomicU64::new(0),
             restore_frame: AtomicU64::new(0),
             use_gpu: AtomicBool::new(false),
+            skip_draw: AtomicBool::new(false),
         })
     }
 

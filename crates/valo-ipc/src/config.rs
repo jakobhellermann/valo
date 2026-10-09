@@ -45,4 +45,6 @@ pub struct Config {
     /// GPU checkpoint orchestration. Must match what the client set up for
     /// the target (kumquat host, renderer selection).
     pub use_gpu: bool,
+    /// Skip drawing
+    pub skip_draw: bool,
 }
