@@ -15,6 +15,7 @@ fn parse_env_u64(name: &str) -> u64 {
         .unwrap_or(0)
 }
 use crate::alt_stack::ALT_STACK_SIZE;
+use crate::token::ExclusiveCell;
 use crate::utils::PAGE_SIZE;
 
 static GLOBAL_STATE: SyncUnsafeCell<MaybeUninit<GlobalState>> =
@@ -65,8 +66,12 @@ impl GlobalState {
 pub struct ReservedMemory {
     /// In use by the restore signal handler while memory is being loaded.
     pub alt_stack: SyncUnsafeCell<[u8; ALT_STACK_SIZE]>,
+    pub exclusive: ExclusiveCell<ReservedExclusive>,
+}
+
+pub struct ReservedExclusive {
     /// Accumulates across restores and must therefore not be rewound.
-    pub restore_count: AtomicU64,
+    pub restore_count: u64,
 }
 
 impl GlobalState {
