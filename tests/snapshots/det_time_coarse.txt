@@ -1,0 +1,3 @@
+monotonic coarse: delta=500000000ns (expect 500000000ns)
+realtime coarse: delta=500000000ns (expect 500000000ns)
+det-coarse: PASS

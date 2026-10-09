@@ -37,6 +37,28 @@ pub struct FrameConfig {
     pub max_restores: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Framerate {
+    pub num: u64,
+    pub denom: u64,
+}
+
+impl Default for Framerate {
+    fn default() -> Self {
+        Self { num: 60, denom: 1 }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TimeConfig {
+    // Lets time run controlled
+    pub uncontrolled_time: bool,
+    /// Simulated frame rate
+    pub framerate: Framerate,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -45,4 +67,6 @@ pub struct Config {
     /// GPU checkpoint orchestration. Must match what the client set up for
     /// the target (kumquat host, renderer selection).
     pub use_gpu: bool,
+    /// Deterministic simulated time.
+    pub time: TimeConfig,
 }

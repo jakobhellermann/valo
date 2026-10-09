@@ -13,6 +13,7 @@ mod sdl;
 mod signal;
 mod sleep;
 mod steam;
+pub(crate) mod time;
 pub(crate) mod vulkan;
 pub(crate) mod xcb;
 pub(crate) mod xlib;

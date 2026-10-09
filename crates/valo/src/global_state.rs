@@ -85,6 +85,7 @@ impl GlobalState {
         self.restore_frame
             .store(config.frames.restore_frame, Ordering::Relaxed);
         self.use_gpu.store(config.use_gpu, Ordering::Relaxed);
+        crate::determinism::time::set_config(&config.time);
         crate::log::set_level(config.log.level.into());
     }
 }

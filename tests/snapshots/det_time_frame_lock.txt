@@ -1,0 +1,5 @@
+frame-lock: virtual delta=500000000ns (expect 500000000ns), real slower than virtual: yes
+restore-rewind: advance=166666666ns (expect 166666666)
+det-time: PASS
+restore-rewind: advance=166666666ns (expect 166666666)
+det-time: PASS

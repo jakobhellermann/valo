@@ -126,15 +126,25 @@ pub(crate) fn clock_nanosleep_duration(
     if flags & libc::TIMER_ABSTIME == 0 {
         return req.tv_sec as u64 * 1_000_000_000 + req.tv_nsec as u64;
     }
-    let mut now = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
+    (req.tv_sec as i128 * 1_000_000_000 + req.tv_nsec as i128)
+        .saturating_sub(clock_now_ns(clock_id) as i128)
+        .max(0) as u64
+}
+
+/// Now on the given clock via the raw syscall (libc's clock_gettime is
+/// interposed by the time hooks). Unknown clock ids read as zero.
+fn clock_now_ns(clock_id: libc::clockid_t) -> u64 {
+    use rustix::time::{ClockId, DynamicClockId, clock_gettime, clock_gettime_dynamic};
+    let ts = match clock_id {
+        libc::CLOCK_MONOTONIC => clock_gettime(ClockId::Monotonic),
+        libc::CLOCK_REALTIME => clock_gettime(ClockId::Realtime),
+        libc::CLOCK_BOOTTIME => match clock_gettime_dynamic(DynamicClockId::Boottime) {
+            Ok(ts) => ts,
+            Err(_) => return 0,
+        },
+        _ => return 0,
     };
-    // SAFETY: `now` is a valid timespec; a failing clock read counts as 0.
-    unsafe { libc::clock_gettime(clock_id, &mut now) };
-    let ns = (req.tv_sec as i128 * 1_000_000_000 + req.tv_nsec as i128)
-        - (now.tv_sec as i128 * 1_000_000_000 + now.tv_nsec as i128);
-    ns.max(0) as u64
+    ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
 }
 
 pub(crate) fn record(kind: SleepKind, ns: u64, timed_out: bool) {
@@ -180,13 +190,7 @@ fn current_tid() -> u32 {
 }
 
 fn now_ms() -> u64 {
-    let mut ts = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: `ts` is a valid timespec; CLOCK_MONOTONIC only reads it.
-    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
-    ts.tv_sec as u64 * 1000 + ts.tv_nsec as u64 / 1_000_000
+    crate::determinism::time::real_ns() / 1_000_000
 }
 
 fn find_or_claim_slot(fn_id: u32, tid: u32) -> usize {

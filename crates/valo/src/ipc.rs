@@ -404,6 +404,7 @@ pub fn effective_config() -> Config {
             level: crate::log::current_level().into(),
         },
         use_gpu: state.use_gpu.load(Ordering::Relaxed),
+        time: crate::determinism::time::effective(),
     }
 }
 
