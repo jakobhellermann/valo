@@ -405,6 +405,7 @@ pub fn effective_config() -> Config {
         },
         use_gpu: state.use_gpu.load(Ordering::Relaxed),
         time: crate::determinism::time::effective(),
+        skip_draw: state.skip_draw.load(Ordering::Relaxed),
     }
 }
 

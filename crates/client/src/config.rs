@@ -70,6 +70,7 @@ impl ConfigArgs {
                 uncontrolled_time: self.uncontrolled_time || self.uncontrolled,
                 ..TimeConfig::default()
             },
+            skip_draw: false,
         }
     }
 }

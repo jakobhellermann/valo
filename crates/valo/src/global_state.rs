@@ -32,6 +32,10 @@ pub struct GlobalState {
     pub restore_frame: AtomicU64,
     /// Fixed at init from the handshake config.
     pub use_gpu: AtomicBool,
+    /// Session state: skip_draw — the frame's Vulkan image pipeline is
+    /// skipped. Set by the client via runtime SetConfig at frame boundaries;
+    /// a restore does not change it.
+    pub skip_draw: AtomicBool,
 }
 
 impl GlobalState {
@@ -86,6 +90,7 @@ impl GlobalState {
             .store(config.frames.restore_frame, Ordering::Relaxed);
         self.use_gpu.store(config.use_gpu, Ordering::Relaxed);
         crate::determinism::time::set_config(&config.time);
+        self.skip_draw.store(config.skip_draw, Ordering::Relaxed);
         crate::log::set_level(config.log.level.into());
     }
 }
@@ -188,6 +193,7 @@ impl GlobalState {
             checkpoint_frame: AtomicU64::new(0),
             restore_frame: AtomicU64::new(0),
             use_gpu: AtomicBool::new(false),
+            skip_draw: AtomicBool::new(false),
         })
     }
 

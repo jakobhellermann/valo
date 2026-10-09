@@ -69,4 +69,8 @@ pub struct Config {
     pub use_gpu: bool,
     /// Deterministic simulated time.
     pub time: TimeConfig,
+    /// skip_draw: skip the swapchain image pipeline entirely (fake
+    /// acquire, drained present, libTAS `skipping_draw` parity). Session
+    /// state — applied at frame boundaries, survives restores unchanged.
+    pub skip_draw: bool,
 }
