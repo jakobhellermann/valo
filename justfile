@@ -66,13 +66,13 @@ run-sdl *args:
 STEAM_WRAPPER := `if command -v steam-run >/dev/null 2>&1; then printf steam-run; fi`
 
 run-hollowknight *args:
-    {{ STEAM_WRAPPER }} just valo run {{ args }} "{{ HK }}" -force-gfx-direct
+    {{ STEAM_WRAPPER }} just valo run {{ args }} "{{ HK }}"
 
 spawn-hollowknight *args:
-    {{ STEAM_WRAPPER }} just valo spawn --use-gpu {{ args }} "{{ HK }}" -force-gfx-direct
+    {{ STEAM_WRAPPER }} just valo spawn --use-gpu {{ args }} "{{ HK }}"
 
 run-hollowknight-gpu *args:
-    {{ STEAM_WRAPPER }} just valo run --use-gpu {{ args }} "{{ HK }}" -force-gfx-direct
+    {{ STEAM_WRAPPER }} just valo run --use-gpu {{ args }} "{{ HK }}"
 
 visualizer:
     @cd visualizer && pnpm run dev
