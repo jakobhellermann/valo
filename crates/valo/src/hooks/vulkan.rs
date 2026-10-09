@@ -4,7 +4,7 @@ use std::ffi::{CStr, c_char, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::determinism::skip_draw;
-use crate::{info, override_sym};
+use crate::{info, override_sym, present};
 use vulkan_headers::vulkan::vulkan::*;
 
 const LIB: *const c_char = c"libvulkan.so.1".as_ptr();
@@ -49,6 +49,7 @@ override_sym!("system" vkGetInstanceProcAddr(instance: VkInstance, name: *const 
         b"vkQueuePresentKHR" => vkQueuePresentKHR as *const c_void,
         b"vkAcquireNextImageKHR" => vkAcquireNextImageKHR as *const c_void,
         b"vkAcquireNextImage2KHR" => vkAcquireNextImage2KHR as *const c_void,
+        b"vkGetPhysicalDeviceSurfacePresentModesKHR" => vkGetPhysicalDeviceSurfacePresentModesKHR as *const c_void,
         _other => result,
     }
 });
@@ -69,7 +70,25 @@ override_sym!("system" vkGetDeviceProcAddr(device: VkDevice, name: *const c_char
         b"vkQueuePresentKHR" =>  vkQueuePresentKHR as *const c_void,
         b"vkAcquireNextImageKHR" => vkAcquireNextImageKHR as *const c_void,
         b"vkAcquireNextImage2KHR" => vkAcquireNextImage2KHR as *const c_void,
+        b"vkCreateSwapchainKHR" => vkCreateSwapchainKHR as *const c_void,
         _other => result,
+    }
+});
+
+override_sym!("system" vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device: VkPhysicalDevice, surface: VkSurfaceKHR, p_count: &mut u32, p_modes: *mut VkPresentModeKHR) -> VkResult, lib: LIB, |real| {
+    let res = real(physical_device, surface, p_count, p_modes);
+    if res == VK_SUCCESS && !p_modes.is_null() {
+        // SAFETY: on success with non-null `pPresentModes`, the query wrote `*p_count` modes there.
+        let modes = unsafe { std::slice::from_raw_parts(p_modes, *p_count as usize) };
+        present::record_surface_modes(surface, modes);
+    }
+    res
+});
+
+override_sym!("system" vkCreateSwapchainKHR(device: VkDevice, create_info: &VkSwapchainCreateInfoKHR, allocator: *const VkAllocationCallbacks, swapchain: &mut VkSwapchainKHR) -> VkResult, lib: LIB, |real| {
+    match present::rewrite_create_info(create_info) {
+        Some(rewritten) => real(device, &rewritten, allocator, swapchain),
+        None => real(device, create_info, allocator, swapchain),
     }
 });
 
