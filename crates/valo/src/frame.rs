@@ -24,5 +24,9 @@ pub fn frame_boundary<T>(draw: impl FnOnce() -> T) -> T {
 
     determinism::skip_draw::on_frame_boundary();
 
+    // The IPC turn above may have delivered a new input state; feed its
+    // diff so the game's event pump sees it during this frame.
+    crate::input_feed::feed_frame();
+
     draw()
 }

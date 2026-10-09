@@ -38,6 +38,8 @@ pub struct GlobalState {
     pub skip_draw: AtomicBool,
     /// The skip_draw mode's minimum wall-clock interval between rendered frames
     pub skip_draw_min_render_ms: AtomicU32,
+    /// Whether to apply the xcb input feeding
+    pub uncontrolled_input: AtomicBool,
 }
 
 impl GlobalState {
@@ -94,6 +96,8 @@ impl GlobalState {
         crate::determinism::time::set_config(&config.determinism.time);
         crate::determinism::randomness::set_config(&config.determinism.randomness);
         self.set_skip_draw(config.skip_draw);
+        self.uncontrolled_input
+            .store(config.input.uncontrolled_input, Ordering::Relaxed);
         crate::log::set_level(config.log.level.into());
     }
 
@@ -227,6 +231,7 @@ impl GlobalState {
             use_gpu: AtomicBool::new(false),
             skip_draw: AtomicBool::new(false),
             skip_draw_min_render_ms: AtomicU32::new(0),
+            uncontrolled_input: AtomicBool::new(false),
         })
     }
 

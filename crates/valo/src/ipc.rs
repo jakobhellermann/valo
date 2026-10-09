@@ -18,13 +18,13 @@ use std::sync::atomic::Ordering;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use valo_ipc::config::{Config, DeterminismConfig, FrameConfig, LogConfig};
+use valo_ipc::config::{Config, DeterminismConfig, FrameConfig, InputConfig, LogConfig};
 use valo_ipc::messages::{ClientToLib, Error, FrameBoundary, LibHello, LibToClient, State};
 use valo_ipc::{LibIPC, PROTOCOL_VERSION};
 
 use crate::checkpoint::SnapshotSlot;
 use crate::global_state::GlobalState;
-use crate::{Result, checkpoint, error, info, trace, warn};
+use crate::{Result, checkpoint, debug, error, info, trace, warn};
 
 /// How long a free session waits for a command from a connected client
 /// before the frame runs.
@@ -233,6 +233,11 @@ fn held_turn(session: &mut Session, frame: u64) {
                 Action::Hold => {
                     session.conn = Some(conn);
                 }
+                Action::Resync => {
+                    debug!(Ipc, "resync at frame={frame}");
+                    session.conn = Some(conn);
+                    in_dialogue = false;
+                }
             },
             Ok(None) => {
                 info!(Ipc, "client disconnected");
@@ -259,6 +264,11 @@ enum Action {
     Run,
     /// The session stays held; keep waiting for commands.
     Hold,
+    /// Stays held, but re-sends the FrameBoundary notification first: a
+    /// restore resumed inside the checkpoint's held-turn continuation,
+    /// past the point where the original notification was sent — the
+    /// client is not rewound and still waits for it.
+    Resync,
 }
 
 fn handle_command(
@@ -342,7 +352,10 @@ fn handle_command(
             if let Err(e) = conn.send(&response) {
                 warn!(Ipc, "send {response:?}: {e}");
             }
-            Action::Hold
+            match GlobalState::get().restore_in_progress() {
+                true => Action::Resync,
+                false => Action::Hold,
+            }
         }
         ClientToLib::Restore(slot) => {
             info!(Ipc, "restore slot {slot} requested at frame {frame}");
@@ -358,6 +371,11 @@ fn handle_command(
             // returns here; on failure it aborts. The client observes EOF.
             crate::valo_restore_slot(slot);
             unreachable!("valo_restore never returns")
+        }
+        ClientToLib::SetInputs(state) => {
+            trace!(Ipc, "received SetInputs mods={:#x}", state.mods);
+            crate::input_feed::set_state(state);
+            Action::Hold
         }
     }
 }
@@ -409,6 +427,9 @@ pub fn effective_config() -> Config {
             randomness: crate::determinism::randomness::effective(),
         },
         skip_draw: state.skip_draw_mode(),
+        input: InputConfig {
+            uncontrolled_input: state.uncontrolled_input.load(Ordering::Relaxed),
+        },
     }
 }
 

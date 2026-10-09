@@ -201,6 +201,17 @@ pub(crate) fn time(t: *mut libc::time_t) -> Option<libc::time_t> {
     Some(secs as libc::time_t)
 }
 
+/// Virtual-clock milliseconds for synthesized event timestamps. Reads real
+/// time when the deterministic clock is off; X timestamps are only ever
+/// compared for ordering, so the source does not matter.
+pub(crate) fn virtual_monotonic_ms() -> u64 {
+    if deterministic() {
+        virtual_monotonic_ns() / 1_000_000
+    } else {
+        real_ns() / 1_000_000
+    }
+}
+
 fn virtual_monotonic_ns() -> u64 {
     MONOTONIC_EPOCH_NS + TICKS_NS.load(Ordering::Relaxed)
 }

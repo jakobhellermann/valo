@@ -60,6 +60,8 @@ pub enum ClientToLib {
     Checkpoint(u32),
     /// Rewind to the snapshot in the given slot.
     Restore(u32),
+    /// Full input state for feeding; applied at the next frame boundary.
+    SetInputs(InputState),
     GetState,
     Quit,
 }
@@ -67,6 +69,18 @@ pub enum ClientToLib {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct State {
     pub frame: u64,
+}
+
+/// Full keyboard state for input feeding. Sent as a whole replacement
+/// per frame boundary; the lib diffs it against the previous state and
+/// synthesizes xcb KeyPress/KeyRelease events for the changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputState {
+    /// Modifier mask written into the events' `state` field (KeyButMask
+    /// bits, computed by the client from its keymap).
+    pub mods: u16,
+    /// Held keycodes as a 256-bit bitmap (bit `kc` = keycode `kc`).
+    pub keys: [u8; 32],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

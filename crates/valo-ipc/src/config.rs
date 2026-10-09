@@ -88,6 +88,15 @@ pub enum SkipDrawMode {
     /// time.
     Interval { min_render_interval_ms: u32 },
 }
+/// `uncontrolled_input` (default off): the game reads real X events
+/// unmodified. Off = scripted input mode: `SetInputs` states are fed through
+/// the lib-owned xcb event queue and real input-class events are filtered,
+/// so only scripted input reaches the game.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InputConfig {
+    pub uncontrolled_input: bool,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -100,4 +109,6 @@ pub struct Config {
     pub determinism: DeterminismConfig,
     /// Which frames' image pipeline is skipped.
     pub skip_draw: SkipDrawMode,
+    /// Scripted input feeding (xcb event queue substitution).
+    pub input: InputConfig,
 }

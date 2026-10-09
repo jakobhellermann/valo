@@ -17,6 +17,7 @@ mod glibc;
 mod global_state;
 mod home;
 mod hooks;
+mod input_feed;
 mod ipc;
 pub mod log;
 mod present;
