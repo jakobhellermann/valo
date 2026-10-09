@@ -1,9 +1,30 @@
+use std::path::Path;
 use std::process::Command;
 
 use crate::paths;
 
+enum Engine {
+    Unity,
+}
+
+fn autodetect_engine(program: &Path) -> Option<Engine> {
+    let dir = program.parent()?;
+    let data_dir = dir.join(format!(
+        "{}_Data",
+        program.file_stem()?.to_str().expect("non-utf8 game binary")
+    ));
+
+    if data_dir.exists() {
+        return Some(Engine::Unity);
+    }
+
+    None
+}
+
 /// Apply the runtime environment expected by valo to a target process.
 pub fn configure_target(cmd: &mut Command, gpu: bool) {
+    let engine = autodetect_engine(Path::new(cmd.get_program()));
+
     // Set env vars for the child to nudge it onto a deterministic, software rendering path.
     // Taken from https://github.com/clementgallet/libTAS/blob/86b04134d1a0dc918c0d72f09d0a6441d42f99ec/src/program/GameThread.cpp#L33
 
@@ -37,5 +58,27 @@ pub fn configure_target(cmd: &mut Command, gpu: bool) {
     } else {
         cmd.env_remove("VK_DRIVER_FILES");
         cmd.env("VK_LOADER_DRIVERS_SELECT", "lvp_icd*");
+    }
+
+    match engine {
+        Some(Engine::Unity) => {
+            let force_graphics_api = match gpu {
+                true => "-force-vulkan",
+                false => "-force-opengl",
+            };
+            let force_render_main_thread = "-force-gfx-direct";
+            ensure_cmd_argument(cmd, force_render_main_thread);
+            ensure_cmd_argument(cmd, force_graphics_api);
+            eprintln!(
+                "[valo-launch] detected unity game, adding {force_render_main_thread} {force_graphics_api}"
+            )
+        }
+        None => {}
+    }
+}
+
+fn ensure_cmd_argument(cmd: &mut Command, arg: &str) {
+    if !cmd.get_args().any(|existing| existing == arg) {
+        cmd.arg(arg);
     }
 }
