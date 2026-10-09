@@ -17,4 +17,5 @@ rustix = { version = "1.1", features = ["process"] }
 ratatui = "0.30.0"
 valo-ipc = { path = "../valo-ipc" }
 valo-launch = { path = "../valo-launch" }
-x11rb = "0.14"
+x11rb = { version = "0.14", features = ["res", "shape"] }
+font8x8 = "0.3.1"
