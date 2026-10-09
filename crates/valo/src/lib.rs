@@ -3,11 +3,13 @@
     sync_unsafe_cell,
     io_const_error,
     maybe_uninit_as_bytes,
-    alloc_error_hook
+    alloc_error_hook,
+    extern_types
 )]
 
 mod alt_stack;
 mod checkpoint;
+mod debug;
 mod frame;
 mod global_state;
 mod hooks;

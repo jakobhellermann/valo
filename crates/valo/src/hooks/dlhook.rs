@@ -42,6 +42,27 @@ pub unsafe extern "C" fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *m
             }
             b"SteamAPI_Shutdown" => Some(crate::hooks::steam::SteamAPI_Shutdown as *mut c_void),
             b"XOpenDisplay" => Some(crate::hooks::xlib::xdisplay::XOpenDisplay as *mut c_void),
+            b"xcb_connect" => Some(crate::hooks::xcb::xcb_connect as *mut c_void),
+            b"xcb_connect_to_fd" => Some(crate::hooks::xcb::xcb_connect_to_fd as *mut c_void),
+            b"xcb_disconnect" => Some(crate::hooks::xcb::xcb_disconnect as *mut c_void),
+            b"xcb_poll_for_event" => Some(crate::hooks::xcb::xcb_poll_for_event as *mut c_void),
+            b"xcb_wait_for_event" => Some(crate::hooks::xcb::xcb_wait_for_event as *mut c_void),
+            b"xcb_flush" => Some(crate::hooks::xcb::xcb_flush as *mut c_void),
+            b"xcb_poll_for_special_event" => {
+                Some(crate::hooks::xcb::xcb_poll_for_special_event as *mut c_void)
+            }
+            b"xcb_wait_for_special_event" => {
+                Some(crate::hooks::xcb::xcb_wait_for_special_event as *mut c_void)
+            }
+            b"xcb_register_for_special_xge" => {
+                Some(crate::hooks::xcb::xcb_register_for_special_xge as *mut c_void)
+            }
+            b"xcb_unregister_for_special_event" => {
+                Some(crate::hooks::xcb::xcb_unregister_for_special_event as *mut c_void)
+            }
+            b"xcb_present_select_input" => {
+                Some(crate::hooks::xcb::xcb_present_select_input as *mut c_void)
+            }
             b"vkGetInstanceProcAddr" => {
                 Some(crate::hooks::vulkan::vkGetInstanceProcAddr as *mut c_void)
             }
