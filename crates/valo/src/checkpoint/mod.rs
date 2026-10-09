@@ -73,7 +73,7 @@ pub fn slot_exists(slot: SnapshotSlot) -> bool {
 /// Check whether a restore can be done
 pub fn preflight_restore(slot: SnapshotSlot) -> Result<(), String> {
     if !slot_exists(slot) {
-        return Err(format!("no snapshot in slot {}", slot.0));
+        return Err(format!("no slot {}", slot.0));
     }
     Ok(())
 }

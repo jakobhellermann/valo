@@ -12,10 +12,12 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use x11rb::connection::Connection;
+use x11rb::connection::{Connection, RequestConnection};
+use x11rb::protocol::res::{self, ClientIdMask, ClientIdSpec};
 use x11rb::protocol::xproto::{
-    AtomEnum, ChangeWindowAttributesAux, ConnectionExt, EventMask, KeyButMask, Window,
+    ChangeWindowAttributesAux, ConnectionExt, EventMask, KeyButMask, MapState, Window, WindowClass,
 };
+use x11rb::rust_connection::RustConnection;
 
 /// Actions triggered by game-window hotkeys. Extend as needed; the module
 /// itself stays generic over this.
@@ -57,10 +59,9 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// Poll interval while waiting for the game window to (re)appear.
 const DISCOVER_INTERVAL: Duration = Duration::from_millis(200);
 
-/// Spawn the hotkey listener thread. It finds the game window by scanning
-/// `_NET_WM_PID` (set by SDL and most toolkits; plain-xcb apps don't get
-/// hotkeys), selects key events on it, and calls `on_event` for attachment
-/// status, hotkey presses (auto-repeat suppressed) and fatal errors.
+/// Spawn the hotkey listener thread. It finds the game window via the
+/// X-Resource client pid, selects key events on it, and calls `on_event` for
+/// attachment status, hotkey presses (auto-repeat suppressed) and fatal errors.
 ///
 /// The thread exits on unrecoverable X errors; hotkeys are a convenience,
 /// not a guarantee.
@@ -84,12 +85,7 @@ where
 {
     let (conn, screen) = x11rb::connect(None).context("connect to X")?;
     let root = conn.setup().roots[screen].root;
-    let pid_atom = conn
-        .intern_atom(false, b"_NET_WM_PID")
-        .context("intern atom request")?
-        .reply()
-        .context("intern _NET_WM_PID")?
-        .atom;
+    require_xres(&conn)?;
     let keymap = Keymap::load(&conn)?;
 
     // keycode -> currently held, so auto-repeat fires once per press.
@@ -99,7 +95,7 @@ where
     // (fullscreen switches recreate windows).
     'discover: loop {
         let window = loop {
-            match find_window_by_pid(&conn, pid_atom, root, target_pid) {
+            match find_window_by_pid(&conn, root, target_pid) {
                 Some(w) => break w,
                 None => thread::sleep(DISCOVER_INTERVAL),
             }
@@ -142,32 +138,51 @@ where
     }
 }
 
-/// Depth-first search for a window whose `_NET_WM_PID` matches `pid`.
-/// Best-effort: windows that vanish mid-walk are skipped, a dead
-/// connection yields None (the poll loop then exits).
-fn find_window_by_pid(
-    conn: &x11rb::rust_connection::RustConnection,
-    pid_atom: u32,
-    root: Window,
-    pid: u32,
-) -> Option<Window> {
+pub(crate) fn require_xres(conn: &RustConnection) -> Result<()> {
+    conn.extension_information(res::X11_EXTENSION_NAME)
+        .context("query X-Resource extension")?
+        .context("X server lacks the X-Resource extension needed to find the game window")?;
+    Ok(())
+}
+
+/// Depth-first search for a viewable, managed window owned by an X client
+/// with process id `pid`. Best-effort: windows that vanish mid-walk are
+/// skipped, a dead connection yields None.
+pub(crate) fn find_window_by_pid(conn: &RustConnection, root: Window, pid: u32) -> Option<Window> {
     let reply = conn.query_tree(root).ok()?.reply().ok()?;
     for child in reply.children {
-        let Ok(cookie) =
-            conn.get_property(false, child, pid_atom, u32::from(AtomEnum::CARDINAL), 0, 1)
+        let Some(attrs) = conn
+            .get_window_attributes(child)
+            .ok()
+            .and_then(|c| c.reply().ok())
         else {
             continue;
         };
-        if let Ok(prop) = cookie.reply()
-            && prop.value32().is_some_and(|mut v| v.next() == Some(pid))
+        if attrs.map_state == MapState::VIEWABLE
+            && !attrs.override_redirect
+            && attrs.class == WindowClass::INPUT_OUTPUT
+            && client_pid(conn, child) == Some(pid)
         {
             return Some(child);
         }
-        if let Some(found) = find_window_by_pid(conn, pid_atom, child, pid) {
+        if let Some(found) = find_window_by_pid(conn, child, pid) {
             return Some(found);
         }
     }
     None
+}
+
+fn client_pid(conn: &RustConnection, window: Window) -> Option<u32> {
+    let spec = ClientIdSpec {
+        client: window,
+        mask: ClientIdMask::LOCAL_CLIENT_PID,
+    };
+    let reply = res::query_client_ids(conn, &[spec]).ok()?.reply().ok()?;
+    reply
+        .ids
+        .iter()
+        .find(|id| id.spec.mask.contains(ClientIdMask::LOCAL_CLIENT_PID))
+        .and_then(|id| id.value.first().copied())
 }
 
 /// keycode -> keysyms table built from GetKeyboardMapping.
@@ -178,7 +193,7 @@ struct Keymap {
 }
 
 impl Keymap {
-    fn load(conn: &x11rb::rust_connection::RustConnection) -> Result<Self> {
+    fn load(conn: &RustConnection) -> Result<Self> {
         let setup = conn.setup();
         let min = setup.min_keycode;
         let max = setup.max_keycode;

@@ -1,6 +1,8 @@
 mod config;
+mod hud;
 mod input;
 mod msg;
+mod overlay;
 mod tui;
 
 use std::io::ErrorKind;
@@ -203,7 +205,18 @@ fn run(
         input::spawn_thread(child.id(), move |ev| {
             let _ = hotkey_tx.send(ev);
         });
-        run_ipc_loop(sock_path, &mut child, gdb, config.config(), &hotkey_rx)
+        let overlay = overlay::spawn_thread(child.id(), |ev| match ev {
+            overlay::OverlayEvent::Status(msg) => eprintln!("[valo-client] overlay: {msg}"),
+            overlay::OverlayEvent::Fatal(msg) => eprintln!("[valo-client] overlay failed: {msg}"),
+        });
+        run_ipc_loop(
+            sock_path,
+            &mut child,
+            gdb,
+            config.config(),
+            &hotkey_rx,
+            hud::Hud::new(overlay),
+        )
     };
     if let Err(e) = &result {
         eprintln!("ipc loop ended: {e:#}");
@@ -271,6 +284,7 @@ fn run_ipc_loop(
     gdb: bool,
     config: Config,
     hotkeys: &mpsc::Receiver<input::HotkeyEvent>,
+    mut hud: hud::Hud,
 ) -> Result<SessionEnd> {
     loop {
         let Some(mut conn) = establish_or_child_exit(sock, child)? else {
@@ -324,11 +338,15 @@ fn run_ipc_loop(
                             }
                         };
                         conn.send(&cmd).context("send hotkey command")?;
+                        hud.sent(&cmd);
                     }
                     conn.send(&ClientToLib::AdvanceFrames(1))
                         .context("send advance")?;
                 }
-                other => eprintln!("[valo-client] ipc <- {other:?}"),
+                other => {
+                    hud.received(&other);
+                    eprintln!("[valo-client] ipc <- {other:?}");
+                }
             }
         }
 
