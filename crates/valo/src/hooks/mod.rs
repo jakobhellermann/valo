@@ -13,6 +13,7 @@ mod sdl;
 mod signal;
 mod steam;
 pub(crate) mod vulkan;
+pub(crate) mod xcb;
 pub(crate) mod xlib;
 
 thread_local! {
