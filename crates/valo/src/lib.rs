@@ -62,9 +62,9 @@ fn init() -> Result<()> {
     thread_tracker::init_main();
     checkpoint::threads::init_main();
     checkpoint::init_thread()?;
-    checkpoint::gpu::init()?;
     sigsegv::install()?;
     ipc::init()?;
+    checkpoint::gpu::init()?;
 
     info!(Init, "valo initialized");
     structured::events::init();

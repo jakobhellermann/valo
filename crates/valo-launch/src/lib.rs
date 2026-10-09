@@ -36,11 +36,3 @@ pub fn configure_target(cmd: &mut Command, gpu: bool) {
         cmd.env("VK_LOADER_DRIVERS_SELECT", "lvp_icd*");
     }
 }
-
-/// Whether the target should snapshot using kumquat/gfxstream
-pub fn use_gpu() -> bool {
-    match std::env::var("VALO_USE_GPU") {
-        Ok(value) => !matches!(value.trim(), "" | "0" | "false" | "no"),
-        Err(_) => false,
-    }
-}

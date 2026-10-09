@@ -1780,6 +1780,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "valo-ipc",
  "valo-launch",
  "wait-timeout",
 ]
@@ -1791,6 +1792,7 @@ dependencies = [
  "anyhow",
  "clap",
  "postcard",
+ "rustix",
  "serde",
  "tempfile",
 ]

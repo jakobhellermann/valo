@@ -1,3 +1,4 @@
+mod config;
 mod msg;
 mod tui;
 
@@ -10,8 +11,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use valo_ipc::messages::{ClientToLib, FrameBoundary, Hello, LibToClient};
-use valo_ipc::{ClientIPC, PROTOCOL_VERSION};
+use config::ConfigArgs;
+use valo_ipc::ClientIPC;
+use valo_ipc::config::Config;
+use valo_ipc::messages::{ClientToLib, FrameBoundary, LibToClient};
 use valo_launch::gpu_session::GpuSession;
 
 /// How long to wait for the next FrameBoundary after sending Advance
@@ -44,6 +47,9 @@ enum Cmd {
         #[arg(long)]
         tui: bool,
 
+        #[command(flatten)]
+        config: ConfigArgs,
+
         /// Target program to execute.
         program: PathBuf,
 
@@ -64,6 +70,9 @@ enum Cmd {
         /// Stop before drawing the first frame; use `valo msg advance N`.
         #[arg(long)]
         paused: bool,
+
+        #[command(flatten)]
+        config: ConfigArgs,
 
         /// Target program and arguments.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -90,13 +99,15 @@ fn main() -> Result<ExitCode> {
             tui,
             program,
             args,
-        } => run(lib, gdb, tui, program, args),
+            config,
+        } => run(lib, gdb, tui, program, args, config),
         Cmd::Spawn {
             lib,
             sock,
             paused,
+            config,
             target,
-        } => msg::spawn(lib, &sock, paused, &target).map(|_| ExitCode::SUCCESS),
+        } => msg::spawn(lib, &sock, paused, &config, &target).map(|_| ExitCode::SUCCESS),
         Cmd::Msg { sock, command } => msg::msg(&sock, &command).map(|_| ExitCode::SUCCESS),
     }
 }
@@ -115,13 +126,14 @@ fn run(
     use_tui: bool,
     program: PathBuf,
     args: Vec<String>,
+    config: ConfigArgs,
 ) -> Result<ExitCode> {
     let lib = resolve_lib(lib)?;
     let lib = std::fs::canonicalize(&lib)
         .with_context(|| format!("canonicalize libvalo.so path {}", lib.display()))?;
 
     let mut cmd = build_command(gdb, &program, &args, &lib);
-    let use_gpu = valo_launch::use_gpu();
+    let use_gpu = config.use_gpu;
     valo_launch::configure_target(&mut cmd, use_gpu);
 
     if use_tui {
@@ -157,9 +169,10 @@ fn run(
     }
 
     let result = if use_tui {
-        tui::run(&sock_path, log_path.as_deref(), child.id()).map(|_| SessionEnd::Done)
+        tui::run(&sock_path, log_path.as_deref(), child.id(), config.config())
+            .map(|_| SessionEnd::Done)
     } else {
-        run_ipc_loop(&sock_path, &mut child, gdb)
+        run_ipc_loop(&sock_path, &mut child, gdb, config.config())
     };
     if let Err(e) = &result {
         eprintln!("ipc loop ended: {e:#}");
@@ -221,7 +234,7 @@ pub(crate) fn report_kumquat_exit(session: &mut GpuSession) -> Result<bool> {
     Ok(true)
 }
 
-fn run_ipc_loop(sock: &Path, child: &mut Child, gdb: bool) -> Result<SessionEnd> {
+fn run_ipc_loop(sock: &Path, child: &mut Child, gdb: bool, config: Config) -> Result<SessionEnd> {
     loop {
         let Some(mut conn) = establish_or_child_exit(sock, child)? else {
             eprintln!("[valo-client] child exited before ipc connection");
@@ -229,23 +242,8 @@ fn run_ipc_loop(sock: &Path, child: &mut Child, gdb: bool) -> Result<SessionEnd>
         };
         eprintln!("[valo-client] ipc connected on {}", sock.display());
 
-        conn.send(&ClientToLib::Hello(Hello::CLIENT))
-            .context("send hello")?;
-        let peer = conn
-            .recv()
-            .context("recv hello")?
-            .context("lib closed before hello")?;
-        let LibToClient::Hello(peer_hello) = peer else {
-            bail!("expected Hello from lib, got {peer:?}");
-        };
-        if peer_hello.version != PROTOCOL_VERSION {
-            bail!(
-                "lib protocol version {} does not match client {}",
-                peer_hello.version,
-                PROTOCOL_VERSION
-            );
-        }
-        conn.set_read_timeout(hang_timeout())
+        conn.init(&config)?;
+        conn.set_read_timeout(hang_timeout(config.use_gpu))
             .context("set hang watchdog timeout")?;
 
         let pid = child.id();
@@ -257,7 +255,7 @@ fn run_ipc_loop(sock: &Path, child: &mut Child, gdb: bool) -> Result<SessionEnd>
                     break;
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                    report_hang(pid)?;
+                    report_hang(pid, config.use_gpu)?;
                     return Ok(SessionEnd::Hung);
                 }
                 Err(e) => return Err(e).context("ipc recv"),
@@ -279,10 +277,10 @@ fn run_ipc_loop(sock: &Path, child: &mut Child, gdb: bool) -> Result<SessionEnd>
     }
 }
 
-pub(crate) fn report_hang(pid: u32) -> Result<()> {
+pub(crate) fn report_hang(pid: u32, use_gpu: bool) -> Result<()> {
     eprintln!(
         "[valo-client] hang: no frame boundary for {:?} (pid {pid})",
-        hang_timeout()
+        hang_timeout(use_gpu)
     );
 
     for entry in std::fs::read_dir(format!("/proc/{pid}/task"))? {
@@ -300,8 +298,8 @@ pub(crate) fn report_hang(pid: u32) -> Result<()> {
     Ok(())
 }
 
-fn hang_timeout() -> Duration {
-    if std::env::var_os("VALO_USE_GPU").is_some() {
+fn hang_timeout(use_gpu: bool) -> Duration {
+    if use_gpu {
         GPU_HANG_TIMEOUT
     } else {
         HANG_TIMEOUT

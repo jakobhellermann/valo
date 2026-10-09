@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use std::{fs, thread};
+use valo_ipc::ClientIPC;
+use valo_ipc::config::FrameConfig;
+use valo_ipc::messages::ClientToLib;
 use wait_timeout::ChildExt;
 
 #[derive(Parser)]
@@ -180,11 +183,9 @@ fn run(
             cmd.env("LD_PRELOAD", out_dir.join("libvalo.so"));
         }
     }
-    cmd.env("VALO_MAX_RESTORES", config.max_restores.to_string());
+    let sock = PathBuf::from(format!("/tmp/valo-harness-{}.sock", std::process::id()));
+    cmd.env("VALO_SOCK", &sock);
     cmd.env("VALO_LOG", log_path);
-    if config.gpu {
-        cmd.env("VALO_USE_GPU", "1");
-    }
     for (k, v) in &config.env {
         cmd.env(k, v);
     }
@@ -209,6 +210,44 @@ fn run(
         gpu.game_started();
     }
 
+    // The harness is the test's init client: deliver the config (restore
+    // cap), then detach so the test runs freely.
+    let valo_config = valo_ipc::config::Config {
+        frames: FrameConfig {
+            max_restores: config.max_restores as u64,
+            ..Default::default()
+        },
+        use_gpu: config.gpu,
+        ..Default::default()
+    };
+    // The test can die before its init (load error, crash in the
+    // constructor): watch the child while connecting, or one broken test
+    // would hang the whole run.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let establish_sock = sock.clone();
+    thread::spawn(move || {
+        let _ = tx.send(ClientIPC::establish(&establish_sock));
+    });
+    let mut conn = loop {
+        match rx.try_recv() {
+            Ok(Ok(conn)) => break conn,
+            Ok(Err(e)) => return Err(e).context("connect test socket"),
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => unreachable!(),
+        }
+        if child.wait_timeout(Duration::from_millis(50))?.is_some() {
+            // The establish thread may have bound the socket as listener
+            // before the child died; nobody owns it now.
+            let _ = fs::remove_file(&sock);
+            bail!("test exited before the ipc connection");
+        }
+    };
+    conn.init(&valo_config)
+        .context("init exchange with test binary")?;
+    conn.send(&ClientToLib::Detach)
+        .context("detach test binary")?;
+    drop(conn);
+
     let stdout_thread = child.stdout.take().map(|child_stdout| {
         thread::spawn(move || {
             let mut buf = String::new();
@@ -232,6 +271,7 @@ fn run(
         SAFETY_TIMEOUT
     };
     let status = child.wait_timeout(timeout)?;
+    let _ = fs::remove_file(&sock);
 
     let status = match status {
         Some(s) => s,

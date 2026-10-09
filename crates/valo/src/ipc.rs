@@ -1,145 +1,197 @@
 // TODO(ai-review): generated, not yet audited
 //! IPC connection to the valo client.
 //!
-//! Opt-in via `VALO_SOCK`. Two modes, selected by `VALO_IPC_MODE`:
+//! Opt-in via `VALO_SOCK`.
+//! Different modes of operation depending on the init handshake:
 //!
-//! - `block` (default): init blocks until the client connects; the client
-//!   gates every frame boundary (used by the harness and the TUI).
-//! - `async`: init binds a listener for one-shot `valo msg` commands. With
-//!   `VALO_IPC_PAUSED=1`, the game waits at frame boundaries for commands.
+//! - the client answers with `AdvanceFrames` and keeps blocking every
+//!   boundary (`valo run`).
+//! - a `Detach` queued during init drains and frees the session
+//!   (`valo spawn`).
+//! - a client that closed leaves the session held for the next one
+//!   (`valo spawn --paused`).
 
 use std::io::ErrorKind;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::atomic::Ordering;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use valo_ipc::messages::{ClientToLib, Error, Hello, LibToClient, State};
+use valo_ipc::config::{Config, FrameConfig, LogConfig};
+use valo_ipc::messages::{ClientToLib, Error, FrameBoundary, LibHello, LibToClient, State};
 use valo_ipc::{LibIPC, PROTOCOL_VERSION};
 
 use crate::global_state::GlobalState;
-use crate::{Result, error, info, warn};
+use crate::{Result, error, info, trace, warn};
 
-static IPC: OnceLock<Mutex<LibIPC>> = OnceLock::new();
+/// How long a free session waits for a command from a connected client
+/// before the frame runs.
+const COMMAND_READ_TIMEOUT: Duration = Duration::from_millis(100);
 
-/// Async IPC mode state (`VALO_IPC_MODE=async`): the listener socket exists
-/// from init onward; at most one transient client is connected at a time.
-static ASYNC: Mutex<Option<AsyncState>> = Mutex::new(None);
+/// How long a handshake on an accepted connection may take, so a client
+/// that connects but never completes it cannot freeze the session.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(100);
 
-struct AsyncState {
-    listener: UnixListener,
-    conn: Option<LibIPC>,
-    paused: bool,
-    advance_until: Option<u64>,
+enum Release {
+    /// Every frame boundary waits for a client command.
+    Held,
+    /// Frames run until this frame number (then held again).
+    Until(u64),
+    /// Frames run without stopping.
+    Free,
 }
 
-/// How long the async boundary handler waits for a command from a connected
-/// client before giving up for this boundary.
-const ASYNC_READ_TIMEOUT: Duration = Duration::from_millis(100);
+struct Session {
+    listener: UnixListener,
+    conn: Option<LibIPC>,
+    release: Release,
+}
 
-/// If `VALO_SOCK` is set, set up IPC. With `VALO_IPC_MODE=async` this only
-/// binds the listener socket (the game starts immediately, clients connect
-/// later); otherwise (block mode) it blocks until the client peer connects,
-/// exchanges Hello messages, and stores the connection in a `OnceLock` for
-/// the rest of the process.
+static SESSION: Mutex<Option<Session>> = Mutex::new(None);
+
 pub fn init() -> Result<()> {
     let Some(path) = std::env::var_os("VALO_SOCK").map(PathBuf::from) else {
         info!(Ipc, "VALO_SOCK not set, IPC disabled");
         return Ok(());
     };
-    if async_mode_requested() {
-        return init_async(&path);
-    }
     info!(Ipc, "establishing on {}", path.display());
 
-    let mut ipc = LibIPC::establish(&path)?;
-    ipc.send(&LibToClient::Hello(Hello::LIB))?;
-    let peer = ipc
+    let mut conn = LibIPC::establish(&path)?;
+    handshake(&mut conn)?;
+
+    let msg = conn
         .recv()?
-        .ok_or_else(|| std::io::Error::other("client closed before Hello"))?;
-    let ClientToLib::Hello(peer_hello) = peer else {
+        .ok_or_else(|| std::io::Error::other("client closed before SetConfig"))?;
+    let ClientToLib::SetConfig(config) = msg else {
         return Err(std::io::Error::other(format!(
-            "expected Hello from client, got {peer:?}"
+            "expected SetConfig after Hello, got {msg:?}"
         )));
     };
-    if peer_hello.version != PROTOCOL_VERSION {
-        return Err(std::io::Error::other(format!(
-            "client protocol version {} does not match lib version {}",
-            peer_hello.version, PROTOCOL_VERSION
-        )));
-    }
+    GlobalState::get().apply_config(&config);
 
-    info!(Ipc, "handshake complete");
-    if IPC.set(Mutex::new(ipc)).is_err() {
-        // OnceLock::set fails only if already set — we should be the only
-        // caller during init.
-        error!(Ipc, "already initialized; ignoring second init call");
-    }
+    // The init client's next message (or closing) decides the session: a
+    // command keeps the connection and enters held (gated session),
+    // Detach enters free, closing enters held without a client (paused
+    // session).
+    let listener = bind_listener(&path)?;
+    *lock_session() = Some(Session {
+        listener,
+        conn: Some(conn),
+        release: Release::Held,
+    });
+    info!(Ipc, "init complete");
     Ok(())
 }
 
-/// Lock the IPC connection until the returned guard is dropped. Returns
-/// `None` when IPC was not configured (no `VALO_SOCK`); the caller should
-/// continue without IPC in that case.
-pub fn lock() -> Option<MutexGuard<'static, LibIPC>> {
-    let mutex = IPC.get()?;
-    Some(mutex.lock().unwrap_or_else(|p| {
-        warn!(Ipc, "mutex poisoned, recovering");
-        mutex.clear_poison();
-        p.into_inner()
-    }))
+fn bind_listener(path: &Path) -> Result<UnixListener> {
+    // The rendezvous leaves the socket file stale on both sides (the
+    // listener drops it after accept). Reclaim the path for reconnects and
+    // one-shot clients.
+    let _ = std::fs::remove_file(path);
+    UnixListener::bind(path)
+        .map_err(|e| std::io::Error::other(format!("bind {}: {e}", path.display())))
 }
 
-pub fn async_mode() -> bool {
-    let guard = ASYNC.lock().unwrap_or_else(|p| {
-        warn!(Ipc, "mutex poisoned, recovering");
-        p.into_inner()
-    });
-    guard.is_some()
+/// Called at every frame boundary. No-op without IPC.
+pub fn handle_frame_boundary(frame: u64) {
+    let mut guard = lock_session();
+    let Some(session) = guard.as_mut() else {
+        return;
+    };
+
+    if let Release::Until(until) = session.release
+        && frame >= until
+    {
+        session.release = Release::Held;
+    }
+
+    match session.release {
+        Release::Free => free_turn(session, frame),
+        Release::Until(_) => {}
+        Release::Held => held_turn(session, frame),
+    }
 }
 
-pub fn handle_async(frame: u64) {
-    let mut guard = ASYNC.lock().unwrap_or_else(|p| {
-        warn!(Ipc, "mutex poisoned, recovering");
-        p.into_inner()
-    });
-    let Some(state) = guard.as_mut() else { return };
-
-    if let Some(target) = state.advance_until {
-        if frame < target {
+fn free_turn(session: &mut Session, frame: u64) {
+    if session.conn.is_none() {
+        // An idle session must never block the game waiting for a client.
+        if let Err(e) = session.listener.set_nonblocking(true) {
+            warn!(Ipc, "set listener mode: {e}");
             return;
         }
-        state.advance_until = None;
-        state.paused = true;
-        if let Some(mut conn) = state.conn.take()
-            && let Err(e) = conn.send(&LibToClient::State(State { frame }))
-        {
-            warn!(Ipc, "send advance result: {e}");
+        match session.listener.accept() {
+            Ok((stream, _)) => match accept_handshake(stream) {
+                Ok(conn) => {
+                    info!(Ipc, "client connected");
+                    session.conn = Some(conn);
+                }
+                Err(e) => warn!(Ipc, "client handshake failed: {e}"),
+            },
+            Err(e) if e.kind() == ErrorKind::WouldBlock => return,
+            Err(e) => {
+                warn!(Ipc, "accept: {e}");
+                return;
+            }
         }
     }
 
+    let Some(conn) = session.conn.as_mut() else {
+        return;
+    };
+    if let Err(e) = conn.set_read_timeout(COMMAND_READ_TIMEOUT) {
+        warn!(Ipc, "set command timeout: {e}");
+        session.conn = None;
+        return;
+    }
+    match conn.recv() {
+        Ok(Some(msg)) => {
+            let Some(mut conn) = session.conn.take() else {
+                return;
+            };
+            handle_command(session, &mut conn, msg, frame);
+            session.conn = Some(conn);
+        }
+        Ok(None) => {
+            info!(Ipc, "client disconnected");
+            session.conn = None;
+        }
+        Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {}
+        Err(e) if is_hangup(&e) => {
+            info!(Ipc, "client disconnected: {e}");
+            session.conn = None;
+        }
+        Err(e) => {
+            warn!(Ipc, "recv: {e}");
+            session.conn = None;
+        }
+    }
+}
+
+/// Holds this frame boundary until a client releases it. A freshly
+/// accepted client gets no notification — it initiates with a command —
+/// while a client that is already connected gets a `FrameBoundary`
+/// notification per held boundary.
+fn held_turn(session: &mut Session, frame: u64) {
+    let mut in_dialogue = false;
     loop {
-        if state.conn.is_none() {
-            if let Err(e) = state.listener.set_nonblocking(!state.paused) {
-                error!(Ipc, "set listener mode: {e}");
+        if session.conn.is_none() {
+            if let Err(e) = session.listener.set_nonblocking(false) {
+                warn!(Ipc, "set listener mode: {e}");
                 return;
             }
-            match state.listener.accept() {
-                Ok((stream, _)) => match handshake_and_wrap(stream) {
+            match session.listener.accept() {
+                Ok((stream, _)) => match accept_handshake(stream) {
                     Ok(conn) => {
-                        info!(Ipc, "msg client connected");
-                        state.conn = Some(conn);
+                        info!(Ipc, "client connected");
+                        session.conn = Some(conn);
+                        in_dialogue = true;
                     }
                     Err(e) => {
                         warn!(Ipc, "client handshake failed: {e}");
-                        if state.paused {
-                            continue;
-                        } else {
-                            return;
-                        }
+                        continue;
                     }
                 },
-                Err(e) if e.kind() == ErrorKind::WouldBlock => return,
                 Err(e) => {
                     warn!(Ipc, "accept: {e}");
                     return;
@@ -147,123 +199,163 @@ pub fn handle_async(frame: u64) {
             }
         }
 
-        let Some(conn) = state.conn.as_mut() else {
+        if !in_dialogue {
+            let Some(conn) = session.conn.as_mut() else {
+                continue;
+            };
+            // The client may have queued commands and closed (a spawner's
+            // Detach): an EPIPE here must not drop the connection before
+            // its pending input is drained — recv returns the queued data
+            // before the EOF.
+            match conn.send(&LibToClient::FrameBoundary(FrameBoundary { frame })) {
+                Ok(()) => {}
+                Err(e) if is_hangup(&e) => info!(Ipc, "client closed before FrameBoundary"),
+                Err(e) => warn!(Ipc, "send FrameBoundary: {e}"),
+            }
+            in_dialogue = true;
+        }
+
+        let Some(mut conn) = session.conn.take() else {
             continue;
         };
-        let timeout = if state.paused {
-            conn.clear_read_timeout()
-        } else {
-            conn.set_read_timeout(ASYNC_READ_TIMEOUT)
-        };
-        if let Err(e) = timeout {
-            warn!(Ipc, "set command timeout: {e}");
-            state.conn = None;
-            if state.paused {
-                continue;
-            } else {
-                return;
-            }
+        if let Err(e) = conn.clear_read_timeout() {
+            warn!(Ipc, "clear read timeout: {e}");
+            session.conn = None;
+            continue;
         }
-        let msg = match conn.recv() {
-            Ok(Some(msg)) => msg,
-            Ok(None) => {
-                info!(Ipc, "msg client disconnected");
-                state.conn = None;
-                if state.paused {
-                    continue;
-                } else {
+        match conn.recv() {
+            Ok(Some(msg)) => match handle_command(session, &mut conn, msg, frame) {
+                Action::Run => {
+                    session.conn = Some(conn);
                     return;
                 }
+                Action::Hold => {
+                    session.conn = Some(conn);
+                }
+            },
+            Ok(None) => {
+                info!(Ipc, "client disconnected");
+                session.conn = None;
             }
-            Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {
-                return;
+            Err(e) if is_hangup(&e) => {
+                info!(Ipc, "client disconnected: {e}");
+                session.conn = None;
             }
             Err(e) => {
-                warn!(Ipc, "async recv: {e}");
-                state.conn = None;
-                if state.paused {
-                    continue;
-                } else {
-                    return;
-                }
+                warn!(Ipc, "recv: {e}");
+                session.conn = None;
             }
-        };
-        if handle_async_command(state, msg, frame) {
-            return;
         }
     }
 }
 
-// TODO: don't duplicate this
-/// `true` lets the current frame draw; `false` keeps the game paused here.
-fn handle_async_command(state: &mut AsyncState, msg: ClientToLib, frame: u64) -> bool {
-    let Some(mut conn) = state.conn.take() else {
-        return !state.paused;
-    };
+fn is_hangup(e: &std::io::Error) -> bool {
+    matches!(e.kind(), ErrorKind::BrokenPipe | ErrorKind::ConnectionReset)
+}
+
+enum Action {
+    /// The current frame may run.
+    Run,
+    /// The session stays held; keep waiting for commands.
+    Hold,
+}
+
+fn handle_command(
+    session: &mut Session,
+    conn: &mut LibIPC,
+    msg: ClientToLib,
+    frame: u64,
+) -> Action {
     match msg {
-        ClientToLib::Hello(_) => error!(Ipc, "unexpected Hello mid-session"),
-        ClientToLib::AdvanceFrames(count) => {
-            if count == 0 {
-                let _ = conn.send(&LibToClient::State(State { frame }));
-            } else if !state.paused {
-                let _ = conn.send(&LibToClient::Error(Error {
-                    message: "advance requires spawn --paused".into(),
-                }));
-            } else if frame.checked_add(count).is_none() {
-                let _ = conn.send(&LibToClient::Error(Error {
-                    message: "invalid advance frame count".into(),
-                }));
-            } else {
-                state.advance_until = frame.checked_add(count);
-                state.paused = false;
-                state.conn = Some(conn);
-                return true;
-            }
+        ClientToLib::Hello(_) => {
+            error!(Ipc, "unexpected Hello mid-session");
+            Action::Hold
         }
-        ClientToLib::Checkpoint => {
-            info!(Ipc, "checkpoint requested at frame {frame}");
-            crate::valo_checkpoint();
-            // valo_checkpoint returns twice: once after the save, once when a
-            // later restore jumps back into this call. On the second return
-            // the connection that issued the checkpoint is long gone (one-shot
-            // msg client), so only reply on the first.
-            if GlobalState::get().restore_in_progress() {
-                return !state.paused;
+        ClientToLib::SetConfig(config) => {
+            info!(Ipc, "received SetConfig");
+            if config.use_gpu != GlobalState::get().use_gpu.load(Ordering::Relaxed) {
+                if let Err(e) = conn.send(&LibToClient::Error(Error {
+                    message: "use_gpu is fixed at init".into(),
+                })) {
+                    warn!(Ipc, "send SetConfig error: {e}");
+                }
+                return Action::Hold;
             }
-            if let Err(e) = conn.send(&LibToClient::CheckpointDone) {
-                error!(Ipc, "send CheckpointDone: {e}");
+            GlobalState::get().apply_config(&config);
+            if let Err(e) = conn.send(&LibToClient::SetConfigDone) {
+                warn!(Ipc, "send SetConfigDone: {e}");
             }
-        }
-        ClientToLib::Restore => {
-            info!(Ipc, "restore requested at frame {frame}");
-            // On success valo_restore jumps into the saved ucontext and never
-            // returns here; the msg client observes EOF instead of a reply.
-            crate::valo_restore();
-            error!(Ipc, "did not restore snapshot");
+            Action::Hold
         }
         ClientToLib::GetState => {
+            info!(Ipc, "received GetState");
             if let Err(e) = conn.send(&LibToClient::State(State { frame })) {
-                error!(Ipc, "send State: {e}");
+                warn!(Ipc, "send State: {e}");
             }
+            Action::Hold
         }
         ClientToLib::Quit => {
             info!(Ipc, "quit requested, exiting");
             std::process::exit(0);
         }
+        ClientToLib::AdvanceFrames(count) => {
+            if !matches!(session.release, Release::Held) {
+                if let Err(e) = conn.send(&LibToClient::Error(Error {
+                    message: "session is not held".into(),
+                })) {
+                    warn!(Ipc, "send advance error: {e}");
+                }
+                return Action::Hold;
+            }
+            if count == 0 {
+                if let Err(e) = conn.send(&LibToClient::State(State { frame })) {
+                    warn!(Ipc, "send State: {e}");
+                }
+                return Action::Hold;
+            }
+            let Some(target) = frame.checked_add(count) else {
+                if let Err(e) = conn.send(&LibToClient::Error(Error {
+                    message: "advance frame count overflow".into(),
+                })) {
+                    warn!(Ipc, "send advance error: {e}");
+                }
+                return Action::Hold;
+            };
+            trace!(Ipc, "received AdvanceFrames({count})");
+            session.release = Release::Until(target);
+            Action::Run
+        }
+        ClientToLib::Detach => {
+            info!(Ipc, "detached, session runs free");
+            session.release = Release::Free;
+            Action::Run
+        }
+        ClientToLib::Checkpoint => {
+            info!(Ipc, "checkpoint requested at frame {frame}");
+            crate::valo_checkpoint();
+            // valo_checkpoint returns a second time when a later restore jumps back into it
+            let response = match GlobalState::get().restore_in_progress() {
+                true => LibToClient::RestoreSucceeded,
+                false => LibToClient::CheckpointDone,
+            };
+            if let Err(e) = conn.send(&response) {
+                warn!(Ipc, "send {response:?}: {e}");
+            }
+            Action::Hold
+        }
+        ClientToLib::Restore => {
+            info!(Ipc, "restore requested at frame {frame}");
+            // On success valo_restore jumps into the saved ucontext and never
+            // returns here; on failure it aborts. The client observes EOF.
+            crate::valo_restore();
+            unreachable!("valo_restore never returns")
+        }
     }
-    !state.paused
 }
 
-/// Wrap an accepted stream and run the Hello handshake. A client that
-/// connects but never completes the handshake is dropped after
-/// `ASYNC_READ_TIMEOUT` so it cannot freeze the game.
-fn handshake_and_wrap(stream: std::os::unix::net::UnixStream) -> Result<LibIPC> {
-    // On Linux accepted sockets inherit O_NONBLOCK from the listener; the
-    // blocking framed reads below need a blocking stream.
-    stream.set_nonblocking(false)?;
-    let mut conn = LibIPC::from_accepted(stream);
-    conn.set_read_timeout(ASYNC_READ_TIMEOUT)?;
-    conn.send(&LibToClient::Hello(Hello::LIB))?;
+/// Hello exchange on a fresh connection: version check, and an echo of the
+/// config the lib currently has.
+fn handshake(conn: &mut LibIPC) -> Result<()> {
     let peer = conn
         .recv()?
         .ok_or_else(|| std::io::Error::other("client closed before Hello"))?;
@@ -278,46 +370,38 @@ fn handshake_and_wrap(stream: std::os::unix::net::UnixStream) -> Result<LibIPC> 
             peer_hello.version, PROTOCOL_VERSION
         )));
     }
+    conn.send(&LibToClient::Hello(LibHello::new(effective_config())))
+}
+
+fn accept_handshake(stream: std::os::unix::net::UnixStream) -> Result<LibIPC> {
+    // On Linux accepted sockets inherit O_NONBLOCK from the listener; the
+    // blocking framed reads below need a blocking stream.
+    stream.set_nonblocking(false)?;
+    let mut conn = LibIPC::from_accepted(stream);
+    conn.set_read_timeout(HANDSHAKE_TIMEOUT)?;
+    handshake(&mut conn)?;
     Ok(conn)
 }
 
-fn init_async(path: &Path) -> Result<()> {
-    // A stale socket file from a dead previous session would make bind fail.
-    let _ = std::fs::remove_file(path);
-    let listener = UnixListener::bind(path)
-        .map_err(|e| std::io::Error::other(format!("bind {}: {e}", path.display())))?;
-    // Non-blocking accept at frame boundaries: an idle session must never
-    // block the game waiting for a client.
-    listener.set_nonblocking(true)?;
-    let mut guard = ASYNC.lock().unwrap_or_else(|p| {
-        warn!(Ipc, "mutex poisoned, recovering");
-        p.into_inner()
-    });
-    *guard = Some(AsyncState {
-        listener,
-        conn: None,
-        paused: paused_requested(),
-        advance_until: None,
-    });
-    // One-shot clients use this to attribute hang reports to the game pid.
-    if let Err(e) = std::fs::write(pid_file(path), format!("{}\n", std::process::id())) {
-        warn!(Ipc, "write pid file: {e}");
+pub fn effective_config() -> Config {
+    let state = GlobalState::get();
+    Config {
+        frames: FrameConfig {
+            checkpoint_frame: state.checkpoint_frame.load(Ordering::Relaxed),
+            restore_frame: state.restore_frame.load(Ordering::Relaxed),
+            max_restores: state.max_restores.load(Ordering::Relaxed),
+        },
+        log: LogConfig {
+            level: crate::log::current_level().into(),
+        },
+        use_gpu: state.use_gpu.load(Ordering::Relaxed),
     }
-    info!(Ipc, "async IPC mode listening on {}", path.display());
-    Ok(())
 }
 
-fn pid_file(sock: &Path) -> PathBuf {
-    let mut p = sock.as_os_str().to_owned();
-    p.push(".pid");
-    PathBuf::from(p)
-}
-
-/// Whether `VALO_IPC_MODE=async` was set (default: block).
-fn async_mode_requested() -> bool {
-    std::env::var_os("VALO_IPC_MODE").as_deref() == Some(std::ffi::OsStr::new("async"))
-}
-
-fn paused_requested() -> bool {
-    std::env::var_os("VALO_IPC_PAUSED").as_deref() == Some(std::ffi::OsStr::new("1"))
+fn lock_session() -> MutexGuard<'static, Option<Session>> {
+    SESSION.lock().unwrap_or_else(|p| {
+        warn!(Ipc, "mutex poisoned, recovering");
+        SESSION.clear_poison();
+        p.into_inner()
+    })
 }

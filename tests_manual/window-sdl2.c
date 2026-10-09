@@ -1,6 +1,6 @@
 // SDL2 test for manual checkpoint/restore testing.
 // Run with: make sdl2-test
-// Use VALO_CHECKPOINT_FRAME / VALO_RESTORE_FRAME to control.
+// Control with: valo run --checkpoint-frame N --restore-frame M
 #include <SDL2/SDL.h>
 #include <stdio.h>
 

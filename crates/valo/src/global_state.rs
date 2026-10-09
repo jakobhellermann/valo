@@ -8,15 +8,10 @@ use rustix::mm;
 
 use crate::Result;
 
-fn parse_env_u64(name: &str) -> u64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0)
-}
 use crate::alt_stack::ALT_STACK_SIZE;
 use crate::token::ExclusiveCell;
 use crate::utils::PAGE_SIZE;
+use valo_ipc::config::Config;
 
 static GLOBAL_STATE: SyncUnsafeCell<MaybeUninit<GlobalState>> =
     SyncUnsafeCell::new(MaybeUninit::zeroed());
@@ -28,11 +23,13 @@ pub struct GlobalState {
 
     pub frame_count: AtomicU64,
     /// 0 means unlimited
-    pub max_restores: u64,
+    pub max_restores: AtomicU64,
     /// 0 means disabled
-    pub checkpoint_frame: u64,
+    pub checkpoint_frame: AtomicU64,
     /// 0 means disabled
-    pub restore_frame: u64,
+    pub restore_frame: AtomicU64,
+    /// Fixed at init from the handshake config.
+    pub use_gpu: AtomicBool,
 }
 
 impl GlobalState {
@@ -56,6 +53,17 @@ impl GlobalState {
 
     pub fn restore_in_progress(&self) -> bool {
         self.restore_in_progress.load(Ordering::SeqCst)
+    }
+
+    pub fn apply_config(&self, config: &Config) {
+        self.max_restores
+            .store(config.frames.max_restores, Ordering::Relaxed);
+        self.checkpoint_frame
+            .store(config.frames.checkpoint_frame, Ordering::Relaxed);
+        self.restore_frame
+            .store(config.frames.restore_frame, Ordering::Relaxed);
+        self.use_gpu.store(config.use_gpu, Ordering::Relaxed);
+        crate::log::set_level(config.log.level.into());
     }
 }
 
@@ -102,18 +110,16 @@ impl GlobalState {
             // which is never unmapped.
             unsafe { &*inner.cast::<ReservedMemory>() }
         };
-        let max_restores = parse_env_u64("VALO_MAX_RESTORES");
-        let checkpoint_frame = parse_env_u64("VALO_CHECKPOINT_FRAME");
-        let restore_frame = parse_env_u64("VALO_RESTORE_FRAME");
 
         Ok(GlobalState {
             reserved,
             restore_in_progress: AtomicBool::new(false),
             snapshot_slot: AtomicU32::new(0),
             frame_count: AtomicU64::new(0),
-            max_restores,
-            checkpoint_frame,
-            restore_frame,
+            max_restores: AtomicU64::new(0),
+            checkpoint_frame: AtomicU64::new(0),
+            restore_frame: AtomicU64::new(0),
+            use_gpu: AtomicBool::new(false),
         })
     }
 

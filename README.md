@@ -21,14 +21,10 @@ cargo valo test --coverage
 `libvalo.so` reads the following environment variables at process startup. All
 are optional; a missing or unparseable value is treated as the default.
 
-| Variable                | Default         | Effect                                                                          |
-| ----------------------- | --------------- | ------------------------------------------------------------------------------- |
-| `VALO_LOG`              | `/tmp/valo.log` | Path of the log file (truncated on init). Use `/dev/stderr` to log to stderr.   |
-| `VALO_MAX_RESTORES`     | `0` (unlimited) | After this many restores, `valo_restore` calls `exit(0)`. `0` disables the cap. |
-| `VALO_CHECKPOINT_FRAME` | `0` (disabled)  | Auto-checkpoint when the frame counter reaches this value. `0` disables.        |
-| `VALO_RESTORE_FRAME`    | `0` (disabled)  | Auto-restore when the frame counter reaches this value. `0` disables.           |
-| `VALO_SOCK`             | unset           | If set, `init` blocks until a peer rendezvous on the path. See `docs/ipc.md`.   |
-
+| Variable            | Default         | Effect                                                                          |
+| ------------------- | --------------- | ------------------------------------------------------------------------------- |
+| `VALO_LOG`          | `/tmp/valo.log` | Path of the log file (truncated on init). Use `/dev/stderr` to log to stderr.   |
+| `VALO_SOCK`         | unset           | If set, init rendezvous with a client on the path. See `docs/ipc.md`.           |
 The `valo` client also recognises:
 
 | Variable     | Default | Effect                                                                             |
@@ -37,7 +33,6 @@ The `valo` client also recognises:
 
 | Variable                      | Default   | Effect                                                                                          |
 | ----------------------------- | --------- | ----------------------------------------------------------------------------------------------- |
-| `VALO_USE_GPU`                | `false`   | Allow running using vulkan, with support for checkpoints using gfxstream                        |
 | `VALO_KUMQUAT_BIN`            | `kumquat` | Path to the kumquat executable                                                                  |
 | `VALO_GFXSTREAM_ICD`          | unset     | Override the path to the `gfxtream` guest driver icd, defaults to selecting `gfxstream_vk_icd*` |
 | `ANDROID_EMU_VK_LOG_CALLS`    | `false`   | Include vulkan commands in kumquat log                                                          |

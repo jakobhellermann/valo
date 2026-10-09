@@ -31,8 +31,9 @@ use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use valo_ipc::messages::{ClientToLib, FrameBoundary, Hello, LibToClient};
-use valo_ipc::{ClientIPC, PROTOCOL_VERSION};
+use valo_ipc::ClientIPC;
+use valo_ipc::config::Config;
+use valo_ipc::messages::{ClientToLib, FrameBoundary, LibToClient};
 
 const MAX_EVENTS: usize = 1000;
 
@@ -108,28 +109,13 @@ impl App {
     }
 }
 
-pub fn run(sock: &Path, log_path: Option<&Path>, target_pid: u32) -> Result<()> {
+pub fn run(sock: &Path, log_path: Option<&Path>, target_pid: u32, config: Config) -> Result<()> {
     if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
         bail!("--tui requires stdout to be a tty");
     }
 
     let mut conn = ClientIPC::establish(sock).context("ipc establish")?;
-    conn.send(&ClientToLib::Hello(Hello::CLIENT))
-        .context("send hello")?;
-    let peer = conn
-        .recv()
-        .context("recv hello")?
-        .context("lib closed before hello")?;
-    let LibToClient::Hello(peer_hello) = peer else {
-        bail!("expected Hello from lib, got {peer:?}");
-    };
-    if peer_hello.version != PROTOCOL_VERSION {
-        bail!(
-            "lib protocol version {} does not match client {}",
-            peer_hello.version,
-            PROTOCOL_VERSION
-        );
-    }
+    conn.init(&config)?;
 
     let (tx, rx) = mpsc::channel::<AppEvent>();
 
@@ -242,6 +228,9 @@ fn handle_event(app: &mut App, conn: &mut ClientIPC, ev: AppEvent) -> Result<()>
         AppEvent::Ipc(LibToClient::Error(e)) => {
             app.last_error = Some(e.message.clone());
             app.push_event(EventKind::Error, format!("Error: {}", e.message));
+        }
+        AppEvent::Ipc(LibToClient::SetConfigDone) => {
+            app.push_event(EventKind::Recv, "SetConfigDone");
         }
         AppEvent::Ipc(LibToClient::Hello(_)) => {
             app.push_event(EventKind::Recv, "Hello (unexpected mid-session)");
