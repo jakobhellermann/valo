@@ -293,8 +293,9 @@ pub fn restore(slot: SnapshotSlot) -> Result<()> {
     thread_tracker::require_no_cancellation();
     let state = GlobalState::get();
 
-    // SAFETY: reserved is valid and restore_count is in the excluded region
-    let restore_count = unsafe { &(*state.reserved).restore_count }
+    let restore_count = state
+        .reserved
+        .restore_count
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
     if state.max_restores > 0 && restore_count >= state.max_restores {
