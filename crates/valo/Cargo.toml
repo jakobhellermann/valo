@@ -20,6 +20,7 @@ libc = "0.2"
 memchr = "2.7"
 rustix = { version = "1.1", features = ["fs", "mm", "event", "time", "pipe", "thread"] }
 valo-ipc = { path = "../valo-ipc" }
+vulkan-headers = "0.2"
 
 [build-dependencies]
 cc = "1"

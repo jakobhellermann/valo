@@ -86,22 +86,28 @@ pub(crate) fn link_function(
 /// ```
 #[macro_export]
 macro_rules! override_sym {
+    ($abi:literal $fn:ident ($($param:ident: $ty:ty),*) $(-> $ret_ty:ty)? |$real:ident| $($block:block)?) => {
+        $crate::override_sym!(@impl $abi, $fn ($($param: $ty),*) $(-> $ret_ty)?, std::ptr::null(), |$real| $($block)?);
+    };
+    ($abi:literal $fn:ident ($($param:ident: $ty:ty),*) $(-> $ret_ty:ty)?, lib: $lib:expr, |$real:ident| $($block:block)?) => {
+        $crate::override_sym!(@impl $abi, $fn ($($param: $ty),*) $(-> $ret_ty)?, $lib, |$real| $($block)?);
+    };
     ($fn:ident ($($param:ident: $ty:ty),*) $(-> $ret_ty:ty)? |$real:ident| $($block:block)?) => {
-        $crate::override_sym!(@impl $fn ($($param: $ty),*) $(-> $ret_ty)?, std::ptr::null(), |$real| $($block)?);
+        $crate::override_sym!(@impl "C", $fn ($($param: $ty),*) $(-> $ret_ty)?, std::ptr::null(), |$real| $($block)?);
     };
     ($fn:ident ($($param:ident: $ty:ty),*) $(-> $ret_ty:ty)?, lib: $lib:expr, |$real:ident| $($block:block)?) => {
-        $crate::override_sym!(@impl $fn ($($param: $ty),*) $(-> $ret_ty)?, $lib, |$real| $($block)?);
+        $crate::override_sym!(@impl "C", $fn ($($param: $ty),*) $(-> $ret_ty)?, $lib, |$real| $($block)?);
     };
-    (@impl $fn:ident ($($param:ident: $ty:ty),*) $(-> $ret_ty:ty)?, $lib:expr, |$real:ident| $($block:block)?) => {
+    (@impl $abi:literal, $fn:ident ($($param:ident: $ty:ty),*) $(-> $ret_ty:ty)?, $lib:expr, |$real:ident| $($block:block)?) => {
         #[unsafe(no_mangle)]
-        pub extern "C" fn $fn($($param: $ty),*) $(-> $ret_ty)? {
+        pub extern $abi fn $fn($($param: $ty),*) $(-> $ret_ty)? {
             const NAME: &[u8] = concat!(stringify!($fn), "\0").as_bytes();
             static SYM: std::sync::atomic::AtomicPtr<std::ffi::c_void> =
                 std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 
             let fn_ptr = $crate::hooks::link_function(&SYM, NAME.as_ptr().cast(), $lib);
             let fn_ptr = unsafe {
-                std::mem::transmute::<*mut _, extern "C" fn($($ty),*) $(-> $ret_ty)?>(
+                std::mem::transmute::<*mut _, extern $abi fn($($ty),*) $(-> $ret_ty)?>(
                     fn_ptr.unwrap()
                 )
             };
