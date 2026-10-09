@@ -391,6 +391,10 @@ pub(crate) fn claim_main() {
     }
 }
 
+pub(crate) fn main_thread_tid() -> u32 {
+    MAIN_TID.load(Ordering::Relaxed)
+}
+
 pub(crate) fn require_ready() {
     if !READY.load(Ordering::Acquire) {
         abort!("pthread hook called before thread registry initialization");

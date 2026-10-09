@@ -11,6 +11,7 @@ mod glx;
 mod pthread;
 mod sdl;
 mod signal;
+mod sleep;
 mod steam;
 pub(crate) mod vulkan;
 pub(crate) mod xcb;
@@ -20,7 +21,7 @@ thread_local! {
     static IS_NATIVE: Cell<u32> = const { Cell::new(0) };
 }
 
-fn is_native() -> bool {
+pub(crate) fn is_native() -> bool {
     IS_NATIVE.get() > 0
 }
 pub(crate) fn run_native<T>(f: impl FnOnce() -> T) -> T {

@@ -33,6 +33,7 @@ pub(crate) mod structured {
         use rustix::fs::Dev;
 
         use crate::checkpoint::SnapshotSlot;
+        use crate::procfs::fds::OpenFd;
         use crate::procfs::maps::MemoryMap;
 
         pub fn init() {}
