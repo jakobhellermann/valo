@@ -1,8 +1,8 @@
 // TODO(ai-review): generated, not yet audited
 use clap::{Args, ValueEnum};
 use valo_ipc::config::{
-    Config, DeterminismConfig, FrameConfig, LogConfig, LogLevel, RandomnessConfig, SkipDrawMode,
-    TimeConfig,
+    Config, DeterminismConfig, FrameConfig, InputConfig, LogConfig, LogLevel, RandomnessConfig,
+    SkipDrawMode, TimeConfig,
 };
 
 #[derive(Args)]
@@ -38,6 +38,10 @@ pub(crate) struct ConfigArgs {
     /// Don't force deterministic randomness sources
     #[arg(long, help_heading = "Runtime")]
     pub uncontrolled_randomness: bool,
+
+    /// Let interactive input through to the game
+    #[arg(long, help_heading = "Runtime")]
+    pub uncontrolled_input: bool,
 }
 
 #[derive(ValueEnum, Clone, Copy)]
@@ -83,6 +87,9 @@ impl ConfigArgs {
                 },
             },
             skip_draw: SkipDrawMode::Off,
+            input: InputConfig {
+                uncontrolled_input: self.uncontrolled_input || self.uncontrolled,
+            },
         }
     }
 }

@@ -60,6 +60,8 @@ pub enum ClientToLib {
     Checkpoint(u32),
     /// Rewind to the snapshot in the given slot.
     Restore(u32),
+    /// The input state from the next frame boundary on.
+    SetInputs(InputState),
     GetState,
     Quit,
 }
@@ -67,6 +69,15 @@ pub enum ClientToLib {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct State {
     pub frame: u64,
+}
+
+/// The full keyboard state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputState {
+    /// X modifier mask (KeyButMask) of the key events.
+    pub mods: u16,
+    /// Held keycodes, bit `n` for keycode `n`.
+    pub keys: [u8; 32],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

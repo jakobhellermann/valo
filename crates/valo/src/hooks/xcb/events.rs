@@ -6,11 +6,11 @@ use super::{
     LIB_XCB, XcbEvent, xcb_connection_t, xcb_extension_t, xcb_generic_event_t, xcb_special_event_t,
 };
 use crate::debug::xcb::Described;
-use crate::{debug, override_sym, trace};
+use crate::{debug, input_feed, override_sym, trace};
 
 override_sym!(xcb_poll_for_event(conn: *mut xcb_connection_t) -> *mut xcb_generic_event_t, lib: LIB_XCB, |real| {
-    let event = real(conn);
-    // SAFETY: libxcb returned the event.
+    let event = input_feed::poll_event(conn, || real(conn));
+    // SAFETY: libxcb or the virtual queue returned the event.
     trace!(Hooks, "xcb_poll_for_event conn={conn:p} -> {}", Described(unsafe { XcbEvent::from_ptr(event) }));
     event
 });
@@ -20,9 +20,16 @@ override_sym!(xcb_wait_for_event(conn: *mut xcb_connection_t) -> *mut xcb_generi
         Hooks,
         "xcb_wait_for_event enter conn={conn:p}",
     );
-    let event = real(conn);
-    // SAFETY: libxcb returned the event.
+    let event = input_feed::wait_event(conn, || real(conn));
+    // SAFETY: libxcb or the virtual queue returned the event.
     debug!(Hooks, "xcb_wait_for_event conn={conn:p} -> {}", Described(unsafe { XcbEvent::from_ptr(event) }));
+    event
+});
+
+override_sym!(xcb_poll_for_queued_event(conn: *mut xcb_connection_t) -> *mut xcb_generic_event_t, lib: LIB_XCB, |real| {
+    let event = input_feed::poll_event(conn, || real(conn));
+    // SAFETY: libxcb or the virtual queue returned the event.
+    trace!(Hooks, "xcb_poll_for_queued_event conn={conn:p} -> {}", Described(unsafe { XcbEvent::from_ptr(event) }));
     event
 });
 

@@ -119,6 +119,7 @@ pub enum ClientToLib {
     Detach,               // held → free
     Checkpoint(u32),      // snapshot into savestate slot N
     Restore(u32),         // rewind to the snapshot in slot N
+    SetInputs(InputState), // full keyboard state for input feeding
     GetState,
     Quit,
 }
@@ -135,10 +136,16 @@ pub enum LibToClient {
 ```
 
 `Config` (`crates/valo-ipc/src/config.rs`): log level,
-auto-checkpoint/restore frames, restore cap, GPU orchestration flag.
+auto-checkpoint/restore frames, restore cap, GPU orchestration flag,
+input mode (`input.uncontrolled_input`).
 `SetConfig` replaces it wholesale (the GPU flag is fixed at init —
 runtime attempts to change it are refused); the current value is always
 readable from the `LibHello` echo.
+
+`SetInputs` carries the full keyboard state. Unless input is uncontrolled,
+the lib turns each frame boundary's change into xcb key events on the game's
+connections and drops real input events, so only this state reaches the game.
+A restore rewinds the fed state with the process.
 
 Tagging: `Hello` is the first message in each direction; version
 mismatch refuses the connection. Every other message is an implicit
