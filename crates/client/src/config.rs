@@ -1,6 +1,8 @@
 // TODO(ai-review): generated, not yet audited
 use clap::{Args, ValueEnum};
-use valo_ipc::config::{Config, FrameConfig, LogConfig, LogLevel, SkipDrawMode, TimeConfig};
+use valo_ipc::config::{
+    Config, FrameConfig, InputConfig, LogConfig, LogLevel, SkipDrawMode, TimeConfig,
+};
 
 #[derive(Args)]
 #[command(next_help_heading = "Auto checkpoints")]
@@ -24,9 +26,16 @@ pub(crate) struct ConfigArgs {
     #[arg(long, help_heading = "Runtime")]
     pub(crate) software_rendering: bool,
 
+    /// Don't force any determinism
+    #[arg(long, help_heading = "Runtime")]
+    pub uncontrolled: bool,
+
     /// Don't force deterministic time
     #[arg(long, help_heading = "Runtime")]
     pub uncontrolled_time: bool,
+
+    #[arg(long, help_heading = "Runtime")]
+    pub uncontrolled_input: bool,
 }
 
 #[derive(ValueEnum, Clone, Copy)]
@@ -67,6 +76,9 @@ impl ConfigArgs {
                 ..TimeConfig::default()
             },
             skip_draw: SkipDrawMode::Off,
+            input: InputConfig {
+                uncontrolled_input: self.uncontrolled_input || self.uncontrolled,
+            },
         }
     }
 }

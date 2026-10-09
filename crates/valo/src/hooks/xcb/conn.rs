@@ -24,6 +24,7 @@ override_sym!(xcb_connect(display_name: *const c_char, screen: *mut c_int) -> *m
 
 override_sym!(xcb_disconnect(conn: *mut xcb_connection_t), lib: LIB_XCB, |real| {
     GAME_XCB_CONNS.remove(conn.cast());
+    crate::input_feed::queue::remove(conn);
     debug!(Hooks, "xcb_disconnect: {conn:p} (total: {})", GAME_XCB_CONNS.len());
     real(conn)
 });

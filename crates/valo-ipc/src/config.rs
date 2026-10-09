@@ -85,6 +85,13 @@ impl Default for TimeConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InputConfig {
+    /// The game reads real X input instead of the `SetInputs` states.
+    pub uncontrolled_input: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -96,4 +103,5 @@ pub struct Config {
     pub time: TimeConfig,
     /// Which frames to skip/draw
     pub skip_draw: SkipDrawMode,
+    pub input: InputConfig,
 }

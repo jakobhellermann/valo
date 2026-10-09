@@ -60,6 +60,8 @@ pub enum ClientToLib {
     Checkpoint(u32),
     /// Rewind to the snapshot in the given slot.
     Restore(u32),
+    /// The input state from the next frame boundary on.
+    SetInputs(InputState),
     GetState,
     Quit,
 }
@@ -67,6 +69,34 @@ pub enum ClientToLib {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct State {
     pub frame: u64,
+}
+
+/// The full keyboard state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputState {
+    /// X modifier mask (KeyButMask) of the key events.
+    pub mods: u16,
+    pub keys: KeyBitset,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct KeyBitset([u8; 32]);
+
+impl KeyBitset {
+    pub fn is_held(&self, keycode: u8) -> bool {
+        self.0[keycode as usize / 8] & (1 << (keycode % 8)) != 0
+    }
+
+    pub fn set(&mut self, keycode: u8, held: bool) {
+        let bit = 1 << (keycode % 8);
+        let byte = &mut self.0[keycode as usize / 8];
+        if held {
+            *byte |= bit;
+        } else {
+            *byte &= !bit;
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,4 +120,29 @@ pub enum LibToClient {
     RestoreSucceeded,
     SetConfigDone,
     Error(Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_bitset_sets_bit_n_for_keycode_n() {
+        let mut keys = KeyBitset::default();
+        keys.set(9, true);
+        keys.set(255, true);
+        keys.set(38, true);
+        keys.set(38, false);
+
+        let mut expected = [0u8; 32];
+        expected[1] = 0b10;
+        expected[31] = 0b1000_0000;
+        assert_eq!(keys, KeyBitset(expected));
+        assert_eq!(
+            (0..=u8::MAX)
+                .filter(|&k| keys.is_held(k))
+                .collect::<Vec<_>>(),
+            vec![9, 255]
+        );
+    }
 }

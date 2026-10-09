@@ -359,6 +359,11 @@ fn handle_command(
             crate::valo_restore_slot(slot);
             unreachable!("valo_restore never returns")
         }
+        ClientToLib::SetInputs(state) => {
+            trace!(Ipc, "received SetInputs mods={:#x}", state.mods);
+            crate::input_feed::set_state(state);
+            Action::Hold
+        }
     }
 }
 
@@ -406,6 +411,7 @@ pub fn effective_config() -> Config {
         use_gpu: state.use_gpu.load(Ordering::Relaxed),
         time: determinism::time::CLOCK.config(),
         skip_draw: state.skip_draw_mode(),
+        input: crate::input_feed::config(),
     }
 }
 

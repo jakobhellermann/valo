@@ -1,8 +1,9 @@
 #![allow(non_camel_case_types)]
 
 mod conn;
-mod events;
-mod present;
+pub mod events;
+pub mod present;
+mod windows;
 
 pub use conn::*;
 pub use events::*;
@@ -14,7 +15,7 @@ use x11rb_protocol::errors::ParseError;
 use x11rb_protocol::protocol::Event;
 use x11rb_protocol::x11_utils::{ExtInfoProvider, ExtensionInformation};
 
-const LIB_XCB: *const c_char = c"libxcb.so.1".as_ptr();
+pub const LIB_XCB: *const c_char = c"libxcb.so.1".as_ptr();
 
 unsafe extern "C" {
     pub type xcb_connection_t;
