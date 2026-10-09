@@ -13,6 +13,7 @@ use anyhow::{Context, Result, bail};
 use clap::Subcommand;
 use rustix::pipe::PipeFlags;
 use valo_ipc::ClientIPC;
+use valo_ipc::config::Config;
 use valo_ipc::messages::{ClientToLib, LibToClient};
 use valo_launch::gpu_session::GpuSession;
 
@@ -53,13 +54,14 @@ pub fn spawn(
     lib: Option<PathBuf>,
     sock: &Path,
     paused: bool,
-    config: &ConfigArgs,
+    config_args: &ConfigArgs,
     target: &[String],
 ) -> Result<()> {
-    let use_gpu = config.use_gpu;
+    let use_gpu = config_args.use_gpu;
     let Some(program) = target.first() else {
         bail!("missing program");
     };
+    let config = config_args.config();
     let lib = valo_launch::resolve_lib(lib)?;
     let lib = std::fs::canonicalize(&lib)
         .with_context(|| format!("canonicalize libvalo.so path {}", lib.display()))?;
@@ -76,7 +78,7 @@ pub fn spawn(
         let child = cmd
             .spawn()
             .with_context(|| format!("spawning {}", cmd.get_program().to_string_lossy()))?;
-        init_session(sock, config, paused)?;
+        init_session(sock, &config, paused)?;
         print_spawned(child.id(), sock, paused);
         return Ok(());
     }
@@ -134,7 +136,7 @@ pub fn spawn(
         }
     };
     gpu.game_started();
-    if let Err(e) = init_session(sock, config, paused) {
+    if let Err(e) = init_session(sock, &config, paused) {
         report(&format!("error {e:#}"));
         drop(gpu);
         std::process::exit(1);
@@ -165,10 +167,10 @@ fn print_spawned(pid: u32, sock: &Path, paused: bool) {
 
 /// The spawn process is the session's init client: it delivers the config
 /// and either detaches (session runs) or closes (session starts paused).
-fn init_session(sock: &Path, config: &ConfigArgs, paused: bool) -> Result<()> {
+fn init_session(sock: &Path, config: &Config, paused: bool) -> Result<()> {
     let mut conn =
         ClientIPC::establish(sock).with_context(|| format!("connect {}", sock.display()))?;
-    conn.init(&config.config())
+    conn.init(config)
         .with_context(|| format!("init {}", sock.display()))?;
     if !paused {
         conn.send(&ClientToLib::Detach)?;
