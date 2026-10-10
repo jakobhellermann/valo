@@ -488,10 +488,13 @@ fn reallocate_area(
 ) -> Result<Ordering> {
     let current_eq_saved = |saved_area: &mut MemoryMap, current_area: &mut MemoryMap| {
         // Not the same area, unmap. A file mapping is only the same if it maps the
-        // same file: the rewound timeline may have mapped another file with the
-        // same name at the same address (e.g. a fresh memfd).
+        // same range of the same file: the rewound timeline may have mapped another
+        // file with the same name (e.g. a fresh memfd), or another offset of it,
+        // at the same address.
         let other_file = is_file_backed(&saved_area.path_kind)
-            && (saved_area.dev != current_area.dev || saved_area.inode != current_area.inode);
+            && (saved_area.dev != current_area.dev
+                || saved_area.inode != current_area.inode
+                || saved_area.offset != current_area.offset);
         if saved_area.pathname != current_area.pathname
             || saved_area.perms != current_area.perms
             || other_file
@@ -527,20 +530,33 @@ fn reallocate_area(
             todo!("page protections changed");
         }
 
+        // The bracketed kernel sections, like libTAS' `name[0] == '['`.
         let is_special_section = match saved_area.path_kind {
-            MMapPath::Anonymous |
-            MMapPath::Vsys(_)| // TODO?
-            MMapPath::Path => false,
-            _ => true,
+            MMapPath::Anonymous
+            | MMapPath::Vsys(_) // TODO?
+            | MMapPath::Path
+            | MMapPath::MemFd
+            | MMapPath::Shm => false,
+            MMapPath::Heap
+            | MMapPath::Stack
+            | MMapPath::TStack(_)
+            | MMapPath::Vdso
+            | MMapPath::Vvar
+            | MMapPath::Vsyscall
+            | MMapPath::Rollup
+            | MMapPath::Other => true,
         };
         if saved_area.address.end == current_area.address.end || is_special_section {
             Ok(Ordering::Equal)
         } else if saved_area.address.end > current_area.address.end {
             trace!(Restore, "realloc eq: saved ends after current");
+            // the rest of a file mapping continues further into the file
+            saved_area.offset += current_area.address.end - saved_area.address.start;
             saved_area.address.start = current_area.address.end;
             Ok(Ordering::Greater)
         } else if saved_area.address.end < current_area.address.end {
             trace!(Restore, "realloc eq: saved ends before current");
+            current_area.offset += saved_area.address.end - current_area.address.start;
             current_area.address.start = saved_area.address.end;
             Ok(Ordering::Less)
         } else {
