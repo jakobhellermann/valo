@@ -26,6 +26,8 @@ pub fn init() -> Result<()> {
         ))
     })?;
 
+    point_latest_symlink(&home);
+
     HOME.set(home).expect("home initialized twice");
 
     Ok(())
@@ -33,6 +35,23 @@ pub fn init() -> Result<()> {
 
 pub fn get() -> &'static Path {
     HOME.get().expect("home used before init")
+}
+
+/// Try to point `/tmp/valo-latest` at this run's home
+fn point_latest_symlink(home: &Path) {
+    let temp_dir = std::env::temp_dir();
+    let temp = temp_dir.join(format!("valo-latest.new-{}", std::process::id()));
+    let latest = temp_dir.join("valo-latest");
+    let Ok(target) = std::path::absolute(home) else {
+        return;
+    };
+    // Atomically swap. Last one wins.
+    if std::os::unix::fs::symlink(&target, &temp).is_ok()
+        && std::fs::rename(&temp, &latest).is_err()
+    {
+        // rename failed, clean up symlink
+        let _ = std::fs::remove_file(&temp);
+    }
 }
 
 pub fn open() -> Result<Dir, std::io::Error> {
