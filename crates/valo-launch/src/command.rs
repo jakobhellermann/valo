@@ -1,3 +1,4 @@
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
 
@@ -43,6 +44,19 @@ pub fn configure_target(cmd: &mut Command, gpu: bool) -> Result<()> {
 
     // Everything the target writes lands under one per-run home.
     cmd.env("VALO_HOME", paths::valo_home());
+
+    // Inherit the home lock fd
+    if let Some(fd) = paths::lock_fd() {
+        // SAFETY: after fork only fcntl is called
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
 
     // https://github.com/clementgallet/libTAS/blob/32245db8e35ab8f2389bdb781e81ab5e5b92c4db/src/program/GameThread.cpp#L96-L102
     // Prevent glibc from initializing rseq for each thread. TODO: implement rseq properly

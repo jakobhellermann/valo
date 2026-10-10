@@ -1,6 +1,6 @@
 //! Home of all runtime files.
 
-use std::fs::Dir;
+use std::fs::{Dir, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -25,6 +25,10 @@ pub fn init() -> Result<()> {
             home.display()
         ))
     })?;
+
+    if valo_home().is_none() {
+        lock(&home)?;
+    }
 
     point_latest_symlink(&home);
 
@@ -56,4 +60,16 @@ fn point_latest_symlink(home: &Path) {
 
 pub fn open() -> Result<Dir, std::io::Error> {
     Dir::open(get())
+}
+
+/// Mark as owned until this process exits to prevent cleanup.
+fn lock(home: &Path) -> Result<()> {
+    let file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(home.join("lock"))?;
+    file.try_lock()?;
+    std::mem::forget(file);
+    Ok(())
 }
