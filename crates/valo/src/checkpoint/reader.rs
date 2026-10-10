@@ -487,8 +487,15 @@ fn reallocate_area(
     mut current_area: Option<&mut MemoryMap>,
 ) -> Result<Ordering> {
     let current_eq_saved = |saved_area: &mut MemoryMap, current_area: &mut MemoryMap| {
-        // not the same area, unmap
-        if saved_area.pathname != current_area.pathname || saved_area.perms != current_area.perms {
+        // Not the same area, unmap. A file mapping is only the same if it maps the
+        // same file: the rewound timeline may have mapped another file with the
+        // same name at the same address (e.g. a fresh memfd).
+        let other_file = is_file_backed(&saved_area.path_kind)
+            && (saved_area.dev != current_area.dev || saved_area.inode != current_area.inode);
+        if saved_area.pathname != current_area.pathname
+            || saved_area.perms != current_area.perms
+            || other_file
+        {
             trace!(Restore, "realloc: unmapping {}", current_area);
             current_area.unmap()?;
             return Ok(Ordering::Greater);
@@ -558,10 +565,7 @@ fn reallocate_area(
         // inode (the file may have been deleted since the checkpoint; the
         // fd keepalives count), then open the path (libTAS does the same
         // for its area reallocation).
-        let file_backed = matches!(
-            saved_area.path_kind,
-            MMapPath::Path | MMapPath::MemFd | MMapPath::Shm
-        );
+        let file_backed = is_file_backed(&saved_area.path_kind);
         let file_fd: Option<OwnedFd> = if file_backed {
             // Already logged; file pages will read as zeros.
             reopen_file_area(frozen, saved_area).ok()
@@ -640,6 +644,10 @@ fn reallocate_area(
     }
 
     unreachable!()
+}
+
+fn is_file_backed(path_kind: &MMapPath) -> bool {
+    matches!(path_kind, MMapPath::Path | MMapPath::MemFd | MMapPath::Shm)
 }
 
 /// Re-open the file backing a saved file mapping whose area no longer
