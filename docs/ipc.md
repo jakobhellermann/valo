@@ -194,6 +194,17 @@ rendezvous algorithm handles this: the next peer fails `connect()` with
 `ECONNREFUSED`, unlinks, then `bind()`s. The lib's init also rebinds the
 path for its listener after the rendezvous consumed it.
 
+## File offsets across restores
+
+`valo_restore` rewinds the guest's file offsets to the checkpoint state
+(fd_sync). A file *description* shared with another process — most notably an
+inherited stdout both redirect into the same log file — is rewound for that
+process too: every byte it wrote between checkpoint and restore is silently
+overwritten from the rewound offset, and there is no way for the lib to
+detect the sharing. Drivers that log alongside their target should give it
+piped stdio and relay the output themselves; `O_APPEND` redirection also
+writes position-independently.
+
 ## Crates
 
 - `crates/valo-ipc/` — wire format, message and config types, framing,
