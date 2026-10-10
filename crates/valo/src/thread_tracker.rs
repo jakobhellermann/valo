@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU64, AtomicUsize,
 use libc::{pid_t, pthread_t};
 
 use crate::abort;
+use crate::global_state::GlobalState;
 
 pub(crate) const MAX_THREADS: usize = 256;
 
@@ -17,6 +18,11 @@ pub(crate) struct ThreadId(u64);
 
 impl ThreadId {
     pub(crate) const UNUSED: Self = Self(0);
+
+    /// The numeric id; stable across restores and never reused.
+    pub(crate) fn raw(self) -> u64 {
+        self.0
+    }
 }
 
 #[repr(u8)]
@@ -30,7 +36,7 @@ enum Phase {
 }
 
 #[repr(u8)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ParkState {
     /// Not part of a suspension; the handler ignores foreign signals.
     Running = 0,
@@ -38,13 +44,44 @@ pub(crate) enum ParkState {
     Signaled = 1,
     /// Parked at the deterministic stack position.
     Parked = 2,
+    /// Marked for termination by restore; the handler raw-exits the thread.
+    Terminated = 3,
+}
+
+impl TryFrom<u8> for ParkState {
+    type Error = u8;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Running),
+            1 => Ok(Self::Signaled),
+            2 => Ok(Self::Parked),
+            3 => Ok(Self::Terminated),
+            other => Err(other),
+        }
+    }
+}
+
+impl TryFrom<u8> for Phase {
+    type Error = u8;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Free),
+            1 => Ok(Self::Starting),
+            2 => Ok(Self::Running),
+            3 => Ok(Self::Exited),
+            other => Err(other),
+        }
+    }
 }
 
 pub(crate) struct ThreadSlot {
     phase: AtomicU8, // Phase
     id: AtomicU64,
-    pthread: AtomicUsize,
-    tid: AtomicI32,
+    /// glibc thread descriptor pointer (pthread_t == struct pthread base).
+    pub(crate) pthread: AtomicUsize,
+    pub(crate) tid: AtomicI32,
     detached: AtomicBool,
     /// Stores `ParkState`: the suspend gate; the handler only parks threads
     /// signaled by suspend_others. `ParkState::Running == 0` matches the
@@ -52,6 +89,10 @@ pub(crate) struct ThreadSlot {
     park: AtomicU8,
     pub(crate) park_address: AtomicUsize,
     pub(crate) stack_low: AtomicUsize,
+    /// Kernel exit futex for this pthread, captured before checkpoint.
+    pub(crate) clear_child_tid: AtomicUsize,
+    /// FS base of the thread, captured at its checkpoint suspension
+    pub(crate) fs_base: AtomicUsize,
 }
 
 impl ThreadSlot {
@@ -65,7 +106,25 @@ impl ThreadSlot {
             park: AtomicU8::new(ParkState::Running as u8),
             park_address: AtomicUsize::new(0),
             stack_low: AtomicUsize::new(0),
+            clear_child_tid: AtomicUsize::new(0),
+            fs_base: AtomicUsize::new(0),
         }
+    }
+
+    /// Current park state of the slot.
+    pub(crate) fn park_state(&self) -> ParkState {
+        match ParkState::try_from(self.park.load(Ordering::SeqCst)) {
+            Ok(state) => state,
+            Err(_) => {
+                abort!("thread slot park state corrupted");
+            }
+        }
+    }
+
+    /// The occupant's stable logical id; constant while the slot is
+    /// occupied and never reused after the slot is cleared.
+    pub(crate) fn thread_id(&self) -> ThreadId {
+        ThreadId(self.id.load(Ordering::Relaxed))
     }
 
     /// CAS transition of the park state; argument order follows libTAS
@@ -77,20 +136,23 @@ impl ThreadSlot {
     }
 
     fn phase(&self) -> Phase {
-        match self.phase.load(Ordering::Acquire) {
-            bits if bits == Phase::Free as u8 => Phase::Free,
-            bits if bits == Phase::Starting as u8 => Phase::Starting,
-            bits if bits == Phase::Running as u8 => Phase::Running,
-            bits if bits == Phase::Exited as u8 => Phase::Exited,
-            _ => {
+        match Phase::try_from(self.phase.load(Ordering::Acquire)) {
+            Ok(phase) => phase,
+            Err(_) => {
                 abort!("thread slot phase corrupted");
             }
         }
     }
 
+    /// Retire a slot whose thread died without running the exit hooks.
+    pub(crate) fn retire(&self) {
+        self.phase.store(Phase::Exited as u8, Ordering::Release);
+    }
+
     fn clear(&self) {
         self.pthread.store(0, Ordering::Relaxed);
         self.tid.store(0, Ordering::Relaxed);
+        self.clear_child_tid.store(0, Ordering::Relaxed);
         self.id.store(0, Ordering::Relaxed);
         self.phase.store(Phase::Free as u8, Ordering::Release);
     }
@@ -98,7 +160,6 @@ impl ThreadSlot {
 
 struct ThreadTable {
     slots: [ThreadSlot; MAX_THREADS],
-    next_id: AtomicU64,
     lifecycle_lock: AtomicBool,
 }
 
@@ -106,7 +167,6 @@ impl ThreadTable {
     const fn new() -> Self {
         Self {
             slots: [const { ThreadSlot::new() }; MAX_THREADS],
-            next_id: AtomicU64::new(1),
             lifecycle_lock: AtomicBool::new(false),
         }
     }
@@ -129,7 +189,13 @@ impl ThreadTable {
             {
                 continue;
             }
-            let id = ThreadId(self.next_id.fetch_add(1, Ordering::Relaxed));
+            // SAFETY: reserved is initialized before the pthread hook can
+            // spawn tracked threads.
+            let id = ThreadId(
+                GlobalState::reserved_shared()
+                    .next_thread_id
+                    .fetch_add(1, Ordering::Relaxed),
+            );
             slot.id.store(id.0, Ordering::Relaxed);
             slot.detached.store(detached, Ordering::Relaxed);
             return Some(id);
@@ -295,10 +361,7 @@ fn lifecycle<R>(f: impl FnOnce(&ThreadTable) -> R) -> R {
 pub(crate) fn init_main() {
     lifecycle(|table| {
         let id = table.reserve(false).expect("main thread registry slot");
-        // SAFETY: pthread_self and gettid read the calling thread's identity.
-        let pthread = unsafe { libc::pthread_self() };
-        // SAFETY: SYS_gettid has no pointer arguments or other preconditions.
-        let tid = unsafe { libc::syscall(libc::SYS_gettid) as pid_t };
+        let (pthread, tid) = crate::sys::current_thread_ids();
         table.start(id, pthread, tid);
         CURRENT_ID.with(|current| current.set(Some(id)));
     });
@@ -340,10 +403,7 @@ pub(crate) fn start(id: ThreadId) {
         let slot = table.slot_of(id).expect("starting untracked thread");
         // Prepare suspension before the table exposes this thread as running.
         crate::checkpoint::threads::prepare_thread_for_suspend(slot);
-        // SAFETY: pthread_self reads the calling thread's identity.
-        let pthread = unsafe { libc::pthread_self() };
-        // SAFETY: SYS_gettid has no pointer arguments or other preconditions.
-        let tid = unsafe { libc::syscall(libc::SYS_gettid) as pid_t };
+        let (pthread, tid) = crate::sys::current_thread_ids();
         table.start(id, pthread, tid);
     });
     crate::debug!(Hooks, "pthread start id={}", id.0);

@@ -12,6 +12,7 @@ use crate::log::structured;
 use crate::procfs::maps::{
     MMapPath, MemoryMap, MemoryMapPermissions, PageFlags, PageIndex, ProcMaps, ProcPagemap,
 };
+use crate::token::Frozen;
 use crate::utils::{PAGE_SIZE, SignalSafeFormat, StackBufReader, align_page_down, align_page_up};
 use crate::{debug, error, info, trace, warn};
 
@@ -97,7 +98,7 @@ impl SnapshotReader {
     }
 }
 
-pub fn read_all_areas(reader: &mut SnapshotReader) -> Result<()> {
+pub fn read_all_areas(frozen: &Frozen, reader: &mut SnapshotReader) -> Result<()> {
     debug!(Restore, "Restoring {} areas", reader.header.area_count);
 
     let mut maps = ProcMaps::new_self_copy()?;
@@ -149,7 +150,7 @@ pub fn read_all_areas(reader: &mut SnapshotReader) -> Result<()> {
         }
 
         structured::events::restore_area(&area, false);
-        read_area(&area, &meta, reader, &mut page_map)?;
+        read_area(frozen, &area, &meta, reader, &mut page_map)?;
         structured::events::restore_area_done(&area);
     }
     debug!(Restore, "finished reading areas");
@@ -191,6 +192,7 @@ struct Stats {
 }
 
 fn read_area(
+    frozen: &Frozen,
     saved_area: &MemoryMap,
     meta: &AreaMeta,
     reader: &mut SnapshotReader,
@@ -228,7 +230,7 @@ fn read_area(
             false => reader.read_pageflag()?,
         };
         if flag != PageFlag::Full {
-            page_loads.flush(&mut reader.snapshot_page_data)?;
+            page_loads.flush(frozen, &mut reader.snapshot_page_data)?;
         }
 
         let page_present = current_pageflag.contains(PageFlags::PRESENT);
@@ -390,13 +392,13 @@ fn read_area(
         // todo: base page
 
         stats.full += 1;
-        page_loads.push(&mut reader.snapshot_page_data, addr)?;
+        page_loads.push(frozen, &mut reader.snapshot_page_data, addr)?;
 
         Ok(())
     };
 
     current_pagemap.for_each_page(saved_area.pages(), &mut read_area_page)?;
-    page_loads.flush(&mut reader.snapshot_page_data)?;
+    page_loads.flush(frozen, &mut reader.snapshot_page_data)?;
 
     if !saved_area.perms.contains(MemoryMapPermissions::WRITE)
         || !saved_area.perms.contains(MemoryMapPermissions::READ)
@@ -426,12 +428,12 @@ struct PageLoadQueue {
 }
 
 impl PageLoadQueue {
-    fn push(&mut self, file: &mut File, addr: *mut u8) -> Result<()> {
+    fn push(&mut self, frozen: &Frozen, file: &mut File, addr: *mut u8) -> Result<()> {
         const MAX_PAGES: usize = 256;
         if self.pages > 0
             && (addr != self.start.wrapping_add(self.pages * PAGE_SIZE) || self.pages == MAX_PAGES)
         {
-            self.flush(file)?;
+            self.flush(frozen, file)?;
         }
         if self.pages == 0 {
             self.start = addr;
@@ -440,12 +442,12 @@ impl PageLoadQueue {
         Ok(())
     }
 
-    fn flush(&mut self, file: &mut File) -> Result<()> {
+    fn flush(&mut self, _frozen: &Frozen, file: &mut File) -> Result<()> {
         if self.pages == 0 {
             return Ok(());
         }
         // SAFETY: each queued Full page is mapped and writable when pushed. The queue
-        // contains consecutive pages, and other guest threads are suspended.
+        // contains consecutive pages, and Frozen guarantees other guest threads are suspended.
         let dst = unsafe { std::slice::from_raw_parts_mut(self.start, self.pages * PAGE_SIZE) };
         file.read_exact(dst)?;
         self.pages = 0;

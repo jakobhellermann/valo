@@ -45,7 +45,10 @@ pub(crate) mod structured {
         pub fn trace_step(_event: &'static str) {}
         pub fn reallocate_areas_begin() {}
         pub fn reallocate_areas_end() {}
-        pub fn log_fd_list(_event: &'static str) -> crate::Result<()> {
+        pub fn log_fd_list(
+            _frozen: &crate::token::Frozen,
+            _event: &'static str,
+        ) -> crate::Result<()> {
             Ok(())
         }
     }

@@ -7,6 +7,7 @@ use crate::Result;
 use crate::checkpoint::{PageFlag, SnapshotSlot};
 use crate::procfs::fds::{OpenFd, ProcFds};
 use crate::procfs::maps::{self, MemoryMap, PageFlags, ProcPagemap};
+use crate::token::Frozen;
 use crate::utils::TrackRun;
 
 use super::{EventWriter, structured_write, write_field};
@@ -189,9 +190,9 @@ pub fn fd(event: &'static str, entry: &OpenFd) {
     });
 }
 
-pub fn log_fd_list(event: &'static str) -> Result<()> {
+pub fn log_fd_list(frozen: &Frozen, event: &'static str) -> Result<()> {
     let mut fds = ProcFds::new_self()?;
-    while let Some(entry) = fds.next()? {
+    while let Some(entry) = fds.next(frozen)? {
         fd(event, &entry);
     }
     Ok(())

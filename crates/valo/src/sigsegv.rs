@@ -1,8 +1,6 @@
 //! SIGSEGV diagnostic handler
 //! Logs the original signal and restores the default SIGSEGV action.
 
-use std::mem::MaybeUninit;
-
 use libc::{REG_RIP, SA_ONSTACK, SA_RESETHAND, SA_SIGINFO, siginfo_t, ucontext_t};
 
 use crate::error;
@@ -29,17 +27,12 @@ pub unsafe extern "C" fn sigsegv_handler(
 }
 
 pub fn install() -> crate::Result<()> {
-    let mut sa = MaybeUninit::<libc::sigaction>::zeroed();
-    // SAFETY: no preconditions
-    unsafe { libc::sigfillset(&raw mut (*sa.as_mut_ptr()).sa_mask) };
-    // SAFETY: initialized
-    let mut sa = unsafe { sa.assume_init() };
-    sa.sa_flags = SA_ONSTACK | SA_SIGINFO | SA_RESETHAND;
-    sa.sa_sigaction = sigsegv_handler as *const () as usize;
-    // SAFETY: correct sigaction usage
-    let ret = unsafe { libc::sigaction(libc::SIGSEGV, &sa, std::ptr::null_mut()) };
-    if ret != 0 {
-        return Err(std::io::Error::from_raw_os_error(ret));
-    }
-    Ok(())
+    // Block SIGSEGV in the handler too: after logging we raise it and want
+    // the pending delivery to hit the reset default action on return.
+    crate::sys::register_signal_handler(
+        libc::SIGSEGV,
+        sigsegv_handler,
+        SA_ONSTACK | SA_SIGINFO | SA_RESETHAND,
+        false,
+    )
 }

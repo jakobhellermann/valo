@@ -12,13 +12,6 @@ pub(crate) use stackio::StackBufReader;
 #[allow(unused_imports)]
 pub(crate) use track_run::TrackRun;
 
-#[repr(transparent)]
-pub struct UnsafeSendSync<T>(pub T);
-// SAFETY: user has to make sure the inner value can be send/sync
-unsafe impl<T> Send for UnsafeSendSync<T> {}
-// SAFETY: user has to make sure the inner value can be send/sync
-unsafe impl<T> Sync for UnsafeSendSync<T> {}
-
 pub const PAGE_SIZE: usize = 4096;
 
 /// Round down to the start of the containing page.

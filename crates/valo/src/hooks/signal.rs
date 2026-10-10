@@ -140,7 +140,7 @@ override_sym!(sigaltstack(
         // SAFETY: sigaltstack's contract guarantees `ss` points to an
         // initialized stack_t.
         let stack = unsafe { &*ss };
-        info!("Setting altstack to {ss:p} with size {}", stack.ss_size);
+        trace!("Setting altstack to {ss:p} with size {}", stack.ss_size);
     }
 
     let ret = real(ss, old_ss);
