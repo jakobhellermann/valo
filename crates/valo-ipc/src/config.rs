@@ -92,6 +92,19 @@ pub struct InputConfig {
     pub uncontrolled_input: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RandomnessConfig {
+    pub uncontrolled_randomness: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeterminismConfig {
+    pub time: TimeConfig,
+    pub randomness: RandomnessConfig,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -100,7 +113,7 @@ pub struct Config {
     /// GPU checkpoint orchestration. Must match what the client set up for
     /// the target (kumquat host, renderer selection).
     pub use_gpu: bool,
-    pub time: TimeConfig,
+    pub determinism: DeterminismConfig,
     /// Which frames to skip/draw
     pub skip_draw: SkipDrawMode,
     pub input: InputConfig,
