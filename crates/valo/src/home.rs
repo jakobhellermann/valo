@@ -26,6 +26,10 @@ pub fn init() -> Result<()> {
         ))
     })?;
 
+    if valo_home().is_none() {
+        lock(&home)?;
+    }
+
     point_latest_symlink(&home);
 
     HOME.set(home).expect("home initialized twice");
@@ -56,4 +60,18 @@ fn point_latest_symlink(home: &Path) {
 
 pub fn open() -> Result<Dir, std::io::Error> {
     Dir::open(get())
+}
+
+/// Mark the home as owned until this process exits,
+/// in order to prevent cleanup sweeps.
+fn lock(home: &Path) -> Result<()> {
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(home.join("lock"))?;
+    file.try_lock()?;
+    // Hold the lock until process exit; the fd must not close earlier.
+    std::mem::forget(file);
+    Ok(())
 }

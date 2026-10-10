@@ -1,5 +1,6 @@
 pub mod gpu_session;
 
+pub mod cleanup;
 pub mod command;
 pub mod paths;
 

@@ -246,6 +246,7 @@ fn run(
             let _ = child.wait();
         }
         let _ = std::fs::remove_file(sock_path);
+        remove_savestates(&mut child);
 
         return Ok(ExitCode::from(125));
     }
@@ -263,8 +264,10 @@ fn run(
         .transpose()?
         .unwrap_or(false);
     if host_died && status.success() {
+        remove_savestates(&mut child);
         return Ok(ExitCode::from(125));
     }
+    remove_savestates(&mut child);
 
     if let Some(code) = status.code() {
         Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))
@@ -449,7 +452,7 @@ fn establish_or_child_exit(sock: &Path, child: &mut Child) -> Result<Option<Clie
 /// Wait for the child to exit. If it doesn't exit within a short grace
 /// period, SIGKILL it — covers the case where a failed restore left the
 /// child deadlocked and `wait()` would otherwise block forever.
-fn wait_or_kill(child: &mut std::process::Child) -> Result<std::process::ExitStatus> {
+fn wait_or_kill(child: &mut Child) -> Result<std::process::ExitStatus> {
     use std::time::Duration;
     let grace = Duration::from_millis(500);
     let poll = Duration::from_millis(50);
@@ -466,6 +469,13 @@ fn wait_or_kill(child: &mut std::process::Child) -> Result<std::process::ExitSta
                 std::thread::sleep(poll);
             }
         }
+    }
+}
+
+/// Remove the run's savestate data when the target ist gone
+fn remove_savestates(child: &mut Child) {
+    if child.try_wait().is_ok_and(|s| s.is_some()) {
+        valo_launch::cleanup::remove_savestate_data();
     }
 }
 

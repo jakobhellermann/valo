@@ -170,7 +170,6 @@ impl Drop for GpuSession {
     fn drop(&mut self) {
         let _ = self.host.kill();
         let _ = self.host.wait();
-        // Keep the snapshot and log when a run fails so the cause is inspectable.
     }
 }
 
