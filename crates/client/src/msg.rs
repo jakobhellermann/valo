@@ -60,7 +60,7 @@ pub fn spawn(
     let Some(program) = target.first() else {
         bail!("missing program");
     };
-    let lib = crate::resolve_lib(lib)?;
+    let lib = valo_launch::resolve_lib(lib)?;
     let lib = std::fs::canonicalize(&lib)
         .with_context(|| format!("canonicalize libvalo.so path {}", lib.display()))?;
 
