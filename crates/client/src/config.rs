@@ -1,7 +1,8 @@
 // TODO(ai-review): generated, not yet audited
 use clap::{Args, ValueEnum};
 use valo_ipc::config::{
-    Config, FrameConfig, InputConfig, LogConfig, LogLevel, SkipDrawMode, TimeConfig,
+    Config, DeterminismConfig, FrameConfig, InputConfig, LogConfig, LogLevel, RandomnessConfig,
+    SkipDrawMode, TimeConfig,
 };
 
 #[derive(Args)]
@@ -33,6 +34,10 @@ pub(crate) struct ConfigArgs {
     /// Don't force deterministic time
     #[arg(long, help_heading = "Runtime")]
     pub uncontrolled_time: bool,
+
+    /// Don't force deterministic randomness sources
+    #[arg(long, help_heading = "Runtime")]
+    pub uncontrolled_randomness: bool,
 
     #[arg(long, help_heading = "Runtime")]
     pub uncontrolled_input: bool,
@@ -71,9 +76,14 @@ impl ConfigArgs {
                 level: self.log_level.map_or(LogLevel::Trace, Into::into),
             },
             use_gpu: !self.software_rendering,
-            time: TimeConfig {
-                uncontrolled_time: self.uncontrolled_time,
-                ..TimeConfig::default()
+            determinism: DeterminismConfig {
+                time: TimeConfig {
+                    uncontrolled_time: self.uncontrolled_time || self.uncontrolled,
+                    ..TimeConfig::default()
+                },
+                randomness: RandomnessConfig {
+                    uncontrolled_randomness: self.uncontrolled_randomness || self.uncontrolled,
+                },
             },
             skip_draw: SkipDrawMode::Off,
             input: InputConfig {
