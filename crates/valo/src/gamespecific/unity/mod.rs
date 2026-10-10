@@ -2,14 +2,27 @@
 //! Unity 6 player internals: preload queue, async reads and the job system.
 
 use std::ffi::{CStr, c_int, c_uint, c_void};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use valo_ipc::config::ResolvedModule;
 use valo_ipc::gamespecific::unity as sym;
 
+use crate::determinism::time;
 use crate::global_state::GlobalState;
+use crate::thread_tracker;
 
 mod preload;
+
+/// Offset of the count in a `baselib::UnityClassic::CappedSemaphore`.
+const SEMAPHORE_COUNT_OFFSET: usize = 0x40;
+/// `TryTimedAcquire`'s timeout, a constant in this build (`add $0xf4240` to the RAW start time).
+const TRY_TIMED_ACQUIRE_TIMEOUT_NS: u64 = 1_000_000;
+
+std::thread_local! {
+    /// Nesting depth of PreloadManager::WaitForAllAsyncOperationsToComplete on
+    /// the calling thread; integrating an operation can wait for all again.
+    static IN_WAIT_FOR_ALL: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
 use crate::{Result, debug, info, trace};
 
 detour::static_detour! {
@@ -18,6 +31,9 @@ detour::static_detour! {
     static UpdatePreloadingSingleStep: unsafe extern "C" fn(*mut c_void, c_int, c_int) -> u64;
     static PreloadRun: unsafe extern "C" fn(*mut c_void) -> u64;
     static WaitForAll: unsafe extern "C" fn(*mut c_void);
+    // the duration parameter of the mangled name is folded into the function in this
+    // build; the registers are forwarded as they come
+    static TryTimedAcquire: unsafe extern "C" fn(*mut c_void, u64, u64) -> u64;
     static AsyncReadRequest: unsafe extern "C" fn(*mut c_void, *mut c_void);
     static SyncReadRequest: unsafe extern "C" fn(*mut c_void);
     static JobSchedule: unsafe extern "C" fn(*mut c_void, u64, c_uint) -> u64;
@@ -150,7 +166,9 @@ pub(crate) fn install(modules: &[ResolvedModule]) -> Result<()> {
                         "PreloadManager::WaitForAllAsyncOperationsToComplete",
                         format_args!("begin"),
                     );
+                    IN_WAIT_FOR_ALL.set(IN_WAIT_FOR_ALL.get() + 1);
                     WaitForAll.call(this);
+                    IN_WAIT_FOR_ALL.set(IN_WAIT_FOR_ALL.get() - 1);
                     log_call(
                         "PreloadManager::WaitForAllAsyncOperationsToComplete",
                         format_args!("end"),
@@ -162,6 +180,33 @@ pub(crate) fn install(modules: &[ResolvedModule]) -> Result<()> {
                     log_call("SyncReadRequest", format_args!("command={command:p}"));
                     SyncReadRequest.call(command)
                 })?
+                .enable()?;
+            TryTimedAcquire
+                .initialize(
+                    function(addr(sym::SEMAPHORE_TRY_TIMED_ACQUIRE)),
+                    |this, unused_a, unused_b| {
+                        if IN_WAIT_FOR_ALL.get() == 0 || !thread_tracker::is_main() {
+                            return TryTimedAcquire.call(this, unused_a, unused_b);
+                        }
+                        // once the preload thread is done, nobody else signals: the
+                        // acquire succeeds at once or times out, never depending on its speed
+                        preload::wait_until_idle();
+                        // `this` is a live CappedSemaphore; its count sits at
+                        // SEMAPHORE_COUNT_OFFSET (the fast path's `lock xadd` in this build)
+                        let count = &*this.byte_add(SEMAPHORE_COUNT_OFFSET).cast::<AtomicI32>();
+                        if count.load(Ordering::SeqCst) > 0 {
+                            return TryTimedAcquire.call(this, unused_a, unused_b);
+                        }
+                        // the original would wait for its timeout against the virtual clock,
+                        // which stands still within a frame: time it out here instead
+                        log_call(
+                            "CappedSemaphore::TryTimedAcquire",
+                            format_args!("timed out"),
+                        );
+                        time::CLOCK.sleep(TRY_TIMED_ACQUIRE_TIMEOUT_NS);
+                        0
+                    },
+                )?
                 .enable()?;
             AsyncReadRequest
                 .initialize(function(addr(sym::ASYNC_READ_REQUEST)), |_this, command| {
