@@ -130,7 +130,14 @@ pub(crate) fn connect_stream(path: &Path, timeout: Duration) -> Result<UnixStrea
     loop {
         match UnixStream::connect(path) {
             Ok(stream) => return Ok(stream),
-            Err(e) if e.kind() == ErrorKind::NotFound && Instant::now() < deadline => {
+            Err(e)
+                if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused)
+                    && Instant::now() < deadline =>
+            {
+                // NotFound: the lib has not bound the path yet.
+                // ConnectionRefused: a stale socket file from the init
+                // rendezvous, which the lib rebinds during its init — both
+                // are transient.
                 thread::sleep(delay);
                 delay = (delay * 2).min(Duration::from_millis(100));
             }
