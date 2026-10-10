@@ -79,6 +79,7 @@ impl ConfigArgs {
             input: InputConfig {
                 uncontrolled_input: self.uncontrolled_input || self.uncontrolled,
             },
+            resolved_modules: Vec::new(),
         }
     }
 }

@@ -13,6 +13,7 @@ mod checkpoint;
 mod debug;
 mod determinism;
 mod frame;
+mod gamespecific;
 mod glibc;
 mod global_state;
 mod home;
