@@ -9,6 +9,7 @@ pub const PRELOAD_UPDATE_SINGLE_STEP: &str =
     "_ZN14PreloadManager26UpdatePreloadingSingleStepENS_21UpdatePreloadingFlagsEi";
 pub const PRELOAD_RUN: &str = "_ZN14PreloadManager3RunEPv";
 pub const PRELOAD_WAIT_FOR_ALL: &str = "_ZN14PreloadManager35WaitForAllAsyncOperationsToCompleteEv";
+pub const SEMAPHORE_TRY_TIMED_ACQUIRE: &str = "_ZN7baselib12UnityClassic15CappedSemaphore15TryTimedAcquireENSt6chrono8durationIjSt5ratioILl1ELl1000EEEEj";
 pub const ASYNC_READ_REQUEST: &str = "_ZN24AsyncReadManagerThreaded7RequestEP16AsyncReadCommand";
 pub const SYNC_READ_REQUEST: &str = "_Z15SyncReadRequestP16AsyncReadCommand";
 pub const JOB_SCHEDULE: &str = "_ZL26ujob_schedule_job_internalP14ujob_control_t13ujob_handle_tj";
@@ -44,6 +45,7 @@ pub const SYMBOLS: &[&str] = &[
     PRELOAD_UPDATE_SINGLE_STEP,
     PRELOAD_RUN,
     PRELOAD_WAIT_FOR_ALL,
+    SEMAPHORE_TRY_TIMED_ACQUIRE,
     ASYNC_READ_REQUEST,
     SYNC_READ_REQUEST,
     JOB_SCHEDULE,

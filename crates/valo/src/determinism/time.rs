@@ -142,6 +142,15 @@ pub(crate) fn advance_frame() {
     TICKS_NS.fetch_add(add + carry, Ordering::Relaxed);
 }
 
+/// A timed wait of the main thread ran out after `ns`: the clock advances by
+/// it, so a loop waiting for a deadline ends after a fixed number of waits.
+// TODO: repay against the next boundaries to keep the frame grid unshifted
+pub(crate) fn add_timed_wait(ns: u64) {
+    if deterministic() {
+        TICKS_NS.fetch_add(ns, Ordering::Relaxed);
+    }
+}
+
 /// Interposed `clock_gettime`: `Some(rv)` when the read was served
 /// virtually, `None` to fall through to the real call.
 pub(crate) fn clock_gettime(clock_id: libc::clockid_t, tp: *mut libc::timespec) -> Option<c_int> {
