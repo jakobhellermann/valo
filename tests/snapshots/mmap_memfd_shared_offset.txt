@@ -1,0 +1,4 @@
+pass 0
+wrote 31 through mapping, fd offset 0 reads 31
+pass 1
+wrote 32 through mapping, fd offset 0 reads 32
