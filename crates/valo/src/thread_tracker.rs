@@ -3,12 +3,14 @@
 //! process memory.
 
 use std::cell::Cell;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{
+    AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering,
+};
 
 use libc::{pid_t, pthread_t};
 
-use crate::abort;
 use crate::global_state::GlobalState;
+use crate::{abort, info};
 
 pub(crate) const MAX_THREADS: usize = 256;
 
@@ -325,6 +327,10 @@ thread_local! {
 
 static READY: AtomicBool = AtomicBool::new(false);
 
+// Initial thread, then the one that performed the last frame boundary
+static MAIN_ID: AtomicU64 = AtomicU64::new(0);
+static MAIN_TID: AtomicU32 = AtomicU32::new(0);
+
 pub(crate) fn current_id() -> ThreadId {
     CURRENT_ID
         .with(Cell::get)
@@ -364,8 +370,25 @@ pub(crate) fn init_main() {
         let (pthread, tid) = crate::sys::current_thread_ids();
         table.start(id, pthread, tid);
         CURRENT_ID.with(|current| current.set(Some(id)));
+        MAIN_ID.store(id.0, Ordering::Relaxed);
+        MAIN_TID.store(tid as u32, Ordering::Relaxed);
     });
     READY.store(true, Ordering::Release);
+}
+
+/// Makes the calling thread the main thread
+pub(crate) fn claim_main() {
+    let Some(id) = CURRENT_ID.with(Cell::get) else {
+        abort!("frame boundary on a thread the registry does not track");
+    };
+    let (_, tid) = crate::sys::current_thread_ids();
+    let previous_tid = MAIN_TID.swap(tid as u32, Ordering::Relaxed);
+    if MAIN_ID.swap(id.0, Ordering::Relaxed) != id.0 {
+        info!(
+            Frame,
+            "main thread switches from tid {previous_tid} to {tid}"
+        );
+    }
 }
 
 pub(crate) fn require_ready() {
