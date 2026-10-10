@@ -71,11 +71,11 @@ impl MemoryMap {
         buf
     }
 
-    pub(crate) fn open_file(&self) -> Result<OwnedFd, rustix::io::Errno> {
-        let fd = rustix::fs::open(self.pathname.as_str(), OFlags::RDONLY, Mode::empty());
+    pub(crate) fn open_file(&self, flags: OFlags) -> Result<OwnedFd, rustix::io::Errno> {
+        let fd = rustix::fs::open(self.pathname.as_str(), flags, Mode::empty());
         fd.or_else(|_| {
             let map_file = self.map_file_path();
-            rustix::fs::open(map_file.as_str(), OFlags::RDONLY, Mode::empty())
+            rustix::fs::open(map_file.as_str(), flags, Mode::empty())
         })
     }
 
