@@ -72,13 +72,16 @@ pub fn init() -> Result<()> {
         )));
     };
     GlobalState::get().apply_config(&config);
+    // Bind the msg listener before the (possibly slow) hook installation:
+    // the rendezvous socket dies with the init client, and a `msg` connect
+    // in between would hit an unbound path.
+    let listener = bind_listener(&path)?;
     crate::gamespecific::unity::install(&config.resolved_modules)?;
 
     // The init client's next message (or closing) decides the session: a
     // command keeps the connection and enters held (gated session),
     // Detach enters free, closing enters held without a client (paused
     // session).
-    let listener = bind_listener(&path)?;
     *lock_session() = Some(Session {
         listener,
         conn: Some(conn),
