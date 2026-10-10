@@ -1,0 +1,2 @@
+worker replayed, extra alive
+worker replayed, extra alive

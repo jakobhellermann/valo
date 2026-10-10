@@ -11,6 +11,7 @@ mod alt_stack;
 mod checkpoint;
 mod debug;
 mod frame;
+mod glibc;
 mod global_state;
 mod hooks;
 mod ipc;

@@ -2,14 +2,15 @@ use std::cell::SyncUnsafeCell;
 
 use std::mem::MaybeUninit;
 use std::ops::Range;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
 use rustix::mm;
 
 use crate::Result;
 
 use crate::alt_stack::ALT_STACK_SIZE;
-use crate::token::ExclusiveCell;
+use crate::thread_tracker::MAX_THREADS;
+use crate::token::{Exclusive, ExclusiveCell};
 use crate::utils::PAGE_SIZE;
 use valo_ipc::config::Config;
 
@@ -47,6 +48,18 @@ impl GlobalState {
         unsafe { (*GLOBAL_STATE.get()).assume_init_mut() }
     }
 
+    pub fn reserved_shared() -> &'static ReservedShared {
+        &GlobalState::get().reserved.shared
+    }
+
+    pub fn parked_threads(exclusive: &mut Exclusive) -> &mut ParkedThreads {
+        &mut GlobalState::get()
+            .reserved
+            .exclusive
+            .get(exclusive)
+            .parked_threads
+    }
+
     pub fn set_restore_in_progress(&self, value: bool) {
         self.restore_in_progress.store(value, Ordering::SeqCst);
     }
@@ -67,6 +80,21 @@ impl GlobalState {
     }
 }
 
+/// Threads that parked during the current restore's suspension pass. The
+/// `suspend_others` pass records them before the memory rewind, and
+/// `recreate_missing` consumes the list inside the restore signal handler:
+/// a recorded slot is alive and resumes through the park gate instead of
+/// being cloned again. Slot indexes stay valid across the rewind because
+/// slot assignment is part of the rewound table's checkpoint state. Plain
+/// fields: writer (before the raise) and reader (restore handler) are the
+/// same thread, so program order orders the accesses.
+#[repr(C)]
+pub struct ParkedThreads {
+    /// Number of valid entries in `slots`.
+    pub count: usize,
+    pub slots: [u32; MAX_THREADS],
+}
+
 /// Memory excluded from checkpoint snapshots: only state that must survive
 /// restores unchanged lives here. Everything that rewinds with process memory
 /// (thread table, saved contexts) lives in normal statics instead.
@@ -74,12 +102,38 @@ impl GlobalState {
 pub struct ReservedMemory {
     /// In use by the restore signal handler while memory is being loaded.
     pub alt_stack: SyncUnsafeCell<[u8; ALT_STACK_SIZE]>,
+    pub shared: ReservedShared,
     pub exclusive: ExclusiveCell<ReservedExclusive>,
+}
+
+pub struct ReservedShared {
+    /// Monotonic thread id counter.
+    pub next_thread_id: AtomicU64,
+    /// Live kernel tid of the thread occupying each tracker slot, recorded
+    /// when a restore recreates a thread. A later restore rewinds the glibc
+    /// descriptor (ordinary memory) back to the dead checkpoint tid, so the
+    /// suspend pass restamps the descriptor from here before it signals or
+    /// probes through it; without the restamp, a live recreation that has
+    /// not been scheduled since the rewind looks dead and would be cloned
+    /// again.
+    pub live_tids: [LiveTidRecord; MAX_THREADS],
+}
+
+#[repr(C)]
+pub struct LiveTidRecord {
+    /// ThreadId of the occupant the tid belongs to; guards the record
+    /// against a slot reused by a later pthread.
+    pub thread_id: AtomicU64,
+    /// Kernel tid of the occupying thread.
+    pub tid: AtomicI32,
 }
 
 pub struct ReservedExclusive {
     /// Accumulates across restores and must therefore not be rewound.
     pub restore_count: u64,
+    /// Threads that parked in the current restore's suspend pass (see the
+    /// struct docs): the "is alive" list recorded before the rewind.
+    pub parked_threads: ParkedThreads,
 }
 
 impl GlobalState {
@@ -110,6 +164,8 @@ impl GlobalState {
             // which is never unmapped.
             unsafe { &*inner.cast::<ReservedMemory>() }
         };
+
+        reserved.shared.next_thread_id.store(1, Ordering::Relaxed);
 
         Ok(GlobalState {
             reserved,

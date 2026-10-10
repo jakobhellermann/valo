@@ -210,6 +210,10 @@ mod tests {
     fn streams_long_fields_without_truncation() {
         use rustix::fs::{MemfdFlags, SeekFrom, memfd_create};
 
+        // The memfd below mutates the fd table; the fds test enumerates it
+        // against a Frozen assumption, so both serialize on the same lock.
+        let _fds = crate::procfs::fds::FD_TABLE_LOCK.lock().unwrap();
+
         let memfd = memfd_create(c"valo-event-writer-test", MemfdFlags::CLOEXEC).unwrap();
         let mut w = EventWriter {
             fd: memfd.as_fd(),

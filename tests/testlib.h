@@ -3,9 +3,12 @@
 #ifndef TESTLIB_H
 #define TESTLIB_H
 
+#include <assert.h>
+#include <dirent.h>
 #include <stdarg.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 
 void valo_checkpoint();
@@ -39,6 +42,23 @@ static inline void wait_for_threads(atomic_int *started, int count) {
 // Main-thread side: let waiting threads leave the window.
 static inline void release_threads(atomic_int *phase) {
     atomic_store_explicit(phase, 1, memory_order_release);
+}
+
+// Kernel threads visible in /proc/self/task: the process's live thread
+// count. Used to assert that restore recreated or terminated threads as
+// expected.
+static inline int task_count(void) {
+    DIR *dir = opendir("/proc/self/task");
+    assert(dir != NULL);
+    int count = 0;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
+            count++;
+        }
+    }
+    closedir(dir);
+    return count;
 }
 
 #endif

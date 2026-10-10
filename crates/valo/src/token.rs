@@ -83,6 +83,20 @@ impl<T> ExclusiveCell<T> {
     }
 }
 
+/// Proof that every other thread is suspended.
+pub struct Frozen {
+    _priv: PhantomData<*mut ()>,
+}
+
+impl Frozen {
+    /// # Safety
+    /// - every other thread must be suspended, and the value must not
+    ///   outlive their suspension.
+    pub unsafe fn assume() -> Self {
+        Self { _priv: PhantomData }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

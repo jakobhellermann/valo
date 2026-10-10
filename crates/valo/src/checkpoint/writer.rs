@@ -12,6 +12,7 @@ use crate::log::structured;
 use crate::procfs::maps::{
     MMapPath, MemoryMap, MemoryMapPermissions, PageFlags, PageIndex, ProcMaps, ProcPagemap,
 };
+use crate::token::Frozen;
 use crate::utils::{PAGE_SIZE, SignalSafeFormat, align_page_down, align_page_up};
 
 use crate::{Result, debug, info, warn};
@@ -35,7 +36,11 @@ impl SnapshotWriter {
 }
 
 #[allow(clippy::undocumented_unsafe_blocks)]
-pub fn write_all_areas(writer: &mut SnapshotWriter, threads: SavedThreads) -> Result<()> {
+pub fn write_all_areas(
+    frozen: &Frozen,
+    writer: &mut SnapshotWriter,
+    threads: SavedThreads,
+) -> Result<()> {
     // TODO proc.clear_refs(ClearRefs::SoftDirty)?;
 
     let mut maps = ProcMaps::new_self_copy()?;
@@ -53,7 +58,7 @@ pub fn write_all_areas(writer: &mut SnapshotWriter, threads: SavedThreads) -> Re
     while let Some(area) = maps.next()? {
         header.area_count += 1;
 
-        write_area(writer, &area, &mut page_map)?;
+        write_area(frozen, writer, &area, &mut page_map)?;
     }
 
     writer.snapshot_meta.seek(SeekFrom::Start(header_pos))?;
@@ -143,6 +148,7 @@ fn area_fd(area: &MemoryMap) -> Option<(OwnedFd, u64, u64)> {
 }
 
 fn write_area(
+    frozen: &Frozen,
     writer: &mut SnapshotWriter,
     area: &MemoryMap,
     page_map: &mut ProcPagemap,
@@ -285,7 +291,7 @@ fn write_area(
         if !page_softdirty && false {
             todo!();
         } else {
-            page_saves.push(&mut writer.snapshot_pages, addr)?;
+            page_saves.push(frozen, &mut writer.snapshot_pages, addr)?;
 
             stats.full += 1;
             save_page_flags(&mut writer.snapshot_meta, PageFlag::Full)?;
@@ -294,7 +300,7 @@ fn write_area(
     };
 
     page_map.for_each_page(area.pages(), &mut write_area_page)?;
-    page_saves.flush(&mut writer.snapshot_pages)?;
+    page_saves.flush(frozen, &mut writer.snapshot_pages)?;
     page_flags.flush(&mut writer.snapshot_meta)?;
 
     debug!(
@@ -349,12 +355,12 @@ struct PageSaveQueue {
 }
 
 impl PageSaveQueue {
-    fn push(&mut self, file: &mut File, addr: *const u8) -> Result<()> {
+    fn push(&mut self, frozen: &Frozen, file: &mut File, addr: *const u8) -> Result<()> {
         const MAX_PAGES: usize = 256;
         if self.pages > 0
             && (addr != self.start.wrapping_add(self.pages * PAGE_SIZE) || self.pages == MAX_PAGES)
         {
-            self.flush(file)?;
+            self.flush(frozen, file)?;
         }
         if self.pages == 0 {
             self.start = addr;
@@ -363,12 +369,13 @@ impl PageSaveQueue {
         Ok(())
     }
 
-    fn flush(&mut self, file: &mut File) -> Result<()> {
+    fn flush(&mut self, _frozen: &Frozen, file: &mut File) -> Result<()> {
         if self.pages == 0 {
             return Ok(());
         }
         // SAFETY: each queued Full page is readable when pushed, the queue only
-        // contains consecutive pages, and other guest threads are suspended.
+        // contains consecutive pages, and `_frozen` proves no other
+        // thread can change the pages in between.
         let src = unsafe { std::slice::from_raw_parts(self.start, self.pages * PAGE_SIZE) };
         file.write_all(src)?;
         self.pages = 0;

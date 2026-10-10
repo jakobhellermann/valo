@@ -10,7 +10,7 @@ use std::sync::atomic::Ordering;
 
 use crate::global_state::GlobalState;
 use crate::log::structured;
-use crate::token::Exclusive;
+use crate::token::{Exclusive, Frozen};
 use crate::utils::SignalSafeFormat;
 use crate::{Result, abort, alt_stack, error, info, sys, thread_tracker, utils};
 
@@ -99,17 +99,23 @@ impl Header {
     }
 }
 
-fn snapshot_create(excl: &mut Exclusive, ucontext: &ucontext_t, slot: SnapshotSlot) -> Result<()> {
+fn snapshot_create(
+    excl: &mut Exclusive,
+    frozen: &Frozen,
+    ucontext: &ucontext_t,
+    slot: SnapshotSlot,
+) -> Result<()> {
     ucontext::save(excl, ucontext);
 
     let mut writer = writer::SnapshotWriter::new(slot)?;
-    writer::write_all_areas(&mut writer, threads::saved_threads())?;
+    writer::write_all_areas(frozen, &mut writer, threads::saved_threads())?;
 
     Ok(())
 }
 
 fn snapshot_restore(
     excl: &mut Exclusive,
+    frozen: &Frozen,
     ucontext: &mut ucontext_t,
     slot: SnapshotSlot,
 ) -> Result<()> {
@@ -137,7 +143,7 @@ fn snapshot_restore(
 
     let mem_start = monotonic_ns();
     structured::events::trace_step("restore.memory.begin");
-    reader::read_all_areas(&mut reader)?;
+    reader::read_all_areas(frozen, &mut reader)?;
     structured::events::trace_step("restore.memory.end");
     let mem_ns = monotonic_ns() - mem_start;
 
@@ -148,7 +154,7 @@ fn snapshot_restore(
     structured::events::trace_step("restore.gpu.wait.end");
 
     // Restore threads that died since the checkpoint
-    threads::recreate_missing();
+    threads::recreate_missing(excl);
 
     // Restore X11 connection state (sequence numbers, xcb connection)
     // Must happen after read_all_areas but before ucontext::restore
@@ -179,6 +185,8 @@ pub fn checkpoint_handler_inner(ucontext: *const ucontext_t) -> Result<()> {
 
     utils::assert_stack_in_range(state.alt_stack_memory());
 
+    // SAFETY: Both checkpoint and resume suspended all other threads before raising.
+    let frozen = &unsafe { Frozen::assume() };
     // SAFETY: runs inside the single checkpoint/restore session.
     let exclusive = &mut unsafe { Exclusive::assume() };
     // SAFETY: the kernel passes the live interrupted context to the handler.
@@ -188,14 +196,13 @@ pub fn checkpoint_handler_inner(ucontext: *const ucontext_t) -> Result<()> {
         info!(Checkpoint, "snapshot create begin");
         structured::events::trace_step("checkpoint.memory.begin");
         // SAFETY: same precondition
-        snapshot_create(exclusive, ucontext, slot)?;
+        snapshot_create(exclusive, frozen, ucontext, slot)?;
         structured::events::trace_step("checkpoint.memory.end");
         info!(Checkpoint, "snapshot create done");
     } else {
         info!(Restore, "snapshot restore begin");
         structured::events::trace_step("restore.apply.begin");
-        // SAFETY: same precondition
-        snapshot_restore(exclusive, ucontext, slot)?;
+        snapshot_restore(exclusive, frozen, ucontext, slot)?;
         structured::events::trace_step("restore.apply.end");
     }
 
@@ -240,11 +247,11 @@ pub fn checkpoint(slot: SnapshotSlot) -> Result<()> {
     alt_stack::prepare_altstack()?;
 
     structured::events::trace_step("checkpoint.freeze.begin");
-    threads::suspend_others(None);
+    let frozen = &threads::suspend_others(exclusive, None);
     structured::events::trace_step("checkpoint.freeze.end");
 
     structured::events::trace_step("checkpoint.fds.begin");
-    structured::events::log_fd_list("checkpoint.fds")?;
+    structured::events::log_fd_list(frozen, "checkpoint.fds")?;
     structured::events::trace_step("checkpoint.fds.end");
 
     structured::events::trace_step("checkpoint.gpu.trigger.begin");
@@ -312,12 +319,12 @@ pub fn restore(slot: SnapshotSlot) -> Result<()> {
     alt_stack::prepare_altstack()?;
 
     structured::events::trace_step("restore.freeze.begin");
-    threads::suspend_others(Some(&snapshot.header.threads));
+    let frozen = threads::suspend_others(&mut exclusive, Some(&snapshot.header.threads));
     drop(snapshot);
     structured::events::trace_step("restore.freeze.end");
 
     structured::events::trace_step("restore.fds.begin");
-    structured::events::log_fd_list("restore.fds")?;
+    structured::events::log_fd_list(&frozen, "restore.fds")?;
     structured::events::trace_step("restore.fds.end");
 
     // SAFETY: no preconditions

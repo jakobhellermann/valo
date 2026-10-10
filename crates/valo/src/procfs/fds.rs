@@ -10,6 +10,7 @@ use rustix::fs::{self, AtFlags, Mode, OFlags, SeekFrom};
 use rustix::io::{Errno, FdFlags};
 
 use crate::Result;
+use crate::token::Frozen;
 
 /// Kernel PATH_MAX: fd symlink targets cannot be longer.
 const LINK_BUF: usize = 4096;
@@ -75,8 +76,7 @@ pub struct OpenFd<'a> {
     pub size: u64,
 }
 
-/// Iterates `/proc/self/fd`. All other threads must be suspended: the
-/// descriptors are queried by number.
+/// Iterates `/proc/self/fd`.
 pub struct ProcFds {
     dir: OwnedFd,
     dirents: [MaybeUninit<u8>; DIRENT_BUF],
@@ -101,7 +101,7 @@ impl ProcFds {
         })
     }
 
-    pub fn next(&mut self) -> Result<Option<OpenFd<'_>>> {
+    pub fn next(&mut self, frozen: &Frozen) -> Result<Option<OpenFd<'_>>> {
         loop {
             if self.pos >= self.filled {
                 self.pos = 0;
@@ -147,7 +147,7 @@ impl ProcFds {
             }
             let name = CStr::from_bytes_with_nul(&name_buf[..=nul]).expect("fd name");
 
-            match self.describe(fd, name) {
+            match self.describe(frozen, fd, name) {
                 Ok(Some(entry)) => return Ok(Some(entry)),
                 Ok(None) => continue,
                 Err(e) => return Err(e),
@@ -156,7 +156,7 @@ impl ProcFds {
     }
 
     /// `Ok(None)` if the descriptor vanished since the directory read.
-    fn describe(&mut self, fd: RawFd, name: &CStr) -> Result<Option<OpenFd<'_>>> {
+    fn describe(&mut self, _frozen: &Frozen, fd: RawFd, name: &CStr) -> Result<Option<OpenFd<'_>>> {
         // SAFETY: the buffer has LINK_BUF writable bytes.
         let len = unsafe {
             libc::readlinkat(
@@ -200,8 +200,8 @@ impl ProcFds {
             Err(e) => return Err(e.into()),
         };
 
-        // SAFETY: fd was just read from /proc/self/fd and other threads are
-        // suspended (see the type docs), so the number is still open.
+        // SAFETY: fd was just read from /proc/self/fd; `_frozen` proves no
+        // other thread can close or reuse it in between.
         let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
         let fd_flags = rustix::io::fcntl_getfd(borrowed)?;
         let status_flags = fs::fcntl_getfl(borrowed)?;
@@ -231,6 +231,12 @@ fn parse_fd(name: &[u8]) -> Option<RawFd> {
     std::str::from_utf8(name).ok()?.parse().ok()
 }
 
+/// Serializes the unit tests that open or close descriptors: the fds test
+/// relies on the fd table staying untouched while it enumerates /proc/self/fd
+/// (see the Frozen assumption in its test module).
+#[cfg(test)]
+pub(crate) static FD_TABLE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -242,6 +248,10 @@ mod tests {
 
     #[test]
     fn enumerates_kinds_flags_offset_and_skips_non_fds() {
+        // Hold the fd-table lock for the whole test: opening the fixtures and
+        // enumerating /proc/self/fd must not interleave with another test
+        // closing or reusing a descriptor in between.
+        let _fds = FD_TABLE_LOCK.lock().unwrap();
         let (pipe_read, pipe_write) = rustix::pipe::pipe_with(
             rustix::pipe::PipeFlags::CLOEXEC | rustix::pipe::PipeFlags::NONBLOCK,
         )
@@ -265,8 +275,12 @@ mod tests {
         let mut offset_of = HashMap::new();
         let mut nonblock = HashMap::new();
         {
+            // SAFETY: FD_TABLE_LOCK serializes this test against every other
+            // test that opens or closes a descriptor, so no other thread can
+            // touch the fd table while it is enumerated.
+            let frozen = unsafe { crate::token::Frozen::assume() };
             let mut fds = ProcFds::new_self().unwrap();
-            while let Some(entry) = fds.next().unwrap() {
+            while let Some(entry) = fds.next(&frozen).unwrap() {
                 kinds.insert(entry.fd, entry.kind);
                 offset_of.insert(entry.fd, entry.offset);
                 nonblock.insert(entry.fd, entry.status_flags.contains(OFlags::NONBLOCK));
