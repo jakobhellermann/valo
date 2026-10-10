@@ -10,7 +10,9 @@ mod deadline;
 mod dlhook;
 mod glx;
 mod poll;
+mod posix;
 mod pthread;
+mod randomness;
 mod sdl;
 mod signal;
 mod sleep;
@@ -86,6 +88,15 @@ pub(crate) fn link_function(
 ///     real(name)
 /// });
 /// ```
+///
+/// A `variadic` hook additionally binds the caller's variadic arguments; its
+/// body runs in an `unsafe fn` and calls `real` with the forwarded values:
+///
+/// ```ignore
+/// override_sym!(variadic open(path: *const c_char, flags: c_int) -> c_int |real, args| {
+///     unsafe { real(path, flags, args.next_arg::<c_uint>()) }
+/// });
+/// ```
 #[macro_export]
 macro_rules! override_sym {
     ($abi:literal $fn:ident ($($param:ident: $ty:ty),*) $(-> $ret_ty:ty)? |$real:ident| $($block:block)?) => {
@@ -99,6 +110,24 @@ macro_rules! override_sym {
     };
     ($fn:ident ($($param:ident: $ty:ty),*) $(-> $ret_ty:ty)?, lib: $lib:expr, |$real:ident| $($block:block)?) => {
         $crate::override_sym!(@impl "C", $fn ($($param: $ty),*) $(-> $ret_ty)?, $lib, |$real| $($block)?);
+    };
+    (variadic $fn:ident ($($param:ident: $ty:ty),*) $(-> $ret_ty:ty)? |$real:ident, $va:ident| $block:block) => {
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $fn($($param: $ty,)* mut $va: ...) $(-> $ret_ty)? {
+            const NAME: &[u8] = concat!(stringify!($fn), "\0").as_bytes();
+            static SYM: std::sync::atomic::AtomicPtr<std::ffi::c_void> =
+                std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+            let fn_ptr = $crate::hooks::link_function(&SYM, NAME.as_ptr().cast(), std::ptr::null());
+            // SAFETY: the symbol resolved under this name is the variadic libc function declared by this hook.
+            let $real = unsafe {
+                std::mem::transmute::<*mut _, unsafe extern "C" fn($($ty,)* ...) $(-> $ret_ty)?>(
+                    fn_ptr.unwrap()
+                )
+            };
+
+            $block
+        }
     };
     (@impl $abi:literal, $fn:ident ($($param:ident: $ty:ty),*) $(-> $ret_ty:ty)?, $lib:expr, |$real:ident| $($block:block)?) => {
         #[unsafe(no_mangle)]
@@ -120,4 +149,11 @@ macro_rules! override_sym {
 
         }
     };
+}
+
+/// Sets errno for a hook failing like its libc counterpart and returns that call's -1.
+pub(crate) fn fail(errno: rustix::io::Errno) -> std::ffi::c_int {
+    // SAFETY: __errno_location returns the calling thread's errno slot, always valid; rustix has no errno setter.
+    unsafe { *libc::__errno_location() = errno.raw_os_error() };
+    -1
 }

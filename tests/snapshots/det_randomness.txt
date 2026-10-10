@@ -1,0 +1,12 @@
+getrandom: 1ddd6c894bcee4471d6579e0a8a6cfab
+getentropy: 571f73eb8f0dd1b99d011bbba018b44d
+open urandom: ef2ed154bd8cad06e92dc086ad83ed58
+fopen urandom: 14e2dfdeb4ce1067f74399c384c61a08
+getrandom: 81716ed4d8b252d08d3931cef88c71ac
+getentropy: 383048e922b1b256953a4d4238b2fabf
+open urandom: 9d91e97d7c5b75f8ce547dae555ce032
+fopen urandom: ca3ec9325777e91fc83c0b45f457d75e
+getrandom: 81716ed4d8b252d08d3931cef88c71ac
+getentropy: 383048e922b1b256953a4d4238b2fabf
+open urandom: 9d91e97d7c5b75f8ce547dae555ce032
+fopen urandom: ca3ec9325777e91fc83c0b45f457d75e
