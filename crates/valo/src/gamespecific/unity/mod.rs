@@ -1,7 +1,5 @@
 // TODO(ai-review): generated, not yet audited
 //! Unity 6 player internals: preload queue, async reads and the job system.
-//! For now the hooks only log each call with its thread and frame, to see
-//! which work finishes on which frame.
 
 use std::ffi::{CStr, c_int, c_uint, c_void};
 use std::sync::atomic::Ordering;
@@ -10,6 +8,8 @@ use valo_ipc::config::ResolvedModule;
 use valo_ipc::gamespecific::unity as sym;
 
 use crate::global_state::GlobalState;
+
+mod preload;
 use crate::{Result, debug, info, trace};
 
 detour::static_detour! {
@@ -47,14 +47,33 @@ detour::static_detour! {
     static LoadSceneSetAllowActivation: unsafe extern "C" fn(*mut c_void, bool);
 }
 
-/// Hooks an operation method `fn(this)` to log its begin and end with the
-/// operation pointer; rax is forwarded whatever the method returns.
-macro_rules! log_operation {
-    ($detour:ident, $symbol:expr, $addr:expr, $name:literal) => {
+/// Hooks an operation's background `Perform(this)`: logs it and counts it for
+/// [`preload`]; rax is forwarded whatever the method returns.
+macro_rules! perform_hook {
+    ($detour:ident, $symbol:expr, $addr:expr, $name:literal, non_parallel: $non_parallel:literal) => {
+        $detour
+            .initialize(function($addr($symbol)), |op| {
+                log_call($name, format_args!("op={op:p} begin"));
+                preload::perform_begin();
+                let ret = $detour.call(op);
+                preload::perform_end($non_parallel);
+                log_call($name, format_args!("op={op:p} end"));
+                ret
+            })?
+            .enable()?
+    };
+}
+
+/// Hooks an operation's `IntegrateMainThread(this)` and logs its begin and end.
+macro_rules! integrate_hook {
+    ($detour:ident, $symbol:expr, $addr:expr, $name:literal, non_parallel: $non_parallel:literal) => {
         $detour
             .initialize(function($addr($symbol)), |op| {
                 log_call($name, format_args!("op={op:p} begin"));
                 let ret = $detour.call(op);
+                if $non_parallel {
+                    preload::integrated_non_parallel();
+                }
                 log_call($name, format_args!("op={op:p} end"));
                 ret
             })?
@@ -92,13 +111,15 @@ pub(crate) fn install(modules: &[ResolvedModule]) -> Result<()> {
             AddToQueue
                 .initialize(function(addr(sym::PRELOAD_ADD_TO_QUEUE)), |this, op| {
                     log_call("PreloadManager::AddToQueue", format_args!("op={op:p}"));
+                    // counted first: the preload thread may begin Perform before the call returns
+                    preload::queued();
                     AddToQueue.call(this, op)
                 })?
                 .enable()?;
             UpdatePreloading
                 .initialize(function(addr(sym::PRELOAD_UPDATE)), |this| {
                     log_call("PreloadManager::UpdatePreloading", format_args!(""));
-                    UpdatePreloading.call(this)
+                    preload::update(|| UpdatePreloading.call(this))
                 })?
                 .enable()?;
             UpdatePreloadingSingleStep
@@ -119,6 +140,7 @@ pub(crate) fn install(modules: &[ResolvedModule]) -> Result<()> {
             PreloadRun
                 .initialize(function(addr(sym::PRELOAD_RUN)), |arg| {
                     log_call("PreloadManager::Run", format_args!("thread starts"));
+                    preload::thread_started();
                     PreloadRun.call(arg)
                 })?
                 .enable()?;
@@ -223,83 +245,96 @@ pub(crate) fn install(modules: &[ResolvedModule]) -> Result<()> {
                     },
                 )?
                 .enable()?;
-            log_operation!(
+            perform_hook!(
                 LoadPerform,
                 sym::LOAD_PERFORM,
                 addr,
-                "LoadOperation::Perform"
+                "LoadOperation::Perform",
+                non_parallel: false
             );
-            log_operation!(
+            integrate_hook!(
                 LoadIntegrate,
                 sym::LOAD_INTEGRATE,
                 addr,
-                "LoadOperation::IntegrateMainThread"
+                "LoadOperation::IntegrateMainThread",
+                non_parallel: false
             );
-            log_operation!(
+            perform_hook!(
                 LoadScenePerform,
                 sym::LOAD_SCENE_PERFORM,
                 addr,
-                "LoadSceneOperation::Perform"
+                "LoadSceneOperation::Perform",
+                non_parallel: false
             );
-            log_operation!(
+            integrate_hook!(
                 LoadSceneIntegrate,
                 sym::LOAD_SCENE_INTEGRATE,
                 addr,
-                "LoadSceneOperation::IntegrateMainThread"
+                "LoadSceneOperation::IntegrateMainThread",
+                non_parallel: false
             );
-            log_operation!(
+            perform_hook!(
                 UnloadScenePerform,
                 sym::UNLOAD_SCENE_PERFORM,
                 addr,
-                "UnloadSceneOperation::Perform"
+                "UnloadSceneOperation::Perform",
+                non_parallel: false
             );
-            log_operation!(
+            integrate_hook!(
                 UnloadSceneIntegrate,
                 sym::UNLOAD_SCENE_INTEGRATE,
                 addr,
-                "UnloadSceneOperation::IntegrateMainThread"
+                "UnloadSceneOperation::IntegrateMainThread",
+                non_parallel: false
             );
-            log_operation!(
+            perform_hook!(
                 UnloadUnusedPerform,
                 sym::UNLOAD_UNUSED_PERFORM,
                 addr,
-                "UnloadUnusedAssetsOperation::Perform"
+                "UnloadUnusedAssetsOperation::Perform",
+                non_parallel: true
             );
-            log_operation!(
+            integrate_hook!(
                 UnloadUnusedIntegrate,
                 sym::UNLOAD_UNUSED_INTEGRATE,
                 addr,
-                "UnloadUnusedAssetsOperation::IntegrateMainThread"
+                "UnloadUnusedAssetsOperation::IntegrateMainThread",
+                non_parallel: true
             );
-            log_operation!(
+            perform_hook!(
                 BundleLoadAssetPerform,
                 sym::BUNDLE_LOAD_ASSET_PERFORM,
                 addr,
-                "AssetBundleLoadAssetOperation::Perform"
+                "AssetBundleLoadAssetOperation::Perform",
+                non_parallel: false
             );
-            log_operation!(
+            perform_hook!(
                 BundleLoadPerform,
                 sym::BUNDLE_LOAD_PERFORM,
                 addr,
-                "AssetBundleLoadFromAsyncOperation::Perform"
+                "AssetBundleLoadFromAsyncOperation::Perform",
+                non_parallel: false
             );
-            log_operation!(
+            integrate_hook!(
                 BundleLoadIntegrate,
                 sym::BUNDLE_LOAD_INTEGRATE,
                 addr,
-                "AssetBundleLoadFromAsyncOperation::IntegrateMainThread"
+                "AssetBundleLoadFromAsyncOperation::IntegrateMainThread",
+                non_parallel: false
             );
-            log_operation!(
+            perform_hook!(
                 BundleUnloadPerform,
                 sym::BUNDLE_UNLOAD_PERFORM,
                 addr,
-                "AssetBundleUnloadOperation::Perform"
+                "AssetBundleUnloadOperation::Perform",
+                non_parallel: false
             );
-            log_operation!(
+            integrate_hook!(
                 BundleUnloadIntegrate,
                 sym::BUNDLE_UNLOAD_INTEGRATE,
                 addr,
-                "AssetBundleUnloadOperation::IntegrateMainThread"
+                "AssetBundleUnloadOperation::IntegrateMainThread",
+                non_parallel: false
             );
             Ok(())
         }
