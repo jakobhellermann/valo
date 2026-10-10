@@ -17,7 +17,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use config::ConfigArgs;
 use valo_ipc::ClientIPC;
-use valo_ipc::config::Config;
+use valo_ipc::config::{Config, ResolvedModule};
 use valo_ipc::messages::{ClientToLib, FrameBoundary, LibToClient};
 use valo_launch::gpu_session::GpuSession;
 use valo_launch::{paths, resolve_lib};
@@ -161,6 +161,8 @@ fn run(
     let mut cmd = build_command(gdb, &program, &args, &lib);
     let use_gpu = !config.software_rendering;
     valo_launch::command::configure_target(&mut cmd, use_gpu)?;
+    let mut config = config.config();
+    config.resolved_modules = resolve_modules(&program)?;
 
     if use_tui {
         // Don't let the child's stdout/stderr clobber the alternate screen.
@@ -191,12 +193,7 @@ fn run(
     }
 
     let result = if use_tui {
-        let tui_result = tui::run(
-            sock_path,
-            Some(log_path.as_path()),
-            child.id(),
-            config.config(),
-        );
+        let tui_result = tui::run(sock_path, Some(log_path.as_path()), child.id(), config);
         // The alternate screen is gone; report where this session's files landed
         eprintln!(
             "[valo-client] session ended: target pid {}, home {}",
@@ -225,7 +222,7 @@ fn run(
             sock_path,
             &mut child,
             gdb,
-            config.config(),
+            config,
             &hotkey_rx,
             hud::Hud::new(overlay),
         )
@@ -311,6 +308,47 @@ fn resolve_program(program: &Path) -> Result<PathBuf> {
         .map(|dir| dir.join(program))
         .find(|candidate| candidate.is_file())
         .with_context(|| format!("{} not found in PATH", program.display()))
+}
+
+/// Symbols of the engine modules valo hooks in `program`: the Unity player, if it is a Unity game.
+pub(crate) fn resolve_modules(program: &Path) -> Result<Vec<ResolvedModule>> {
+    let Some(data_dir) = valo_launch::unity::data_dir(program) else {
+        return Ok(Vec::new());
+    };
+
+    let version = match valo_launch::unity::version(&data_dir) {
+        Ok(version) => version,
+        Err(e) => {
+            eprintln!(
+                "[valo-client] warning: could not read the unity version from {}: {e:#}; \
+                 the gamespecific unity hooks stay disabled",
+                data_dir.display()
+            );
+            return Ok(Vec::new());
+        }
+    };
+    match valo_launch::unity::resolve_player(program) {
+        Ok(player) => {
+            eprintln!(
+                "[valo-client] unity {version}: {} player symbols resolved",
+                player.symbols.len()
+            );
+            Ok(vec![player])
+        }
+        // The game still runs without the resolved symbols — the lib
+        // installs no gamespecific hooks then, and loads run undriven.
+        // Resolution needs the separate debug file (UnityPlayer_s.debug)
+        // whose build id matches the player; custom engine builds ship
+        // neither the file nor a public one.
+        Err(e) => {
+            eprintln!(
+                "[valo-client] warning: could not resolve the unity {version} player \
+                 symbols: {e:#}; the gamespecific unity hooks stay disabled, loads run \
+                 undriven and may be slow or nondeterministic"
+            );
+            Ok(Vec::new())
+        }
+    }
 }
 
 pub(crate) fn report_kumquat_exit(session: &mut GpuSession) -> Result<bool> {
