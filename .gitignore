@@ -1,4 +1,5 @@
 /target
 /out
-/repro
+/repro/*
+!/repro/*.txt
 /result*

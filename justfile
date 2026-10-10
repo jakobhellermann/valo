@@ -77,6 +77,16 @@ run-hollowknight-gpu *args:
 run-silksong-gpu *args:
     {{ STEAM_WRAPPER }} just valo run {{ args }} "$HOME/.steamapps/Hollow Knight Silksong/Hollow Knight Silksong"
 
+# Drive Hollow Knight from a replay script under valo (GPU mode, through
+# steam-run). VALO_HOME pins the run dir so savestate slots survive reruns;
+# {{ args }} are extra driver flags before the script.
+replay-repro SCRIPT="repro/hk-menu.txt" *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ -f "{{ SCRIPT }}" ]] || { echo "script {{ SCRIPT }} not found" >&2; exit 1; }
+    make out/libvalo.so
+    VALO_HOME="${VALO_HOME:-$HOME/.local/state/valo/repro}" {{ STEAM_WRAPPER }} cargo run --release -q -p valo-replay -- --use-gpu --lib out/libvalo.so {{ args }} "{{ SCRIPT }}" "{{ HK }}"
+
 visualizer:
     @cd visualizer && pnpm run dev
 
