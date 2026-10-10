@@ -71,6 +71,12 @@ run-hollowknight *args:
 spawn-hollowknight *args:
     {{ STEAM_WRAPPER }} just valo spawn {{ args }} "{{ HK }}"
 
+run-silksong *args:
+    {{ STEAM_WRAPPER }} just valo run {{ args }} "$HOME/.steamapps/Hollow Knight Silksong/Hollow Knight Silksong"
+
+run-silksong-modded *args:
+    VALO_TARGET='Hollow Knight Silksong' just valo run --use-gpu --uncontrolled {{ args }} gust run -- -force-vulkan -force-gfx-direct
+
 visualizer:
     @cd visualizer && pnpm run dev
 
