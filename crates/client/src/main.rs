@@ -17,7 +17,7 @@ use valo_ipc::ClientIPC;
 use valo_ipc::config::Config;
 use valo_ipc::messages::{ClientToLib, FrameBoundary, LibToClient};
 use valo_launch::gpu_session::GpuSession;
-use valo_launch::paths;
+use valo_launch::{paths, resolve_lib};
 
 /// How long to wait for the next FrameBoundary after sending Advance
 /// before assuming the target hung.
@@ -452,26 +452,4 @@ fn prepend_ld_preload(lib: &Path) -> std::ffi::OsString {
         }
         _ => lib.as_os_str().to_owned(),
     }
-}
-
-pub(crate) fn resolve_lib(explicit: Option<PathBuf>) -> Result<PathBuf> {
-    if let Some(p) = explicit {
-        if !p.exists() {
-            bail!("--lib path does not exist: {}", p.display());
-        }
-        return Ok(p);
-    }
-
-    let exe = std::env::current_exe().context("current_exe failed")?;
-    let dir = exe
-        .parent()
-        .with_context(|| format!("valo binary {} has no parent dir", exe.display()))?;
-    let candidate = dir.join("libvalo.so");
-    if candidate.exists() {
-        return Ok(candidate);
-    }
-    bail!(
-        "libvalo.so not found next to valo binary at {}. Pass --lib explicitly.",
-        candidate.display()
-    );
 }
