@@ -230,7 +230,7 @@ impl ProcFds {
 
 /// Opens `/proc/self/fd/<fd>`: a separate description of the same file, so
 /// seeking does not move the offset of the passed descriptor.
-pub fn open_fd_path(fd: RawFd) -> Result<OwnedFd> {
+pub fn open_fd_path(fd: RawFd, flags: OFlags) -> Result<OwnedFd> {
     let dir = fs::open(
         c"/proc/self/fd",
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
@@ -239,14 +239,19 @@ pub fn open_fd_path(fd: RawFd) -> Result<OwnedFd> {
     Ok(fs::openat(
         &dir,
         rustix::path::DecInt::new(fd),
-        OFlags::RDONLY,
+        flags,
         Mode::empty(),
     )?)
 }
 
 /// Opens the file with identity `(dev, ino)` via its entry in the current fd table.
 // TODO: Don't re-scan here again
-pub fn open_by_identity(frozen: &Frozen, dev: fs::Dev, ino: u64) -> Result<Option<OwnedFd>> {
+pub fn open_by_identity(
+    frozen: &Frozen,
+    dev: fs::Dev,
+    ino: u64,
+    flags: OFlags,
+) -> Result<Option<OwnedFd>> {
     let mut fds = ProcFds::new_self()?;
     let mut found = None;
     while let Some(entry) = fds.next(frozen)? {
@@ -258,7 +263,7 @@ pub fn open_by_identity(frozen: &Frozen, dev: fs::Dev, ino: u64) -> Result<Optio
     let Some(fd) = found else {
         return Ok(None);
     };
-    Ok(Some(open_fd_path(fd)?))
+    Ok(Some(open_fd_path(fd, flags)?))
 }
 
 fn parse_fd(name: &[u8]) -> Option<RawFd> {
@@ -334,7 +339,7 @@ mod tests {
         fs::seek(&memfd, SeekFrom::Start(0)).unwrap();
         let stat = fs::fstat(&memfd).unwrap();
 
-        let opened = open_by_identity(&frozen, stat.st_dev, stat.st_ino)
+        let opened = open_by_identity(&frozen, stat.st_dev, stat.st_ino, OFlags::RDONLY)
             .unwrap()
             .expect("identity of an open memfd must be found");
 
@@ -345,7 +350,7 @@ mod tests {
         assert_eq!(fs::seek(&memfd, SeekFrom::Current(0)).unwrap(), 0);
 
         assert!(
-            open_by_identity(&frozen, stat.st_dev, stat.st_ino ^ 1)
+            open_by_identity(&frozen, stat.st_dev, stat.st_ino ^ 1, OFlags::RDONLY)
                 .unwrap()
                 .is_none()
         );

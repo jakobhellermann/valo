@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 use std::os::fd::OwnedFd;
 
-use rustix::fs::SeekFrom as RSeekFrom;
+use rustix::fs::{OFlags, SeekFrom as RSeekFrom};
 
 use crate::checkpoint::threads::SavedThreads;
 use crate::checkpoint::{AreaMeta, Header, PageFlag, SnapshotSlot, fd_sync};
@@ -115,7 +115,7 @@ fn area_fd(excl: &mut Exclusive, area: &MemoryMap) -> Option<(OwnedFd, u64, u64)
 
     let fd = fd_sync::open_by_identity(super::fd_snapshot(excl), area.dev, area.inode).or_else(
         || {
-            area.open_file()
+            area.open_file(OFlags::RDONLY)
                 .inspect_err(|e| {
                     warn!(
                         Checkpoint,

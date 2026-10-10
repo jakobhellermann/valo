@@ -129,7 +129,7 @@ fn capture(
 /// Opens the file backing `(dev, ino)` through the given fd table
 pub(crate) fn open_by_identity(records: &[FdRecord], dev: fs::Dev, ino: u64) -> Option<OwnedFd> {
     let record = records.iter().find(|r| r.dev == dev && r.ino == ino)?;
-    fds::open_fd_path(record.fd).ok()
+    fds::open_fd_path(record.fd, OFlags::RDONLY).ok()
 }
 
 // Restore the fd table.
