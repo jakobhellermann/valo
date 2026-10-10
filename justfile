@@ -74,6 +74,9 @@ spawn-hollowknight *args:
 run-hollowknight-gpu *args:
     {{ STEAM_WRAPPER }} just valo run --use-gpu {{ args }} "{{ HK }}"
 
+run-silksong-gpu *args:
+    {{ STEAM_WRAPPER }} just valo run {{ args }} "$HOME/.steamapps/Hollow Knight Silksong/Hollow Knight Silksong"
+
 visualizer:
     @cd visualizer && pnpm run dev
 
