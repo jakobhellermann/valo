@@ -70,9 +70,11 @@ pub(crate) fn install(modules: &[ResolvedModule]) -> Result<()> {
                     function(addr(sym::PRELOAD_UPDATE_SINGLE_STEP)),
                     |this, flags, budget| {
                         let ret = UpdatePreloadingSingleStep.call(this, flags, budget);
+                        // the function returns bool; only al is defined
+                        let done = ret as u8 != 0;
                         log_call(
                             "PreloadManager::UpdatePreloadingSingleStep",
-                            format_args!("flags={flags} budget={budget} -> {ret}"),
+                            format_args!("flags={flags} budget={budget} -> {done}"),
                         );
                         ret
                     },
@@ -97,19 +99,23 @@ pub(crate) fn install(modules: &[ResolvedModule]) -> Result<()> {
                     );
                 })?
                 .enable()?;
-            AsyncReadRequest
-                .initialize(function(addr(sym::ASYNC_READ_REQUEST)), |this, command| {
-                    log_call(
-                        "AsyncReadManagerThreaded::Request",
-                        format_args!("command={command:p}"),
-                    );
-                    AsyncReadRequest.call(this, command)
-                })?
-                .enable()?;
             SyncReadRequest
                 .initialize(function(addr(sym::SYNC_READ_REQUEST)), |command| {
                     log_call("SyncReadRequest", format_args!("command={command:p}"));
                     SyncReadRequest.call(command)
+                })?
+                .enable()?;
+            AsyncReadRequest
+                .initialize(function(addr(sym::ASYNC_READ_REQUEST)), |_this, command| {
+                    log_call(
+                        "AsyncReadManagerThreaded::Request",
+                        format_args!("command={command:p} (read synchronously)"),
+                    );
+                    // the read finishes before the caller continues, instead
+                    // of on the read thread at a wall-clock-dependent frame
+                    SyncReadRequest
+                        .trampoline()
+                        .expect("SyncReadRequest is hooked first")(command)
                 })?
                 .enable()?;
             JobSchedule
