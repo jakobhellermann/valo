@@ -1,0 +1,12 @@
+# Boot Hollow Knight into the main menu and snapshot it.
+400
+1,ENTER
+100
+1,ENTER
+400
+1,ENTER
+400
+checkpoint 0
+400
+restore 0
+400

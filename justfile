@@ -77,6 +77,16 @@ run-silksong *args:
 run-silksong-modded *args:
     VALO_TARGET='Hollow Knight Silksong' just valo run --use-gpu --uncontrolled {{ args }} gust run -- -force-vulkan -force-gfx-direct
 
+# Drive Hollow Knight from a replay script under valo (GPU mode, through
+# steam-run). VALO_HOME pins the run dir so savestate slots survive reruns;
+# {{ args }} are extra driver flags before the script.
+replay-repro SCRIPT="repro/hk-menu.txt" *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ -f "{{ SCRIPT }}" ]] || { echo "script {{ SCRIPT }} not found" >&2; exit 1; }
+    make out/libvalo.so
+    VALO_HOME="${VALO_HOME:-$HOME/.local/state/valo/repro}" {{ STEAM_WRAPPER }} cargo run --release -q -p valo-replay -- --use-gpu --lib out/libvalo.so {{ args }} "{{ SCRIPT }}" "{{ HK }}"
+
 visualizer:
     @cd visualizer && pnpm run dev
 
