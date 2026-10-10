@@ -19,6 +19,25 @@ pub const JOB_EXECUTE: &str =
 pub const JOB_COMPLETED: &str =
     "_ZL13job_completedP14ujob_control_tP11ujob_lane_tP10ujob_job_t13ujob_handle_t";
 
+pub const LOAD_PERFORM: &str = "_ZN13LoadOperation7PerformEv";
+pub const LOAD_INTEGRATE: &str = "_ZN13LoadOperation19IntegrateMainThreadEv";
+pub const LOAD_SCENE_PERFORM: &str = "_ZN18LoadSceneOperation7PerformEv";
+pub const LOAD_SCENE_INTEGRATE: &str = "_ZN18LoadSceneOperation19IntegrateMainThreadEv";
+pub const LOAD_SCENE_GET_ALLOW_ACTIVATION: &str =
+    "_ZN18LoadSceneOperation23GetAllowSceneActivationEv";
+pub const LOAD_SCENE_SET_ALLOW_ACTIVATION: &str =
+    "_ZN18LoadSceneOperation23SetAllowSceneActivationEb";
+pub const UNLOAD_SCENE_PERFORM: &str = "_ZN20UnloadSceneOperation7PerformEv";
+pub const UNLOAD_SCENE_INTEGRATE: &str = "_ZN20UnloadSceneOperation19IntegrateMainThreadEv";
+pub const UNLOAD_UNUSED_PERFORM: &str = "_ZN27UnloadUnusedAssetsOperation7PerformEv";
+pub const UNLOAD_UNUSED_INTEGRATE: &str = "_ZN27UnloadUnusedAssetsOperation19IntegrateMainThreadEv";
+pub const BUNDLE_LOAD_ASSET_PERFORM: &str = "_ZN29AssetBundleLoadAssetOperation7PerformEv";
+pub const BUNDLE_LOAD_PERFORM: &str = "_ZN33AssetBundleLoadFromAsyncOperation7PerformEv";
+pub const BUNDLE_LOAD_INTEGRATE: &str =
+    "_ZN33AssetBundleLoadFromAsyncOperation19IntegrateMainThreadEv";
+pub const BUNDLE_UNLOAD_PERFORM: &str = "_ZN26AssetBundleUnloadOperation7PerformEv";
+pub const BUNDLE_UNLOAD_INTEGRATE: &str = "_ZN26AssetBundleUnloadOperation19IntegrateMainThreadEv";
+
 pub const SYMBOLS: &[&str] = &[
     PRELOAD_ADD_TO_QUEUE,
     PRELOAD_UPDATE,
@@ -31,4 +50,19 @@ pub const SYMBOLS: &[&str] = &[
     JOB_ENQUEUE,
     JOB_EXECUTE,
     JOB_COMPLETED,
+    LOAD_PERFORM,
+    LOAD_INTEGRATE,
+    LOAD_SCENE_PERFORM,
+    LOAD_SCENE_INTEGRATE,
+    LOAD_SCENE_GET_ALLOW_ACTIVATION,
+    LOAD_SCENE_SET_ALLOW_ACTIVATION,
+    UNLOAD_SCENE_PERFORM,
+    UNLOAD_SCENE_INTEGRATE,
+    UNLOAD_UNUSED_PERFORM,
+    UNLOAD_UNUSED_INTEGRATE,
+    BUNDLE_LOAD_ASSET_PERFORM,
+    BUNDLE_LOAD_PERFORM,
+    BUNDLE_LOAD_INTEGRATE,
+    BUNDLE_UNLOAD_PERFORM,
+    BUNDLE_UNLOAD_INTEGRATE,
 ];
