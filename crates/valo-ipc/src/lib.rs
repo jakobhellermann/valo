@@ -7,6 +7,7 @@
 //! [`ClientIPC::establish`] / [`LibIPC::establish`].
 
 pub mod config;
+pub mod gamespecific;
 pub mod messages;
 mod raw;
 

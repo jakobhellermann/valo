@@ -117,4 +117,21 @@ pub struct Config {
     /// Which frames to skip/draw
     pub skip_draw: SkipDrawMode,
     pub input: InputConfig,
+    /// Symbols the client resolved from modules the game loads; read once at
+    /// the init handshake.
+    pub resolved_modules: Vec<ResolvedModule>,
+}
+
+/// Symbols of a loaded module, resolved by the client from its symbol table
+/// (for stripped modules from the separate debug file).
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ResolvedModule {
+    /// File name of the module, e.g. `UnityPlayer.so`.
+    pub name: String,
+    /// GNU build id the symbols belong to; the lib rejects a loaded module
+    /// with a different one.
+    pub build_id: Vec<u8>,
+    /// Mangled name and address relative to the module's load base.
+    pub symbols: Vec<(String, u64)>,
 }

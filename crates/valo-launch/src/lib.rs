@@ -3,6 +3,8 @@ pub mod gpu_session;
 pub mod cleanup;
 pub mod command;
 pub mod paths;
+pub mod symbols;
+pub mod unity;
 
 use std::ffi::OsString;
 use std::io::ErrorKind;
