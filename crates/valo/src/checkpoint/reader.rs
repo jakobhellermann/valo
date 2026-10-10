@@ -4,7 +4,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::mem::MaybeUninit;
 use std::os::fd::OwnedFd;
 
-use rustix::fs::SeekFrom as RSeekFrom;
+use rustix::fs::{OFlags, SeekFrom as RSeekFrom};
 use rustix::mm::{self, MapFlags, MprotectFlags, ProtFlags};
 
 use crate::checkpoint::{AreaMeta, Header, PageFlag, Result, SnapshotSlot};
@@ -168,10 +168,10 @@ pub fn read_all_areas(frozen: &Frozen, reader: &mut SnapshotReader) -> Result<()
 /// The restore side must resolve live: the fd snapshot table is ordinary
 /// process memory and may already be half-rewound at this point of the
 /// memory restore.
-fn open_area_file(frozen: &Frozen, area: &MemoryMap) -> Result<OwnedFd> {
-    area.open_file()
+fn open_area_file(frozen: &Frozen, area: &MemoryMap, flags: OFlags) -> Result<OwnedFd> {
+    area.open_file(flags)
         .or_else(|path_err| {
-            fds::open_by_identity(frozen, area.dev, area.inode)
+            fds::open_by_identity(frozen, area.dev, area.inode, flags)
                 .ok()
                 .flatten()
                 .ok_or(path_err)
@@ -193,7 +193,7 @@ fn area_fd(frozen: &Frozen, saved_area: &MemoryMap) -> Option<(OwnedFd, u64, u64
         return None;
     }
 
-    let fd = open_area_file(frozen, saved_area).ok()?;
+    let fd = open_area_file(frozen, saved_area, OFlags::RDONLY).ok()?;
     let mut next_off_hole = rustix::fs::seek(&fd, RSeekFrom::Hole(saved_area.offset)).ok()?;
     let mut next_off_data =
         rustix::fs::seek(&fd, RSeekFrom::Data(saved_area.offset)).unwrap_or(u64::MAX);
@@ -369,7 +369,7 @@ fn read_area(
 
         if let PageFlag::File = flag {
             if page_present && !page_file {
-                let orig_fd = orig_fd.get_or_insert_with(|| saved_area.open_file());
+                let orig_fd = orig_fd.get_or_insert_with(|| saved_area.open_file(OFlags::RDONLY));
                 let orig_fd = match orig_fd {
                     Err(e) => {
                         warn!(
@@ -551,17 +551,34 @@ fn reallocate_area(
         // The saved area must be allocated. File mappings must reference
         // their file again: pages the snapshot flagged `File` are not
         // stored — their content is assumed to equal the mapped file, so
-        // an anonymous mapping would silently zero them. Prefer a live
-        // descriptor of the same inode (the file may have been deleted
-        // since the checkpoint), then open the path (libTAS does the
-        // same for its area reallocation). Only if both fail, fall back
-        // to anonymous and accept the zeroed file pages.
-        let file_fd: Option<OwnedFd> = if let MMapPath::Path = saved_area.path_kind {
+        // an anonymous mapping would silently zero them. Shared mappings
+        // additionally alias pages other processes may hold (a memfd the
+        // GPU host imports as a dma-buf), so an anonymous copy detaches
+        // every later write from them. Prefer a live descriptor of the same
+        // inode (the file may have been deleted since the checkpoint; the
+        // fd keepalives count), then open the path (libTAS does the same
+        // for its area reallocation).
+        let file_backed = matches!(
+            saved_area.path_kind,
+            MMapPath::Path | MMapPath::MemFd | MMapPath::Shm
+        );
+        let file_fd: Option<OwnedFd> = if file_backed {
             // Already logged; file pages will read as zeros.
             reopen_file_area(frozen, saved_area).ok()
         } else {
             None
         };
+        if file_backed
+            && file_fd.is_none()
+            && saved_area.perms.contains(MemoryMapPermissions::SHARED)
+        {
+            error!(
+                Restore,
+                "shared file mapping {} re-created anonymously: writes no longer reach {}",
+                saved_area,
+                saved_area.pathname
+            );
+        }
 
         // SAFETY: the fixed address is free (the merge loop unmapped
         // overlapping current areas first) or FIXED_NOREPLACE fails
@@ -629,7 +646,16 @@ fn reallocate_area(
 /// exists at restore time, for the re-allocation in [`reallocate_area`].
 /// Adds the libTAS shrunken-file warning to [`open_area_file`].
 fn reopen_file_area(frozen: &Frozen, area: &MemoryMap) -> Result<OwnedFd> {
-    let fd = open_area_file(frozen, area)?;
+    // mmap refuses a writable MAP_SHARED mapping of a read-only description.
+    let flags = if area
+        .perms
+        .contains(MemoryMapPermissions::SHARED | MemoryMapPermissions::WRITE)
+    {
+        OFlags::RDWR
+    } else {
+        OFlags::RDONLY
+    };
+    let fd = open_area_file(frozen, area, flags)?;
 
     // Like libTAS: warn when the file shrank below the mapped range — the
     // mapping is still created, but accessing beyond the end SIGBUSes.
