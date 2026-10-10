@@ -26,6 +26,42 @@ detour::static_detour! {
     static JobCompleted: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, u64) -> u64;
 }
 
+detour::static_detour! {
+    static LoadPerform: unsafe extern "C" fn(*mut c_void) -> u64;
+    static LoadIntegrate: unsafe extern "C" fn(*mut c_void) -> u64;
+    static LoadScenePerform: unsafe extern "C" fn(*mut c_void) -> u64;
+    static LoadSceneIntegrate: unsafe extern "C" fn(*mut c_void) -> u64;
+    static UnloadScenePerform: unsafe extern "C" fn(*mut c_void) -> u64;
+    static UnloadSceneIntegrate: unsafe extern "C" fn(*mut c_void) -> u64;
+    static UnloadUnusedPerform: unsafe extern "C" fn(*mut c_void) -> u64;
+    static UnloadUnusedIntegrate: unsafe extern "C" fn(*mut c_void) -> u64;
+    static BundleLoadAssetPerform: unsafe extern "C" fn(*mut c_void) -> u64;
+    static BundleLoadPerform: unsafe extern "C" fn(*mut c_void) -> u64;
+    static BundleLoadIntegrate: unsafe extern "C" fn(*mut c_void) -> u64;
+    static BundleUnloadPerform: unsafe extern "C" fn(*mut c_void) -> u64;
+    static BundleUnloadIntegrate: unsafe extern "C" fn(*mut c_void) -> u64;
+}
+
+detour::static_detour! {
+    static LoadSceneGetAllowActivation: unsafe extern "C" fn(*mut c_void) -> bool;
+    static LoadSceneSetAllowActivation: unsafe extern "C" fn(*mut c_void, bool);
+}
+
+/// Hooks an operation method `fn(this)` to log its begin and end with the
+/// operation pointer; rax is forwarded whatever the method returns.
+macro_rules! log_operation {
+    ($detour:ident, $symbol:expr, $addr:expr, $name:literal) => {
+        $detour
+            .initialize(function($addr($symbol)), |op| {
+                log_call($name, format_args!("op={op:p} begin"));
+                let ret = $detour.call(op);
+                log_call($name, format_args!("op={op:p} end"));
+                ret
+            })?
+            .enable()?
+    };
+}
+
 /// Hooks the player if the client resolved its symbols.
 pub(crate) fn install(modules: &[ResolvedModule]) -> Result<()> {
     let Some(player) = modules.iter().find(|m| m.name == sym::MODULE) else {
@@ -165,6 +201,106 @@ pub(crate) fn install(modules: &[ResolvedModule]) -> Result<()> {
                     },
                 )?
                 .enable()?;
+            LoadSceneGetAllowActivation
+                .initialize(function(addr(sym::LOAD_SCENE_GET_ALLOW_ACTIVATION)), |op| {
+                    let allow = LoadSceneGetAllowActivation.call(op);
+                    log_call(
+                        "LoadSceneOperation::GetAllowSceneActivation",
+                        format_args!("op={op:p} -> {allow}"),
+                    );
+                    allow
+                })?
+                .enable()?;
+            LoadSceneSetAllowActivation
+                .initialize(
+                    function(addr(sym::LOAD_SCENE_SET_ALLOW_ACTIVATION)),
+                    |op, allow| {
+                        log_call(
+                            "LoadSceneOperation::SetAllowSceneActivation",
+                            format_args!("op={op:p} {allow}"),
+                        );
+                        LoadSceneSetAllowActivation.call(op, allow)
+                    },
+                )?
+                .enable()?;
+            log_operation!(
+                LoadPerform,
+                sym::LOAD_PERFORM,
+                addr,
+                "LoadOperation::Perform"
+            );
+            log_operation!(
+                LoadIntegrate,
+                sym::LOAD_INTEGRATE,
+                addr,
+                "LoadOperation::IntegrateMainThread"
+            );
+            log_operation!(
+                LoadScenePerform,
+                sym::LOAD_SCENE_PERFORM,
+                addr,
+                "LoadSceneOperation::Perform"
+            );
+            log_operation!(
+                LoadSceneIntegrate,
+                sym::LOAD_SCENE_INTEGRATE,
+                addr,
+                "LoadSceneOperation::IntegrateMainThread"
+            );
+            log_operation!(
+                UnloadScenePerform,
+                sym::UNLOAD_SCENE_PERFORM,
+                addr,
+                "UnloadSceneOperation::Perform"
+            );
+            log_operation!(
+                UnloadSceneIntegrate,
+                sym::UNLOAD_SCENE_INTEGRATE,
+                addr,
+                "UnloadSceneOperation::IntegrateMainThread"
+            );
+            log_operation!(
+                UnloadUnusedPerform,
+                sym::UNLOAD_UNUSED_PERFORM,
+                addr,
+                "UnloadUnusedAssetsOperation::Perform"
+            );
+            log_operation!(
+                UnloadUnusedIntegrate,
+                sym::UNLOAD_UNUSED_INTEGRATE,
+                addr,
+                "UnloadUnusedAssetsOperation::IntegrateMainThread"
+            );
+            log_operation!(
+                BundleLoadAssetPerform,
+                sym::BUNDLE_LOAD_ASSET_PERFORM,
+                addr,
+                "AssetBundleLoadAssetOperation::Perform"
+            );
+            log_operation!(
+                BundleLoadPerform,
+                sym::BUNDLE_LOAD_PERFORM,
+                addr,
+                "AssetBundleLoadFromAsyncOperation::Perform"
+            );
+            log_operation!(
+                BundleLoadIntegrate,
+                sym::BUNDLE_LOAD_INTEGRATE,
+                addr,
+                "AssetBundleLoadFromAsyncOperation::IntegrateMainThread"
+            );
+            log_operation!(
+                BundleUnloadPerform,
+                sym::BUNDLE_UNLOAD_PERFORM,
+                addr,
+                "AssetBundleUnloadOperation::Perform"
+            );
+            log_operation!(
+                BundleUnloadIntegrate,
+                sym::BUNDLE_UNLOAD_INTEGRATE,
+                addr,
+                "AssetBundleUnloadOperation::IntegrateMainThread"
+            );
             Ok(())
         }
     };
