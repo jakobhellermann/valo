@@ -1,0 +1,6 @@
+pass 0
+page 0: wrote 31 through mapping, fd reads 31
+page 1: wrote 41 through mapping, fd reads 41
+pass 1
+page 0: wrote 32 through mapping, fd reads 32
+page 1: wrote 42 through mapping, fd reads 42
