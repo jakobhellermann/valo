@@ -4,15 +4,18 @@
 //! which work finishes on which frame.
 
 use std::ffi::{CStr, c_int, c_uint, c_void};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
+use rustix::thread::futex;
 use valo_ipc::config::ResolvedModule;
 use valo_ipc::gamespecific::unity as sym;
 
 use crate::determinism::time;
+use crate::determinism::time::real_ns;
 use crate::global_state::GlobalState;
 use crate::thread_tracker;
 
+mod jobs;
 mod preload;
 
 /// Offset of the count in a `baselib::UnityClassic::CappedSemaphore`.
@@ -25,7 +28,7 @@ std::thread_local! {
     /// the calling thread; integrating an operation can wait for all again.
     static IN_WAIT_FOR_ALL: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
-use crate::{Result, debug, info, trace};
+use crate::{Result, debug, error, info, trace};
 
 detour::static_detour! {
     static AddToQueue: unsafe extern "C" fn(*mut c_void, *mut c_void);
@@ -243,7 +246,7 @@ pub(crate) fn install(modules: &[ResolvedModule]) -> Result<()> {
                         "ujobs_add_to_lane_and_wake_one_thread",
                         format_args!("job={job:p} lane={lane:p}"),
                     );
-                    JobEnqueue.call(control, job, lane)
+                    jobs::enqueue(job, || JobEnqueue.call(control, job, lane))
                 })?
                 .enable()?;
             JobExecute
@@ -266,7 +269,9 @@ pub(crate) fn install(modules: &[ResolvedModule]) -> Result<()> {
                             "job_completed",
                             format_args!("job={job:p} handle={handle:#x}"),
                         );
-                        JobCompleted.call(control, lane, job, handle)
+                        let ret = JobCompleted.call(control, lane, job, handle);
+                        jobs::completed(job);
+                        ret
                     },
                 )?
                 .enable()?;
@@ -412,6 +417,46 @@ fn trace_call(function: &str, details: std::fmt::Arguments) {
     let (_, tid) = crate::sys::current_thread_ids();
     let frame = GlobalState::get().frame_count.load(Ordering::Relaxed);
     trace!(Unity, "frame {frame} tid {tid} {function} {details}");
+}
+
+/// A wait this long means the other threads stopped making progress.
+const STALL_NS: u64 = 5_000_000_000;
+
+/// Waits until `word` changes from `seen`; false, with `stalled()` logged, after
+/// [`STALL_NS`] of real time without a change.
+fn wait_for_change(word: &AtomicU32, seen: u32, stalled: impl Fn() -> String) -> bool {
+    let start = real_ns();
+    // relative timeouts are measured by the kernel in real time
+    let slice = rustix::time::Timespec {
+        tv_sec: 0,
+        tv_nsec: 100_000_000,
+    };
+    while word.load(Ordering::SeqCst) == seen {
+        if real_ns() - start > STALL_NS {
+            error!(Unity, "{} for 5s", stalled());
+            return false;
+        }
+        match futex::wait(word, futex::Flags::PRIVATE, seen, Some(&slice)) {
+            Ok(()) => {}
+            Err(e)
+                if e == rustix::io::Errno::AGAIN
+                    || e == rustix::io::Errno::TIMEDOUT
+                    || e == rustix::io::Errno::INTR => {}
+            Err(e) => {
+                error!(Unity, "futex wait failed: {e}");
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Bumps `word` and wakes all its waiters.
+fn signal(word: &AtomicU32) {
+    word.fetch_add(1, Ordering::SeqCst);
+    if let Err(e) = futex::wake(word, futex::Flags::PRIVATE, u32::MAX) {
+        error!(Unity, "futex wake failed: {e}");
+    }
 }
 
 /// Load base of the module whose file name is `name`, checked against `build_id`.

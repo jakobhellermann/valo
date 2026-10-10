@@ -10,9 +10,6 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use rustix::thread::futex;
-
-use crate::determinism::time::real_ns;
 use crate::{debug, error};
 
 static THREAD_STARTED: AtomicBool = AtomicBool::new(false);
@@ -21,9 +18,6 @@ static RUNNING: AtomicU32 = AtomicU32::new(0);
 static NON_PARALLEL_PENDING: AtomicU32 = AtomicU32::new(0);
 /// Bumped on every `Perform` begin and end; the futex word the main thread waits on.
 static EVENTS: AtomicU32 = AtomicU32::new(0);
-
-/// A wait this long means the preload thread stopped making progress.
-const STALL_NS: u64 = 5_000_000_000;
 
 pub(super) fn thread_started() {
     THREAD_STARTED.store(true, Ordering::SeqCst);
@@ -112,42 +106,17 @@ pub(super) fn wait_until_idle() {
 }
 
 fn signal() {
-    EVENTS.fetch_add(1, Ordering::SeqCst);
-    if let Err(e) = futex::wake(&EVENTS, futex::Flags::PRIVATE, u32::MAX) {
-        error!(Unity, "preload: futex wake failed: {e}");
-    }
+    super::signal(&EVENTS);
 }
 
 /// Waits until a `Perform` begins or ends after `seen`; false after a stall.
 fn wait_for_event(seen: u32) -> bool {
-    let start = real_ns();
-    // relative timeouts are measured by the kernel in real time
-    let slice = rustix::time::Timespec {
-        tv_sec: 0,
-        tv_nsec: 100_000_000,
-    };
-    while EVENTS.load(Ordering::SeqCst) == seen {
-        if real_ns() - start > STALL_NS {
-            error!(
-                Unity,
-                "preload: no progress for 5s (queued {}, running {}, non-parallel pending {})",
-                QUEUED.load(Ordering::SeqCst),
-                RUNNING.load(Ordering::SeqCst),
-                NON_PARALLEL_PENDING.load(Ordering::SeqCst)
-            );
-            return false;
-        }
-        match futex::wait(&EVENTS, futex::Flags::PRIVATE, seen, Some(&slice)) {
-            Ok(()) => {}
-            Err(e)
-                if e == rustix::io::Errno::AGAIN
-                    || e == rustix::io::Errno::TIMEDOUT
-                    || e == rustix::io::Errno::INTR => {}
-            Err(e) => {
-                error!(Unity, "preload: futex wait failed: {e}");
-                return false;
-            }
-        }
-    }
-    true
+    super::wait_for_change(&EVENTS, seen, || {
+        format!(
+            "preload: no progress (queued {}, running {}, non-parallel pending {})",
+            QUEUED.load(Ordering::SeqCst),
+            RUNNING.load(Ordering::SeqCst),
+            NON_PARALLEL_PENDING.load(Ordering::SeqCst)
+        )
+    })
 }
