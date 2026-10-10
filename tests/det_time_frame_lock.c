@@ -5,7 +5,7 @@
 // from wall time, and rewinds with a restore (the tick state is a plain
 // static in snapshotted memory — the libTAS savestates-the-timer
 // semantics, for free). Active by default: the harness sends
-// Config::default() at the init handshake, whose `time.uncontrolled_time`
+// Config::default() at the init handshake, whose `determinism.time.uncontrolled_time`
 // is off.
 //
 // Checks:

@@ -59,6 +59,19 @@ pub struct TimeConfig {
     pub framerate: Framerate,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RandomnessConfig {
+    pub uncontrolled_randomness: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeterminismConfig {
+    pub time: TimeConfig,
+    pub randomness: RandomnessConfig,
+}
+
 /// skip_draw: which frames' Vulkan image pipeline is skipped (fake
 /// acquire, drained present, libTAS `skipping_draw` parity). A skipped
 /// frame is a fully counted game frame. Session state — applied at frame
@@ -84,8 +97,7 @@ pub struct Config {
     /// GPU checkpoint orchestration. Must match what the client set up for
     /// the target (kumquat host, renderer selection).
     pub use_gpu: bool,
-    /// Deterministic simulated time.
-    pub time: TimeConfig,
+    pub determinism: DeterminismConfig,
     /// Which frames' image pipeline is skipped.
     pub skip_draw: SkipDrawMode,
 }

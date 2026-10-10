@@ -18,7 +18,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use valo_ipc::config::{Config, FrameConfig, LogConfig};
+use valo_ipc::config::{Config, DeterminismConfig, FrameConfig, LogConfig};
 use valo_ipc::messages::{ClientToLib, Error, FrameBoundary, LibHello, LibToClient, State};
 use valo_ipc::{LibIPC, PROTOCOL_VERSION};
 
@@ -404,7 +404,10 @@ pub fn effective_config() -> Config {
             level: crate::log::current_level().into(),
         },
         use_gpu: state.use_gpu.load(Ordering::Relaxed),
-        time: crate::determinism::time::effective(),
+        determinism: DeterminismConfig {
+            time: crate::determinism::time::effective(),
+            randomness: crate::determinism::randomness::effective(),
+        },
         skip_draw: state.skip_draw_mode(),
     }
 }

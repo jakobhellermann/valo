@@ -1,6 +1,9 @@
 // TODO(ai-review): generated, not yet audited
 use clap::{Args, ValueEnum};
-use valo_ipc::config::{Config, FrameConfig, LogConfig, LogLevel, SkipDrawMode, TimeConfig};
+use valo_ipc::config::{
+    Config, DeterminismConfig, FrameConfig, LogConfig, LogLevel, RandomnessConfig, SkipDrawMode,
+    TimeConfig,
+};
 
 #[derive(Args)]
 #[command(next_help_heading = "Auto checkpoints")]
@@ -31,6 +34,10 @@ pub(crate) struct ConfigArgs {
     /// Don't force a deterministic timestep
     #[arg(long, help_heading = "Uncontrolled")]
     pub(crate) uncontrolled_time: bool,
+
+    /// Don't force deterministic randomness sources
+    #[arg(long, help_heading = "Uncontrolled")]
+    pub(crate) uncontrolled_randomness: bool,
 }
 
 #[derive(ValueEnum, Clone, Copy)]
@@ -66,9 +73,14 @@ impl ConfigArgs {
                 level: self.log_level.map_or(LogLevel::Trace, Into::into),
             },
             use_gpu: self.use_gpu,
-            time: TimeConfig {
-                uncontrolled_time: self.uncontrolled_time || self.uncontrolled,
-                ..TimeConfig::default()
+            determinism: DeterminismConfig {
+                time: TimeConfig {
+                    uncontrolled_time: self.uncontrolled_time || self.uncontrolled,
+                    ..TimeConfig::default()
+                },
+                randomness: RandomnessConfig {
+                    uncontrolled_randomness: self.uncontrolled_randomness || self.uncontrolled,
+                },
             },
             skip_draw: SkipDrawMode::Off,
         }

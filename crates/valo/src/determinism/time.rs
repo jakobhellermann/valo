@@ -1,6 +1,6 @@
 // TODO(ai-review): generated, not yet audited
 //! Deterministic virtual time: every frame boundary advances the clock by
-//! exactly one frame duration (`Config::time.framerate`), independent of wall
+//! exactly one frame duration (`Config::determinism.time.framerate`), independent of wall
 //! time, from hardcoded epochs. Timed waits of the main thread that run out
 //! advance it too (see [`add_timed_wait`]), as waiting takes time even on an
 //! infinitely fast machine.
@@ -20,11 +20,11 @@ use valo_ipc::config::{Framerate, TimeConfig};
 
 use crate::{debug, warn};
 
-/// Real time reaches the game unmodified (`Config::time.uncontrolled_time`).
+/// Real time reaches the game unmodified (`Config::determinism.time.uncontrolled_time`).
 /// Off (default) = deterministic time mode; checked by the interposed
 /// sources in `hooks::time` and by `advance_frame`.
 static UNCONTROLLED_TIME: AtomicBool = AtomicBool::new(false);
-/// Virtual frame rate `num`/`denom` (`Config::time.framerate`), sanitized
+/// Virtual frame rate `num`/`denom` (`Config::determinism.time.framerate`), sanitized
 /// by `set_config`. One boundary advances the clock by `1e9*denom/num` ns;
 /// the `60/1` here is the pre-config default for runs without a client.
 static FRAMERATE_NUM: AtomicU64 = AtomicU64::new(60);
@@ -64,7 +64,7 @@ pub fn real_ns() -> u64 {
     ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
 }
 
-/// Apply `Config::time`. Zero or oversized `framerate` components fall
+/// Apply `Config::determinism.time`. Zero or oversized `framerate` components fall
 /// back to the `60/1` default (the serde default of a missing `Framerate`
 /// struct is `0/0` and lands here too).
 pub(crate) fn set_config(config: &TimeConfig) {
@@ -102,7 +102,7 @@ pub(crate) fn set_config(config: &TimeConfig) {
     );
 }
 
-/// The currently effective `Config::time` (for the handshake echo).
+/// The currently effective `Config::determinism.time` (for the handshake echo).
 pub(crate) fn effective() -> TimeConfig {
     TimeConfig {
         uncontrolled_time: UNCONTROLLED_TIME.load(Ordering::Relaxed),
@@ -113,7 +113,7 @@ pub(crate) fn effective() -> TimeConfig {
     }
 }
 
-/// Deterministic (virtual) time active — `Config::time.uncontrolled_time`
+/// Deterministic (virtual) time active — `Config::determinism.time.uncontrolled_time`
 /// off.
 pub(crate) fn deterministic() -> bool {
     !UNCONTROLLED_TIME.load(Ordering::Relaxed)
