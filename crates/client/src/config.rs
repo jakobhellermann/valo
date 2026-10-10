@@ -90,6 +90,7 @@ impl ConfigArgs {
                 uncontrolled_input: self.uncontrolled_input || self.uncontrolled,
             },
             skip_draw: SkipDrawMode::Off,
+            resolved_modules: Vec::new(),
         }
     }
 }

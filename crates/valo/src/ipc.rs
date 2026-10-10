@@ -70,6 +70,7 @@ pub fn init() -> Result<()> {
         )));
     };
     GlobalState::get().apply_config(&config);
+    crate::gamespecific::unity::install(&config.resolved_modules)?;
 
     // The init client's next message (or closing) decides the session: a
     // command keeps the connection and enters held (gated session),
@@ -430,6 +431,8 @@ pub fn effective_config() -> Config {
         input: InputConfig {
             uncontrolled_input: state.uncontrolled_input.load(Ordering::Relaxed),
         },
+        // consumed by the hooks at init, not kept
+        resolved_modules: Vec::new(),
     }
 }
 
