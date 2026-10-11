@@ -35,8 +35,19 @@ pub fn configure_target(cmd: &mut Command, gpu: bool) -> Result<()> {
     cmd.env("vblank_mode", "0");
     // Force Mesa
     cmd.env("__GLX_VENDOR_LIBRARY_NAME", "mesa");
-    // Force llvmpipe for savestate compatibility
-    cmd.env("LIBGL_ALWAYS_SOFTWARE", "1");
+    // Force llvmpipe for savestate compatibility, except when the target
+    // is set up for zink (via the command's own environment or the
+    // inherited one): the software GL path makes zink request a CPU Vulkan
+    // device, which the gfxstream guest ICD does not provide. A zink run
+    // renders deterministically through the guest ICD instead.
+    let zink = std::ffi::OsStr::new("zink");
+    let zink_forced = cmd
+        .get_envs()
+        .any(|(k, v)| k == "MESA_LOADER_DRIVER_OVERRIDE" && v == Some(zink))
+        || std::env::var_os("MESA_LOADER_DRIVER_OVERRIDE").as_deref() == Some(zink);
+    if !zink_forced {
+        cmd.env("LIBGL_ALWAYS_SOFTWARE", "1");
+    }
     // Disable Wayland since we better support X11
     cmd.env("WAYLAND_DISPLAY", "");
     // Deterministic time zone.
