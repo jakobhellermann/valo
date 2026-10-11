@@ -172,6 +172,30 @@ pub struct X11SavedState {
     conn_count: usize,
 }
 
+/// Whether a connection is the backing xcb connection of a tracked Xlib
+/// display: those are quiesced by the display lock-and-sync, and the raw
+/// connection quiesce must skip them.
+pub fn is_display_backed(conn: *mut ()) -> bool {
+    GAME_DISPLAYS
+        .iter()
+        .any(|display| !display.is_null() && unsafe { valo_x11_conn(display) } == conn)
+}
+
+/// Whether a connection is at a message boundary: no half-read reply, no
+/// buffered stream bytes, no half-written request. Read-only and
+/// lock-free (the counters helper takes no locks), so the quiesce can
+/// poll it while other threads are still parked in blocking waits.
+pub fn is_quiet(conn: *mut ()) -> bool {
+    let mut counters = XcbCounters::default();
+    // SAFETY: tracked connections are live xcb connection pointers; the
+    // counters helper is read-only and takes no locks.
+    unsafe { valo_xcb_debug_counters(conn, &mut counters) };
+    counters.in_queue_len == 0
+        && counters.in_current_reply == 0
+        && counters.out_queue_len == 0
+        && counters.out_writing == 0
+}
+
 impl X11SavedState {
     /// Save current X11 connection state. Call BEFORE restoring memory.
     pub fn save() -> Result<Self> {

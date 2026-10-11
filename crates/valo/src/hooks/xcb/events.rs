@@ -16,8 +16,12 @@ use super::{
 };
 use crate::{debug, input_feed, override_sym, trace};
 
+use super::quiesce::{enter, exit};
+
 override_sym!(xcb_poll_for_event(conn: *mut xcb_connection_t) -> *mut xcb_generic_event_t, lib: LIB_XCB, |real| {
+    enter();
     let event = poll_substituted(conn, || real(conn));
+    exit();
     let (code, name) = debug::xcb::describe_event(event);
     if code == 0 {
         trace!(Hooks, "xcb_poll_for_event conn={conn:p} -> none");
@@ -31,11 +35,13 @@ override_sym!(xcb_poll_for_event(conn: *mut xcb_connection_t) -> *mut xcb_generi
 });
 
 override_sym!(xcb_wait_for_event(conn: *mut xcb_connection_t) -> *mut xcb_generic_event_t, lib: LIB_XCB, |real| {
+    enter();
     debug!(
         Hooks,
         "xcb_wait_for_event enter conn={conn:p}",
     );
     let event = wait_substituted(conn, || real(conn));
+    exit();
     let (code, name) = debug::xcb::describe_event(event);
     debug!(
         Hooks,
@@ -47,7 +53,9 @@ override_sym!(xcb_wait_for_event(conn: *mut xcb_connection_t) -> *mut xcb_generi
 // Xlib-XCB fetches already-queued events through this entry point, so it
 // needs the same substitution as poll.
 override_sym!(xcb_poll_for_queued_event(conn: *mut xcb_connection_t) -> *mut xcb_generic_event_t, lib: LIB_XCB, |real| {
+    enter();
     let event = poll_substituted(conn, || real(conn));
+    exit();
     let (code, name) = debug::xcb::describe_event(event);
     trace!(
         Hooks,
@@ -56,11 +64,13 @@ override_sym!(xcb_poll_for_queued_event(conn: *mut xcb_connection_t) -> *mut xcb
     event
 });
 
-override_sym!(xcb_flush(conn: *mut xcb_connection_t) -> c_int, lib: LIB_XCB, |real| { real(conn) });
+override_sym!(xcb_flush(conn: *mut xcb_connection_t) -> c_int, lib: LIB_XCB, |real| { enter(); let r = real(conn); exit(); r });
 
 override_sym!(xcb_wait_for_special_event(conn: *mut xcb_connection_t, se: *mut xcb_special_event_t) -> *mut xcb_generic_event_t, lib: LIB_XCB, |real| {
+    enter();
     trace!(Hooks, "xcb_wait_for_special_event enter conn={conn:p} se={se:p}");
     let event = real(conn, se);
+    exit();
     trace!(
         Hooks,
         "xcb_wait_for_special_event returned conn={conn:p} se={se:p} event={event:p}",
@@ -69,7 +79,9 @@ override_sym!(xcb_wait_for_special_event(conn: *mut xcb_connection_t, se: *mut x
 });
 
 override_sym!(xcb_poll_for_special_event(conn: *mut xcb_connection_t, se: *mut xcb_special_event_t) -> *mut xcb_generic_event_t, lib: LIB_XCB, |real| {
+    enter();
     let event = real(conn, se);
+    exit();
     let (code, name) = debug::xcb::describe_event(event);
     if code == 0 {
         trace!(Hooks, "xcb_poll_for_special_event conn={conn:p} se={se:p} -> none");

@@ -5,6 +5,7 @@ pub(crate) mod events;
 mod kicks;
 pub(crate) mod present;
 pub(crate) mod queue;
+pub mod quiesce;
 mod windows;
 
 pub use conn::*;
@@ -19,6 +20,7 @@ const LIB_XCB: *const c_char = c"libxcb.so.1".as_ptr();
 unsafe extern "C" {
     pub type xcb_connection_t;
     pub type xcb_generic_event_t;
+    pub type xcb_generic_error_t;
     pub type xcb_special_event_t;
     pub type xcb_auth_info_t;
     pub type xcb_extension_t;
