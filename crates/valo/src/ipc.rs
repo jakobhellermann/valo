@@ -339,7 +339,17 @@ fn handle_command(
         }
         ClientToLib::Checkpoint(slot) => {
             info!(Ipc, "checkpoint slot {slot} requested at frame {frame}");
-            crate::valo_checkpoint_slot(slot);
+            // a failed save keeps the live state intact: report it and
+            // stay held instead of killing the session
+            if let Err(e) = crate::checkpoint_slot(slot) {
+                error!(Ipc, "checkpoint slot {slot} failed: {e}");
+                if let Err(send_err) = conn.send(&LibToClient::Error(Error {
+                    message: format!("checkpoint slot {slot} failed: {e}"),
+                })) {
+                    warn!(Ipc, "send checkpoint error: {send_err}");
+                }
+                return Action::Hold;
+            }
             // valo_checkpoint returns a second time when a later restore jumps back into it
             let response = match GlobalState::get().restore_in_progress() {
                 true => LibToClient::RestoreSucceeded(RestoreSucceeded { frame }),
