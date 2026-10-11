@@ -263,6 +263,7 @@
             sdl3.dev
             vulkan-headers
             vulkan-loader
+            libGL.dev
             mesaGpu.packages.${system}.default
             kumquatPackage
           ];
