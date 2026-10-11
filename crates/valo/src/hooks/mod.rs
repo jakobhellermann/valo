@@ -8,7 +8,7 @@ use libc::c_char;
 
 mod deadline;
 mod dlhook;
-mod glx;
+pub(crate) mod glx;
 mod poll;
 mod posix;
 mod pthread;
