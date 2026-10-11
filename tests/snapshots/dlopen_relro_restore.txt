@@ -1,0 +1,4 @@
+before: zlib roundtrip ok
+restore slot 0
+slot 0 timeline: libz mapped=0
+after: zlib roundtrip ok
