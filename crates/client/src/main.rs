@@ -21,11 +21,10 @@ use valo_ipc::messages::{ClientToLib, FrameBoundary, LibToClient};
 use valo_launch::gpu_session::GpuSession;
 use valo_launch::{paths, resolve_lib};
 
-/// How long to wait for the next FrameBoundary after sending Advance
-/// before assuming the target hung.
-/// On expiry the client prints a hang report to stderr, and keeps waiting.
+/// How long to wait for the next FrameBoundary after sending Advance before assuming the target hung.
 const HANG_TIMEOUT: Duration = Duration::from_secs(2);
-const GPU_HANG_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long to wait for the first frame boundary
+const FIRST_HANG_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Parser)]
 #[command(
@@ -231,8 +230,6 @@ fn run(
     if let Err(e) = &result {
         eprintln!("ipc loop ended: {e:#}");
     }
-    // Best-effort cleanup of the socket file.
-    let _ = std::fs::remove_file(sock_path);
 
     if matches!(result, Ok(SessionEnd::Hung)) && !gdb {
         let host_died = gpu
@@ -245,6 +242,8 @@ fn run(
             let _ = child.kill();
             let _ = child.wait();
         }
+        let _ = std::fs::remove_file(sock_path);
+
         return Ok(ExitCode::from(125));
     }
 
@@ -254,6 +253,7 @@ fn run(
     } else {
         wait_or_kill(&mut child)?
     };
+    let _ = std::fs::remove_file(sock_path);
     let host_died = gpu
         .as_mut()
         .map(report_kumquat_exit)
@@ -304,10 +304,11 @@ fn run_ipc_loop(
         eprintln!("[valo-client] ipc connected on {}", sock.display());
 
         conn.init(&config)?;
-        conn.set_read_timeout(hang_timeout(config.use_gpu))
+        conn.set_read_timeout(FIRST_HANG_TIMEOUT)
             .context("set hang watchdog timeout")?;
 
         let pid = child.id();
+        let mut first_boundary = true;
         loop {
             let msg = match conn.recv() {
                 Ok(Some(m)) => m,
@@ -316,13 +317,18 @@ fn run_ipc_loop(
                     break;
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                    report_hang(pid, config.use_gpu)?;
+                    report_hang(pid)?;
                     return Ok(SessionEnd::Hung);
                 }
                 Err(e) => return Err(e).context("ipc recv"),
             };
             match msg {
                 LibToClient::FrameBoundary(FrameBoundary { frame: _ }) => {
+                    if first_boundary {
+                        first_boundary = false;
+                        conn.set_read_timeout(HANG_TIMEOUT)
+                            .context("set hang timeout")?;
+                    }
                     // Send hotkey-triggered commands before advancing; the
                     // lib executes Checkpoint/Restore synchronously and the
                     // response arrives as the next message.
@@ -367,10 +373,10 @@ fn run_ipc_loop(
     }
 }
 
-pub(crate) fn report_hang(pid: u32, use_gpu: bool) -> Result<()> {
+pub(crate) fn report_hang(pid: u32) -> Result<()> {
     eprintln!(
         "[valo-client] hang: no frame boundary for {:?} (pid {pid})",
-        hang_timeout(use_gpu)
+        HANG_TIMEOUT
     );
 
     for entry in std::fs::read_dir(format!("/proc/{pid}/task"))? {
@@ -386,14 +392,6 @@ pub(crate) fn report_hang(pid: u32, use_gpu: bool) -> Result<()> {
     eprintln!("[valo-client] attach with:");
     eprintln!("  gdb -p {pid} -ex 'thread apply all bt'");
     Ok(())
-}
-
-fn hang_timeout(use_gpu: bool) -> Duration {
-    if use_gpu {
-        GPU_HANG_TIMEOUT
-    } else {
-        HANG_TIMEOUT
-    }
 }
 
 /// Like [`ClientIPC::establish`], but gives up when the child exits first
