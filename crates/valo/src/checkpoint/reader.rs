@@ -640,6 +640,40 @@ fn reallocate_area(
         && let Some(current_area) = current_area.as_deref()
         && saved_area.address.start > current_area.address.start
     {
+        // The main stack grew below its saved bottom since the checkpoint.
+        // The [stack] mapping is the process's only VM_GROWSDOWN one: a
+        // replacement created by mmap is not growable, and the deterministic
+        // replay re-descends past the saved bottom right after the restore -
+        // the first write below the re-created bottom dies. Keep the grown
+        // mapping (libTAS ignores the growth the same way), drop the pages
+        // below the saved bottom so the replay reads the same untouched
+        // stack as the original run, and restore the saved range in place.
+        if let (MMapPath::Stack, MMapPath::Stack) = (&saved_area.path_kind, &current_area.path_kind)
+        {
+            let excess = (saved_area.address.start - current_area.address.start) as usize;
+            info!(
+                Restore,
+                "stack regrew {} bytes below the saved bottom, keeping the grown mapping", excess
+            );
+            // SAFETY: anonymous pages of the current [stack] mapping;
+            // madvise never dereferences the range.
+            if unsafe {
+                libc::madvise(
+                    current_area.address.start as *mut _,
+                    excess,
+                    libc::MADV_DONTNEED,
+                )
+            } != 0
+            {
+                // Stale pre-restore frames below the saved bottom only
+                // risk replay divergence, not correctness: continue.
+                error!(
+                    Restore,
+                    "failed to drop the regrown stack tail of {} bytes", excess
+                );
+            }
+            return Ok(Ordering::Equal);
+        }
         return current_before_saved(current_area);
     }
 
