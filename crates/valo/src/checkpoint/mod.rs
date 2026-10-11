@@ -340,10 +340,15 @@ pub fn checkpoint(slot: SnapshotSlot) -> Result<()> {
     // quiesce X before the freeze: no thread is inside an Xlib call when
     // suspended, and no request or reply is in flight
     crate::hooks::xlib::xsync::lock_and_sync_displays();
+    // raw xcb connections have no display lock: barrier their entry
+    // points and roundtrip them to a message boundary before the freeze
+    crate::hooks::xcb::quiesce::quiesce();
 
     structured::events::trace_step("checkpoint.freeze.begin");
     let frozen = &threads::suspend_others(exclusive, None);
     structured::events::trace_step("checkpoint.freeze.end");
+
+    crate::hooks::xcb::quiesce::release();
 
     // released before any memory is written, so the snapshot carries no
     // Xlib lock state
@@ -457,11 +462,16 @@ pub fn restore(slot: SnapshotSlot) -> Result<()> {
     // release the lock here: the rewind discards this timeline, and the
     // rewound locks are the snapshot's unlocked ones
     crate::hooks::xlib::xsync::lock_and_sync_displays();
+    // raw xcb connections have no display lock: barrier their entry
+    // points and roundtrip them to a message boundary before the freeze
+    crate::hooks::xcb::quiesce::quiesce();
 
     structured::events::trace_step("restore.freeze.begin");
     let frozen = threads::suspend_others(&mut exclusive, Some(&snapshot.header.threads));
     drop(snapshot);
     structured::events::trace_step("restore.freeze.end");
+
+    crate::hooks::xcb::quiesce::release();
 
     structured::events::trace_step("restore.fds.begin");
     structured::events::log_fd_list(&mut exclusive, &frozen, "restore.fds")?;
