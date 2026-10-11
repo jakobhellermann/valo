@@ -16,6 +16,44 @@ cargo valo test # run tests in ./tests
 cargo valo test --coverage
 ```
 
+# GPU snapshots
+
+Valo supports running under vulkan using the GPU, with checkpoint support using [gfxstream](https://github.com/google/gfxstream) and [rutabaga/kumquat](https://github.com/magma-gpu/rutabaga_gfx).
+Graphics API calls are streamed through gfxstream into a `kumquat` side process which manages renders to the GPU and manages snapshots. gfxstream tracks vulkan calls and their dependencies, in order to be able to recreate the expected GPU state on restore.
+
+```mermaid
+flowchart TB
+    client["valo client"]
+
+    subgraph game["game process"]
+        unity["Vulkan"]
+        icd["gfxstream ICD"]
+        wsi["Mesa X11 WSI"]
+        valo["libvalo.so"]
+    end
+
+    subgraph kq["kumquat"]
+        gfx["gfxstream host"]
+    end
+
+    subgraph dsp["display"]
+        xway["XWayland"]
+        gpu["host GPU"]
+    end
+
+    %% command path
+    unity -->|vkQueueSubmit| icd
+    icd -->|"virtio-gpu<br/>(gpu.sock)"| gfx
+    gfx -->|Vulkan| gpu
+
+    unity -->|acquire / present| wsi
+    wsi -->|present| xway
+    gfx -.-|shared memfd mappings| wsi
+
+    valo -.->|frame boundary hooks| unity
+    valo <-.->|valo.sock| client
+```
+
 # Environment variables
 
 `libvalo.so` reads the following environment variables at process startup. All
