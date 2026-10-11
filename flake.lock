@@ -40,11 +40,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1791757985,
-        "narHash": "sha256-3cg+lhe9O7etQYhtG4pywfdfCmq9+G3WdCjLFcTY1Ao=",
+        "lastModified": 1792259480,
+        "narHash": "sha256-y3KRDY7Zwmj0ARXEgLLWUZ0ypVXkEAj2C9oWlqBY440=",
         "owner": "jakobhellermann",
         "repo": "gfxstream",
-        "rev": "57e52ed2b52a7095beb516eec356a45993593450",
+        "rev": "a4b13f7657f06b5f3ace95042c90f64b57ec6f62",
         "type": "github"
       },
       "original": {
@@ -64,11 +64,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1791751268,
-        "narHash": "sha256-8R3bhRV+Apl1a92mF8YS3+kl+6I7zVWsYKiExY4S6UQ=",
+        "lastModified": 1791821614,
+        "narHash": "sha256-eDZBTEe8r1JvP1vjAlwuuStn7LSh4ZtpSz8W6smReNI=",
         "owner": "jakobhellermann",
         "repo": "rutabaga_gfx",
-        "rev": "e5410f8cfc66175af8319b540ee72d1a8d479e8d",
+        "rev": "e96682611dd4c8ebc9647440ea1d86317e59e9e7",
         "type": "github"
       },
       "original": {
@@ -85,11 +85,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1791758598,
-        "narHash": "sha256-F/pGJEXY+lZaHO/9McF15BClhF8wOML4Ubv15iOivU0=",
+        "lastModified": 1792259667,
+        "narHash": "sha256-qiiR3gIkrWOEI3iFpBE7lKrzXJivT/n1TCewdJI6QtA=",
         "owner": "jakobhellermann",
         "repo": "mesa",
-        "rev": "1cbccbb386501e92cec7a893e329de88fc86afff",
+        "rev": "d4a1772c8553fe561c9d767e93c5a8db1e84f151",
         "type": "github"
       },
       "original": {
