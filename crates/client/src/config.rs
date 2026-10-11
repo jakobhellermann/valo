@@ -1,6 +1,6 @@
 // TODO(ai-review): generated, not yet audited
 use clap::{Args, ValueEnum};
-use valo_ipc::config::{Config, FrameConfig, LogConfig, LogLevel, TimeConfig};
+use valo_ipc::config::{Config, FrameConfig, LogConfig, LogLevel, SkipDrawMode, TimeConfig};
 
 #[derive(Args)]
 #[command(next_help_heading = "Auto checkpoints")]
@@ -70,7 +70,7 @@ impl ConfigArgs {
                 uncontrolled_time: self.uncontrolled_time || self.uncontrolled,
                 ..TimeConfig::default()
             },
-            skip_draw: false,
+            skip_draw: SkipDrawMode::Off,
         }
     }
 }

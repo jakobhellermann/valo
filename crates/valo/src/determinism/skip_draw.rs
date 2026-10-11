@@ -15,17 +15,20 @@
 //!
 //! The game's render submits still run at full cost — only the image pipeline
 //! (and its output-rate-coupled implicit-sync release wait, see
-//! agent-docs/explicit-sync.md) is skipped. Nothing is presented while
-//! active, so the window keeps the last presented frame; rendering into
-//! image 0 behind the compositor's back can tear the displayed frame — the
-//! known tradeoff of the libTAS approach. "Render every k-th frame" is a
-//! client concern: toggle the mode around frame boundaries (never mid-frame
-//! — IPC is only serviced at boundaries, which is what makes the mode safe).
+//! agent-docs/explicit-sync.md) is skipped. The render cadence while
+//! skipping is part of the mode: `All` presents nothing; `Interval`
+//! presents at most one frame per its minimum wall-clock interval. The
+//! per-frame decision is computed at each frame boundary and latched for
+//! the next frame — acquire and present of one frame must agree, and a
+//! wall-clock due check could flip between them. The client toggles the
+//! mode around frame boundaries (never mid-frame — IPC is only serviced
+//! at boundaries, which is what makes the mode safe).
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use crate::debug;
+use crate::global_state::GlobalState;
+use crate::{debug, determinism};
 use vulkan_headers::vulkan::vulkan::*;
 
 /// The game's graphics queue, captured at the first present (the acquire
@@ -36,14 +39,28 @@ static QUEUE_SUBMIT: AtomicUsize = AtomicUsize::new(0);
 
 static ANNOUNCED: AtomicBool = AtomicBool::new(false);
 
-/// skip_draw is session state in the runtime config (client-owned,
-/// applied at frame boundaries via `GlobalState::apply_config` — which is
-/// what makes the mode safe: acquire and present of a frame always see the
-/// same value, and IPC only turns it over between frames).
-pub(crate) fn active() -> bool {
-    crate::global_state::GlobalState::get()
-        .skip_draw
-        .load(Ordering::Relaxed)
+static SKIP_THIS_FRAME: AtomicBool = AtomicBool::new(false);
+/// Wall-clock time of the last presented frame.
+static LAST_RENDER_NS: AtomicU64 = AtomicU64::new(0);
+
+/// Computes the next frame's skip decision.
+pub(crate) fn on_frame_boundary() {
+    let global = GlobalState::get();
+    if !global.skip_draw.load(Ordering::Relaxed) {
+        SKIP_THIS_FRAME.store(false, Ordering::Relaxed);
+        return;
+    }
+
+    let now = determinism::time::real_ns();
+    if !SKIP_THIS_FRAME.load(Ordering::Relaxed) {
+        LAST_RENDER_NS.store(now, Ordering::Relaxed);
+    }
+
+    let min_render_ms = global.skip_draw_min_render_ms.load(Ordering::Relaxed) as u64;
+    let due = min_render_ms != u32::MAX as u64
+        && now.saturating_sub(LAST_RENDER_NS.load(Ordering::Relaxed)) >= min_render_ms * 1_000_000;
+
+    SKIP_THIS_FRAME.store(!due, Ordering::Relaxed);
 }
 
 /// Capture the real `vkQueueSubmit` handed out by the proc-addr chain (the
@@ -70,9 +87,10 @@ pub(crate) unsafe fn fake_acquire(
     fence: VkFence,
     p_image_index: *mut u32,
 ) -> bool {
-    if !active() {
+    if !SKIP_THIS_FRAME.load(Ordering::Relaxed) {
         return false;
     }
+
     let queue = QUEUE.load(Ordering::Acquire) as VkQueue;
     // SAFETY: `queue` is the game's own graphics queue; the handles come
     // from the caller's acquire call.
@@ -100,6 +118,9 @@ pub(crate) unsafe fn fake_acquire(
 /// `queue` must be a valid queue; the wait semaphores must be valid Vulkan
 /// handles from the game's own present info.
 pub(crate) unsafe fn drain_present(queue: VkQueue, info: &VkPresentInfoKHR) -> Option<VkResult> {
+    if !SKIP_THIS_FRAME.load(Ordering::Relaxed) {
+        return None;
+    }
     if info.waitSemaphoreCount == 0 {
         return Some(VK_SUCCESS);
     }

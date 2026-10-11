@@ -167,17 +167,11 @@ override_sym!("system" vkCreateSwapchainKHR(device: VkDevice, create_info: *cons
 
 override_sym!("system" vkQueuePresentKHR(queue: VkQueue, present_info: *const VkPresentInfoKHR) -> VkResult, lib: LIB, |real| {
     skip_draw::capture_queue(queue);
-    if skip_draw::active() {
-        // SAFETY: per the vkQueuePresentKHR contract, `pPresentInfo` is a
-        // required (non-optional) valid pointer to a VkPresentInfoKHR.
-        let present_info = unsafe { &*present_info };
-        // SAFETY: `queue` is the presenting queue; the handles come from
-        // the game's own present info.
-        if let Some(result) = unsafe { skip_draw::drain_present(queue, present_info) } {
-            return crate::frame::frame_boundary(move || result);
-        }
-        // Draining impossible (cold start): present for real so the
-        // semaphores resolve and the queue gets captured.
+    // SAFETY: per the vkQueuePresentKHR contract, `pPresentInfo` is a required valid pointer to a VkPresentInfoKHR.
+    let present_info = unsafe { &*present_info };
+    // SAFETY: `queue` is the presenting queue; the handles come from the game's own present info.
+    if let Some(result) = unsafe { skip_draw::drain_present(queue, present_info) } {
+        return crate::frame::frame_boundary(move || result);
     }
 
     if needs_swapchain_invalidation() {
