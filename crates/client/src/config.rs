@@ -1,6 +1,6 @@
 // TODO(ai-review): generated, not yet audited
 use clap::{Args, ValueEnum};
-use valo_ipc::config::{Config, FrameConfig, LogConfig, LogLevel};
+use valo_ipc::config::{Config, FrameConfig, LogConfig, LogLevel, SkipDrawMode};
 
 #[derive(Args)]
 #[command(next_help_heading = "Auto checkpoints")]
@@ -58,7 +58,7 @@ impl ConfigArgs {
                 level: self.log_level.map_or(LogLevel::Trace, Into::into),
             },
             use_gpu: self.use_gpu,
-            skip_draw: false,
+            skip_draw: SkipDrawMode::Off,
         }
     }
 }

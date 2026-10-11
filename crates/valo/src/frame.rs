@@ -1,7 +1,7 @@
 use std::sync::atomic::Ordering;
 
 use crate::global_state::GlobalState;
-use crate::{ipc, thread_tracker, trace};
+use crate::{determinism, ipc, thread_tracker, trace};
 
 pub fn frame_boundary<T>(draw: impl FnOnce() -> T) -> T {
     let global = GlobalState::get();
@@ -19,6 +19,8 @@ pub fn frame_boundary<T>(draw: impl FnOnce() -> T) -> T {
     }
 
     ipc::handle_frame_boundary(frame);
+
+    determinism::skip_draw::on_frame_boundary();
 
     draw()
 }

@@ -404,7 +404,7 @@ pub fn effective_config() -> Config {
             level: crate::log::current_level().into(),
         },
         use_gpu: state.use_gpu.load(Ordering::Relaxed),
-        skip_draw: state.skip_draw.load(Ordering::Relaxed),
+        skip_draw: state.skip_draw_mode(),
     }
 }
 

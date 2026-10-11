@@ -5,9 +5,10 @@
 //! - present does an empty submit to handle wait semaphores
 //!
 //! Game rendering still happens as usual.
+//! The skip decision is latched at each frame boundary, so acquire and present of a frame agree.
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use crate::debug;
 use crate::global_state::GlobalState;
@@ -20,8 +21,28 @@ static QUEUE_SUBMIT: AtomicUsize = AtomicUsize::new(0);
 
 static ANNOUNCED: AtomicBool = AtomicBool::new(false);
 
-pub(crate) fn active() -> bool {
-    GlobalState::get().skip_draw.load(Ordering::Relaxed)
+static SKIP_THIS_FRAME: AtomicBool = AtomicBool::new(false);
+/// Wall-clock time of the last presented frame.
+static LAST_RENDER_NS: AtomicU64 = AtomicU64::new(0);
+
+/// Computes the next frame's skip decision.
+pub(crate) fn on_frame_boundary() {
+    let global = GlobalState::get();
+    if !global.skip_draw.load(Ordering::Relaxed) {
+        SKIP_THIS_FRAME.store(false, Ordering::Relaxed);
+        return;
+    }
+
+    let now = real_ns();
+    if !SKIP_THIS_FRAME.load(Ordering::Relaxed) {
+        LAST_RENDER_NS.store(now, Ordering::Relaxed);
+    }
+
+    let min_render_ms = global.skip_draw_min_render_ms.load(Ordering::Relaxed) as u64;
+    let due = min_render_ms != u32::MAX as u64
+        && now.saturating_sub(LAST_RENDER_NS.load(Ordering::Relaxed)) >= min_render_ms * 1_000_000;
+
+    SKIP_THIS_FRAME.store(!due, Ordering::Relaxed);
 }
 
 /// Capture the real `vkQueueSubmit`
@@ -46,9 +67,10 @@ pub(crate) unsafe fn fake_acquire(
     fence: VkFence,
     image_index: &mut u32,
 ) -> bool {
-    if !active() {
+    if !SKIP_THIS_FRAME.load(Ordering::Relaxed) {
         return false;
     }
+
     let queue = QUEUE.load(Ordering::Acquire) as VkQueue;
     // SAFETY: TODO: `QUEUE` may be stale after a device recreate, and the submit is not
     // externally synchronized against the game's own submits on it.
@@ -75,6 +97,9 @@ pub(crate) unsafe fn drain_present(
     queue: VkQueue,
     wait_semaphores: &[VkSemaphore],
 ) -> Option<VkResult> {
+    if !SKIP_THIS_FRAME.load(Ordering::Relaxed) {
+        return None;
+    }
     if wait_semaphores.is_empty() {
         return Some(VK_SUCCESS);
     }
@@ -130,4 +155,10 @@ unsafe fn empty_submit(
     // SAFETY: the handles are valid per this fn's contract, and every array in
     // `info` has its declared length and outlives the call.
     Some(unsafe { submit(queue, 1, &info, fence) })
+}
+
+/// Real (untracked) monotonic nanoseconds via the raw syscall.
+fn real_ns() -> u64 {
+    let ts = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
+    ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
 }

@@ -37,6 +37,17 @@ pub struct FrameConfig {
     pub max_restores: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SkipDrawMode {
+    /// Normal playback
+    #[default]
+    Off,
+    /// Every frame skips
+    All,
+    /// Render one frame per `min_render_interval_ms`
+    Interval { min_render_interval_ms: u32 },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -45,6 +56,6 @@ pub struct Config {
     /// GPU checkpoint orchestration. Must match what the client set up for
     /// the target (kumquat host, renderer selection).
     pub use_gpu: bool,
-    /// Skip drawing
-    pub skip_draw: bool,
+    /// Which frames to skip/draw
+    pub skip_draw: SkipDrawMode,
 }

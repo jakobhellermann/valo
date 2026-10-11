@@ -75,17 +75,15 @@ override_sym!("system" vkGetDeviceProcAddr(device: VkDevice, name: *const c_char
 
 override_sym!("system" vkQueuePresentKHR(queue: VkQueue, present_info: &VkPresentInfoKHR) -> VkResult, lib: LIB, |real| {
     skip_draw::capture_queue(queue);
-    if skip_draw::active() {
-        let wait_semaphores = match present_info.waitSemaphoreCount {
-            0 => &[][..],
-            // SAFETY: VkPresentInfoKHR VU: a nonzero `waitSemaphoreCount` requires
-            // `pWaitSemaphores` to point to that many handles.
-            count => unsafe { std::slice::from_raw_parts(present_info.pWaitSemaphores, count as usize) },
-        };
-        // SAFETY: `queue` and `wait_semaphores` are valid per the VUs of this present.
-        if let Some(result) = unsafe { skip_draw::drain_present(queue, wait_semaphores) } {
-            return crate::frame::frame_boundary(move || result);
-        }
+    let wait_semaphores = match present_info.waitSemaphoreCount {
+        0 => &[][..],
+        // SAFETY: VkPresentInfoKHR VU: a nonzero `waitSemaphoreCount` requires
+        // `pWaitSemaphores` to point to that many handles.
+        count => unsafe { std::slice::from_raw_parts(present_info.pWaitSemaphores, count as usize) },
+    };
+    // SAFETY: `queue` and `wait_semaphores` are valid per the VUs of this present.
+    if let Some(result) = unsafe { skip_draw::drain_present(queue, wait_semaphores) } {
+        return crate::frame::frame_boundary(move || result);
     }
 
     if needs_swapchain_invalidation() {

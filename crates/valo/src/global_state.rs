@@ -13,7 +13,7 @@ use crate::checkpoint::fd_sync::keepalive::FdKeepaliveRegistry;
 use crate::thread_tracker::MAX_THREADS;
 use crate::token::{Exclusive, ExclusiveCell};
 use crate::utils::PAGE_SIZE;
-use valo_ipc::config::Config;
+use valo_ipc::config::{Config, SkipDrawMode};
 
 static GLOBAL_STATE: SyncUnsafeCell<MaybeUninit<GlobalState>> =
     SyncUnsafeCell::new(MaybeUninit::zeroed());
@@ -34,6 +34,8 @@ pub struct GlobalState {
     pub use_gpu: AtomicBool,
     /// Prevent drawing.
     pub skip_draw: AtomicBool,
+    /// The skip_draw minimum wall-clock interval between rendered frames
+    pub skip_draw_min_render_ms: AtomicU32,
 }
 
 impl GlobalState {
@@ -87,8 +89,37 @@ impl GlobalState {
         self.restore_frame
             .store(config.frames.restore_frame, Ordering::Relaxed);
         self.use_gpu.store(config.use_gpu, Ordering::Relaxed);
-        self.skip_draw.store(config.skip_draw, Ordering::Relaxed);
+        self.set_skip_draw(config.skip_draw);
         crate::log::set_level(config.log.level.into());
+    }
+
+    /// Stores the skip_draw mode as its enable flag and render interval.
+    fn set_skip_draw(&self, mode: SkipDrawMode) {
+        let (enabled, min_render_ms) = match mode {
+            SkipDrawMode::Off => (false, 0),
+            SkipDrawMode::All => (true, u32::MAX),
+            SkipDrawMode::Interval {
+                min_render_interval_ms,
+            } => (true, min_render_interval_ms),
+        };
+        self.skip_draw.store(enabled, Ordering::Relaxed);
+        self.skip_draw_min_render_ms
+            .store(min_render_ms, Ordering::Relaxed);
+    }
+
+    /// The currently applied skip_draw mode.
+    pub fn skip_draw_mode(&self) -> SkipDrawMode {
+        if !self.skip_draw.load(Ordering::Relaxed) {
+            return SkipDrawMode::Off;
+        }
+        let min_render_ms = self.skip_draw_min_render_ms.load(Ordering::Relaxed);
+        if min_render_ms == u32::MAX {
+            SkipDrawMode::All
+        } else {
+            SkipDrawMode::Interval {
+                min_render_interval_ms: min_render_ms,
+            }
+        }
     }
 }
 
@@ -191,6 +222,7 @@ impl GlobalState {
             restore_frame: AtomicU64::new(0),
             use_gpu: AtomicBool::new(false),
             skip_draw: AtomicBool::new(false),
+            skip_draw_min_render_ms: AtomicU32::new(0),
         })
     }
 
