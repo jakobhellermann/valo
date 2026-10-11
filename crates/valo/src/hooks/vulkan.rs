@@ -19,16 +19,19 @@
 //!    `vkCreateSwapchainKHR`) and forward everything else.
 //!
 //! `vkAcquireNextImageKHR`/`vkAcquireNextImage2KHR` are hooked the same way,
-//! but for a different reason: the first acquire after each restore must
-//! return `VK_ERROR_OUT_OF_DATE_KHR`. The presentation engine (X server /
-//! Wayland compositor) is external state a restore cannot rewind:
-//! present-idle events (X11) and explicit-sync release points (Wayland)
-//! were consumed in the discarded timeline, so a restored swapchain would
-//! deadlock in acquire, waiting for events that never re-arrive. OUT_OF_DATE
-//! is the spec-blessed way to tell the application "presentation state
-//! diverged, recreate the swapchain" — the same path every application
-//! takes on window resize, and it leaves acquire semantics intact (no image
-//! index written, no semaphore or fence signaled).
+//! but for a different reason: the first acquire — or, when a restore
+//! rewinds into a frame whose present is still pending, the first present —
+//! after each restore must return `VK_ERROR_OUT_OF_DATE_KHR`. The
+//! presentation engine (X server / Wayland compositor) is external state
+//! a restore cannot rewind: present-idle events (X11) and explicit-sync
+//! release points (Wayland) were consumed in the discarded timeline, and
+//! the swapchain's buffers may have died there too, so a restored
+//! swapchain would deadlock in acquire, waiting for events that never
+//! re-arrive. OUT_OF_DATE is the spec-blessed way to tell the application
+//! "presentation state diverged, recreate the swapchain" — the same path
+//! every application takes on window resize, and it leaves acquire
+//! semantics intact (no image index written, no semaphore or fence
+//! signaled).
 //!
 //! The one-shot trigger compares the *not-snapshotted* restore counter
 //! (`ReservedMemory::restore_count`) against a module static that *is*
@@ -69,13 +72,18 @@ static SWAPCHAIN_INVALIDATE_PENDING: AtomicBool = AtomicBool::new(false);
 // skipped, the frame boundary still fires. State, layout tables and the
 // submit fakes live in `determinism::skip_draw`.
 
-// Let the next swapchain acquire answer OUT_OF_DATE
+// Let the next swapchain acquire or present answer OUT_OF_DATE
 pub fn queue_outofdate_swapchain() {
     SWAPCHAIN_INVALIDATE_PENDING.store(true, Ordering::SeqCst);
 }
 
+/// Consumes the restore's one-shot presentation invalidation.
+fn needs_swapchain_invalidation() -> bool {
+    SWAPCHAIN_INVALIDATE_PENDING.swap(false, Ordering::SeqCst)
+}
+
 fn acquire_next_image(real: impl FnOnce() -> VkResult) -> VkResult {
-    if SWAPCHAIN_INVALIDATE_PENDING.swap(false, Ordering::SeqCst) {
+    if needs_swapchain_invalidation() {
         info!(
             Hooks,
             "restore invalidated presentation state: acquire -> OUT_OF_DATE"
@@ -171,6 +179,16 @@ override_sym!("system" vkQueuePresentKHR(queue: VkQueue, present_info: *const Vk
         // Draining impossible (cold start): present for real so the
         // semaphores resolve and the queue gets captured.
     }
+
+    if needs_swapchain_invalidation() {
+        info!(
+            Hooks,
+            "restore invalidated presentation state: present -> OUT_OF_DATE"
+        );
+        return crate::frame::frame_boundary(move || VK_ERROR_OUT_OF_DATE_KHR);
+    }
+
+    // Present for real so the semaphores resolve and the queue gets captured.
     crate::frame::frame_boundary(move || real(queue, present_info))
 });
 

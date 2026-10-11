@@ -1,0 +1,25 @@
+frame=0 present=0
+frame=1 present=0
+frame=2 present=0
+frame=3 present=0
+frame=4 present=0
+frame=5 present=0
+frame=6 checkpoint (present pending)
+frame=6 present=0
+frame=7 present=0
+frame=8 present=0
+frame=9 present=0
+frame=10 present=0
+frame=10 swapchain destroyed and recreated
+frame=11 present=0
+frame=12 present=0
+frame=12 restore
+frame=6 present out-of-date, recreated
+frame=7 present=0
+frame=8 present=0
+frame=9 present=0
+frame=10 present=0
+frame=10 swapchain destroyed and recreated
+frame=11 present=0
+frame=12 present=0
+frame=12 restore
