@@ -66,6 +66,7 @@ pub unsafe extern "C" fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *m
             b"vkGetInstanceProcAddr" => {
                 Some(crate::hooks::vulkan::vkGetInstanceProcAddr as *mut c_void)
             }
+            b"vkGetDeviceProcAddr" => crate::hooks::vulkan::dlsym_device_proc_addr(resolved),
             b"glXGetProcAddress" => Some(crate::hooks::glx::glXGetProcAddress as *mut c_void),
             b"glXGetProcAddressARB" => Some(crate::hooks::glx::glXGetProcAddressARB as *mut c_void),
             b"glXGetProcAddressEXT" => Some(crate::hooks::glx::glXGetProcAddressEXT as *mut c_void),
