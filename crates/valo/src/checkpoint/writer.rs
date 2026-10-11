@@ -460,6 +460,16 @@ fn skip(area: &MemoryMap) -> bool {
         return false;
     }
 
+    // Read-only private file mappings can hold copy-on-write pages the dynamic
+    // loader relocated before mprotect (RELRO); the per-page save keeps the
+    // pages still backed by the file as file references and stores only those.
+    if matches!(area.path_kind, MMapPath::Path)
+        && area.perms.contains(MemoryMapPermissions::PRIVATE)
+        && area.perms.contains(MemoryMapPermissions::READ)
+    {
+        return false;
+    }
+
     true
 }
 
