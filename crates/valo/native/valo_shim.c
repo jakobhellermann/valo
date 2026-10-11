@@ -25,12 +25,19 @@ int main(void)
 #else
 
 static const size_t PARK_STACK_HEADROOM = 16 * 1024;
+/* Frames the parked closure needs below the park depth: park_thread down
+ * through its futex wait (observed ~160 bytes). The entry check only guards
+ * the alloca against underflow and the park frames against the stack guard
+ * page; it must not demand more than the park depth itself, or threads on
+ * the smallest accepted stack (48 KiB) abort once they run deeper than
+ * half their stack - an ordinary working depth, not an overflow. */
+static const size_t PARK_STACK_MARGIN = 2 * 1024;
 
 int valo_park_on_stack(uintptr_t stack_low, void (*park)(void *), void *arg)
 {
     volatile char marker;
     uintptr_t sp = (uintptr_t)&marker;
-    if (sp <= stack_low + 2 * PARK_STACK_HEADROOM)
+    if (sp <= stack_low + PARK_STACK_HEADROOM + PARK_STACK_MARGIN)
         return -1;
     volatile char *padding = alloca(sp - stack_low - PARK_STACK_HEADROOM);
     padding[0] = 0;
