@@ -158,6 +158,12 @@ pub extern "C" fn valo_checkpoint_slot(slot: u32) {
     }
 }
 
+/// The IPC checkpoint: a failed save is an error reply, not a session
+/// death — the live state survives a failed snapshot.
+pub(crate) fn checkpoint_slot(slot: u32) -> Result<()> {
+    checkpoint::checkpoint(checkpoint::SnapshotSlot(slot))
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn valo_restore() {
     valo_restore_slot(0);
