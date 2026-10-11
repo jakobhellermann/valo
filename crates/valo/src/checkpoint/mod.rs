@@ -38,6 +38,28 @@ fn fmt_duration(ns: u64) -> heapless::String<16> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SnapshotSlot(pub u32);
 
+/// A failed memory save inside the signal handler parks its error here
+/// (allocation-free); the code after the raise picks it up. A failed save
+/// leaves the live state untouched — only the slot directory holds
+/// partial data — so the turn can unfreeze and continue the session.
+static HANDLER_ERROR: ExclusiveCell<Option<std::io::Error>> = ExclusiveCell::new(None);
+
+/// Resume the frozen threads and undo the alt stack handoff after a
+/// failed step inside the frozen section, then hand the error to the
+/// caller. Skipping this would leave the game wedged with all other
+/// threads parked mid-execution.
+fn unfreeze(exclusive: &mut Exclusive, e: std::io::Error) -> std::io::Error {
+    threads::resume_others();
+    let _ = alt_stack::restore_stack(exclusive);
+    e
+}
+
+/// Best-effort removal of a slot directory no usable snapshot reached;
+/// a partial save must not leave data a later restore preflight accepts.
+fn discard_slot(slot: SnapshotSlot) {
+    let _ = std::fs::remove_dir_all(home::get().join("slots").join(slot.0.to_string()));
+}
+
 pub(crate) fn ensure_slot_dir(slot: SnapshotSlot) -> Result<()> {
     let path = home::get().join("slots").join(slot.0.to_string());
     std::fs::create_dir_all(path)
@@ -257,14 +279,22 @@ pub unsafe extern "C" fn signal_handler(
     ucontext: *const ucontext_t,
 ) {
     if let Err(e) = utils::assert_no_alloc(|| checkpoint_handler_inner(ucontext)) {
-        // SignalSafeError: io::Error's Display calls strerror, which
-        // allocates and would trip the guard before this line is logged.
-        error!(
-            Checkpoint,
-            "error in checkpoint handler: {}",
-            SignalSafeFormat(&e)
-        );
-        std::process::abort();
+        if GlobalState::get().restore_in_progress() {
+            // SignalSafeError: io::Error's Display calls strerror, which
+            // allocates and would trip the guard before this line is logged.
+            error!(
+                Checkpoint,
+                "error in checkpoint handler: {}",
+                SignalSafeFormat(&e)
+            );
+            // a failed restore may have left memory half-overwritten
+            std::process::abort();
+        }
+        // A failed save leaves the live state untouched: park the error
+        // without allocating or formatting and return normally — the code
+        // after the raise resumes the frozen threads and reports it.
+        // SAFETY: runs inside the single checkpoint/restore session.
+        *HANDLER_ERROR.get(&mut unsafe { Exclusive::assume() }) = Some(e);
     }
 }
 
@@ -295,26 +325,50 @@ pub fn checkpoint(slot: SnapshotSlot) -> Result<()> {
     structured::events::trace_step("checkpoint.freeze.end");
 
     structured::events::trace_step("checkpoint.fds.begin");
-    let fd_records = fd_sync::snapshot(exclusive, frozen, slot)?;
+    let fd_records = match fd_sync::snapshot(exclusive, frozen, slot) {
+        Ok(records) => records,
+        Err(e) => return Err(unfreeze(exclusive, e)),
+    };
     *FD_SNAPSHOT.get(exclusive) = fd_records;
     structured::events::trace_step("checkpoint.fds.end");
 
     structured::events::trace_step("checkpoint.gpu.trigger.begin");
-    gpu::trigger_snapshot(slot)?;
+    if let Err(e) = gpu::trigger_snapshot(slot) {
+        return Err(unfreeze(exclusive, e));
+    }
     structured::events::trace_step("checkpoint.gpu.trigger.end");
 
+    *HANDLER_ERROR.get(exclusive) = None;
     let mem_start_ns = monotonic_ns();
     // SAFETY: no preconditions
     unsafe { libc::raise(SIG_CHECKPOINT) };
     let mem_ns = monotonic_ns() - mem_start_ns;
+
+    if let Some(e) = HANDLER_ERROR.get(exclusive).take() {
+        error!(Checkpoint, "snapshot create failed: {e}");
+        // stay frozen until the gpu snapshot finished (its own timeout
+        // bounds the wait), then unfreeze and discard the partial slot
+        let _ = gpu::wait_snapshot_complete();
+        let e = unfreeze(exclusive, e);
+        discard_slot(slot);
+        structured::events::checkpoint_end(slot);
+        return Err(e);
+    }
 
     let restoring = state.restore_in_progress();
 
     // only wait for gpu on checkpoint, not on resume
     if !restoring {
         structured::events::trace_step("checkpoint.gpu.wait.begin");
-        gpu::wait_snapshot_complete()?; // stay frozen until gpu checkpoint is finished
+        let gpu_result = gpu::wait_snapshot_complete(); // stay frozen until gpu checkpoint is finished
         structured::events::trace_step("checkpoint.gpu.wait.end");
+        if let Err(e) = gpu_result {
+            error!(Checkpoint, "gpu snapshot failed: {e}");
+            let e = unfreeze(exclusive, e);
+            discard_slot(slot);
+            structured::events::checkpoint_end(slot);
+            return Err(e);
+        }
         let gpu_ns = monotonic_ns() - mem_start_ns - mem_ns;
         info!(
             Checkpoint,
@@ -326,7 +380,12 @@ pub fn checkpoint(slot: SnapshotSlot) -> Result<()> {
         structured::events::trace_step("restore.fds.sync.begin");
         // The rewind restored the slot's records into the channel.
         let fd_records = std::mem::take(FD_SNAPSHOT.get(exclusive));
-        fd_sync::restore(exclusive, frozen, slot, &fd_records)?;
+        if let Err(e) = fd_sync::restore(exclusive, frozen, slot, &fd_records) {
+            // the rewound timeline is half-restored; there is no state to
+            // resume into
+            error!(Checkpoint, "fd sync failed after restore: {e}");
+            std::process::abort();
+        }
         structured::events::trace_step("restore.fds.sync.end");
     }
 
