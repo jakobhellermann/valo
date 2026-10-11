@@ -11,13 +11,18 @@ const LIB: *const c_char = c"libvulkan.so.1".as_ptr();
 
 static SWAPCHAIN_INVALIDATE_PENDING: AtomicBool = AtomicBool::new(false);
 
-// Let the next swapchain acquire answer OUT_OF_DATE
+// Let the next swapchain acquire or present answer OUT_OF_DATE
 pub fn queue_outofdate_swapchain() {
     SWAPCHAIN_INVALIDATE_PENDING.store(true, Ordering::SeqCst);
 }
 
+/// Consumes the restore's one-shot presentation invalidation.
+fn needs_swapchain_invalidation() -> bool {
+    SWAPCHAIN_INVALIDATE_PENDING.swap(false, Ordering::SeqCst)
+}
+
 fn acquire_next_image(real: impl FnOnce() -> VkResult) -> VkResult {
-    if SWAPCHAIN_INVALIDATE_PENDING.swap(false, Ordering::SeqCst) {
+    if needs_swapchain_invalidation() {
         info!(
             Hooks,
             "restore invalidated presentation state: acquire -> OUT_OF_DATE"
@@ -82,6 +87,16 @@ override_sym!("system" vkQueuePresentKHR(queue: VkQueue, present_info: &VkPresen
             return crate::frame::frame_boundary(move || result);
         }
     }
+
+    if needs_swapchain_invalidation() {
+        info!(
+            Hooks,
+            "restore invalidated presentation state: present -> OUT_OF_DATE"
+        );
+        return crate::frame::frame_boundary(move || VK_ERROR_OUT_OF_DATE_KHR);
+    }
+
+    // Present for real so the semaphores resolve and the queue gets captured.
     crate::frame::frame_boundary(move || real(queue, present_info))
 });
 
