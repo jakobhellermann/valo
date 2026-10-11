@@ -4,18 +4,15 @@
 //# max_restores: 3
 // TODO(ai-review): generated, not yet audited
 //
-// RED test for the image-lifetime snapshot gap: a window resize makes the
-// driver recreate the swapchain, destroying the old swapchain images. The
-// vkDestroyImage cascade removes their boxes from the replay graph, but
-// the snapshot still serializes the present barriers that referenced
-// them, so the restore replay aborts on the first unbox of a destroyed
-// image ("Failed to unbox VkImage", kumquat SIGABRT).
+// Image-lifetime snapshot gap: a window resize makes the driver recreate
+// the swapchain, destroying the old swapchain images and their views while
+// recorded command buffers still reference them. The snapshot must drop
+// those recordings instead of replaying them (an unbox of a destroyed
+// handle aborts kumquat), and the guest must get past the pre-resize
+// swapchain's parked WSI threads after each restore: frames keep printing
+// through every restore.
 //
-// RED (current): the first restore kills kumquat during the replay.
-// GREEN (image lifetime handled on the save side or the replay skips
-// dead references): frames keep printing through every restore.
-//
-// Matches the Hollow Knight 1.2.2.1 failure: every run aborts at the
+// Same class as the Hollow Knight 1.2.2.1 failure: every run aborts at the
 // first savestate load with the same early image handle (the game resizes
 // its window during startup).
 //
