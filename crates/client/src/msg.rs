@@ -183,10 +183,10 @@ pub fn msg(sock: &Path, command: &MsgCmd) -> Result<()> {
     let pid = conn.peer_pid().context("game pid from socket peer")?;
     conn.set_read_timeout(HELLO_TIMEOUT)
         .context("set read timeout")?;
-    let current_config = match conn.hello() {
+    match conn.hello() {
         Ok(config) => config,
         Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {
-            hang_report(pid, false)?;
+            hang_report(pid)?;
             bail!("game did not answer the handshake");
         }
         Err(e) => return Err(e).context("hello"),
@@ -226,9 +226,7 @@ pub fn msg(sock: &Path, command: &MsgCmd) -> Result<()> {
         return Ok(());
     }
 
-    match recv_reply(&mut conn, pid, HANG_READ_TIMEOUT, current_config.use_gpu)
-        .context("recv reply")?
-    {
+    match recv_reply(&mut conn, pid, HANG_READ_TIMEOUT).context("recv reply")? {
         Some(LibToClient::State(state)) => println!("[valo] frame {}", state.frame),
         Some(LibToClient::FrameBoundary(b)) => println!("[valo] frame {}", b.frame),
         Some(LibToClient::Error(error)) => bail!("{}", error.message),
@@ -247,25 +245,20 @@ pub fn msg(sock: &Path, command: &MsgCmd) -> Result<()> {
 
 /// A read timeout here usually means the game is hung: report the
 /// per-thread wchan state.
-fn hang_report(pid: u32, use_gpu: bool) -> Result<()> {
-    if std::path::Path::new(&format!("/proc/{pid}")).exists() {
-        crate::report_hang(pid, use_gpu)
+fn hang_report(pid: u32) -> Result<()> {
+    if Path::new(&format!("/proc/{pid}")).exists() {
+        crate::report_hang(pid)
     } else {
         eprintln!("[valo] game pid {pid} is gone");
         Ok(())
     }
 }
 
-fn recv_reply(
-    conn: &mut ClientIPC,
-    pid: u32,
-    timeout: Duration,
-    use_gpu: bool,
-) -> Result<Option<LibToClient>> {
+fn recv_reply(conn: &mut ClientIPC, pid: u32, timeout: Duration) -> Result<Option<LibToClient>> {
     match conn.recv() {
         Ok(reply) => Ok(reply),
         Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {
-            hang_report(pid, use_gpu)?;
+            hang_report(pid)?;
             bail!("no reply within {timeout:?}");
         }
         Err(e) => Err(e.into()),
