@@ -337,6 +337,9 @@ pub fn checkpoint(slot: SnapshotSlot) -> Result<()> {
 
     alt_stack::prepare_altstack()?;
 
+    // complete all GL work before the freeze: asynchronous driver submit
+    // workers must be idle when suspended, not parked mid-transfer
+    crate::hooks::glx::quiesce(exclusive);
     // quiesce X before the freeze: no thread is inside an Xlib call when
     // suspended, and no request or reply is in flight
     crate::hooks::xlib::xsync::lock_and_sync_displays();
@@ -458,6 +461,11 @@ pub fn restore(slot: SnapshotSlot) -> Result<()> {
 
     alt_stack::prepare_altstack()?;
 
+    // complete all GL work before the freeze, like the checkpoint path:
+    // the freeze must not capture the driver's submit workers
+    // mid-transfer, or the discarded timeline's transport traffic
+    // outlives the rewind
+    crate::hooks::glx::quiesce(&mut exclusive);
     // quiesce X before the freeze, like the checkpoint path — but never
     // release the lock here: the rewind discards this timeline, and the
     // rewound locks are the snapshot's unlocked ones
