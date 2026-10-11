@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 use libc::c_char;
 
 mod dlhook;
-mod glx;
+pub(crate) mod glx;
 mod posix;
 mod pthread;
 mod randomness;

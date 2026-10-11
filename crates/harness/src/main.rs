@@ -174,6 +174,12 @@ fn run(
     log_path: &Path,
 ) -> Result<Output> {
     let mut cmd = Command::new(binary);
+    // Directives first: the declared target environment is input to
+    // configure_target (a zink override suppresses the llvmpipe forcing,
+    // which reads the command's environment).
+    for (k, v) in &config.env {
+        cmd.env(k, v);
+    }
     valo_launch::command::configure_target(&mut cmd, config.gpu)?;
     match config.link_mode {
         LinkMode::Link => {
@@ -186,9 +192,6 @@ fn run(
     let sock = PathBuf::from(format!("/tmp/valo-harness-{}.sock", std::process::id()));
     cmd.env("VALO_SOCK", &sock);
     cmd.env("VALO_LOG", log_path);
-    for (k, v) in &config.env {
-        cmd.env(k, v);
-    }
     let mut gpu = if config.gpu {
         let session = valo_launch::gpu_session::GpuSession::start()?;
         session.configure_game(&mut cmd);
@@ -266,7 +269,7 @@ fn run(
     });
 
     let timeout = if gpu.is_some() {
-        Duration::from_secs(30)
+        Duration::from_secs(10)
     } else {
         SAFETY_TIMEOUT
     };
