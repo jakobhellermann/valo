@@ -307,6 +307,10 @@ struct valo_special_event {
     pthread_cond_t special_event_cond;
 };
 
+/* Implemented in Rust (hooks/xcb/quiesce.rs): links the real libxcb entry
+ * points without going through the interposed ones. */
+extern void valo_xcb_wakeup_request(xcb_connection_t *conn);
+
 void valo_xcb_kick_special_event(xcb_connection_t *conn, uint32_t eid)
 {
     if (!conn || conn->has_error)
@@ -347,13 +351,10 @@ void valo_xcb_kick_special_event(xcb_connection_t *conn, uint32_t eid)
 
     /* A consumer parked in xcb_conn_wait's poll() only re-checks the queue
      * when socket data arrives — the injected event alone does not wake it.
-     * A blocking roundtrip forces a reply, whose arrival both wakes the
-     * poller (which then finds the injected event) and flushes anything
-     * still stuck in the out queue. */
-    xcb_get_input_focus_cookie_t cookie = xcb_get_input_focus(conn);
-    xcb_generic_error_t *error = NULL;
-    free(xcb_get_input_focus_reply(conn, cookie, &error));
-    free(error);
+     * A reply-bearing request makes the server answer, whose arrival is
+     * the wake-up; waiting for it here would block the calling thread on a
+     * connection it does not control, so the reply is left unretrieved. */
+    valo_xcb_wakeup_request(conn);
 }
 
 /* Requires a live Display without concurrent Xlib/XCB access, and src_len
