@@ -25,6 +25,8 @@ mod thread_tracker;
 mod token;
 mod utils;
 
+use std::ffi::OsStr;
+
 use crate::global_state::GlobalState;
 use crate::log::structured;
 use crate::utils::PAGE_SIZE;
@@ -60,6 +62,7 @@ extern "C" fn _init() {
 }
 
 fn init() -> Result<()> {
+    remove_ld_preload();
     home::init()?;
     log::init();
     install_panic_hook();
@@ -75,6 +78,25 @@ fn init() -> Result<()> {
     info!(Init, "valo initialized");
     structured::events::init();
     Ok(())
+}
+
+/// Remove this library from `LD_PRELOAD` so exec'd children of the target do not load it.
+fn remove_ld_preload() {
+    let Some(entries) = std::env::var_os("LD_PRELOAD") else {
+        return;
+    };
+    let kept: Vec<_> = std::env::split_paths(&entries)
+        .filter(|entry| entry.file_name() != Some(OsStr::new("libvalo.so")))
+        .collect();
+
+    // SAFETY: init_array code runs before main, single-threaded, before
+    // any other code of this process can read the environment.
+    unsafe {
+        match kept.is_empty() {
+            true => std::env::remove_var("LD_PRELOAD"),
+            false => std::env::set_var("LD_PRELOAD", std::env::join_paths(kept).unwrap()),
+        }
+    }
 }
 
 #[unsafe(no_mangle)]

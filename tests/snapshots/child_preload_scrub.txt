@@ -1,0 +1,3 @@
+parent: LD_PRELOAD=(unset)
+child: valo not loaded
+child exit=0
