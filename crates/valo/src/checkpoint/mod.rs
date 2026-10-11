@@ -213,7 +213,24 @@ fn snapshot_restore(
 
     structured::events::trace_step("restore.gpu.wait.begin");
     let gpu_start = monotonic_ns();
-    gpu::wait_restore_complete()?;
+    if let Err(e) = gpu::wait_restore_complete() {
+        // The memory restore already rewound this process to the snapshot
+        // state, and the GPU host that owns half of that state is now
+        // gone: nothing of the pre-restore process exists to return to.
+        // Die with the smallest possible footprint — logging one line and
+        // letting SIGABRT take its default action — instead of running
+        // the fatal signal machinery across the half-restored state
+        // (frozen threads, unrestored register contexts), which is
+        // undefined behavior in this state.
+        error!(Restore, "gpu host died mid-restore: {e}");
+        // SAFETY: single-threaded here (all other threads are frozen);
+        // signal() only swaps the SIGABRT disposition, abort() never
+        // returns.
+        unsafe {
+            libc::signal(libc::SIGABRT, libc::SIG_DFL);
+            libc::abort();
+        }
+    }
     gpu_ns += monotonic_ns() - gpu_start;
     structured::events::trace_step("restore.gpu.wait.end");
 
