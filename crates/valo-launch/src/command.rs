@@ -1,6 +1,8 @@
 use std::path::Path;
 use std::process::Command;
 
+use anyhow::Result;
+
 use crate::paths;
 
 enum Engine {
@@ -22,7 +24,7 @@ fn autodetect_engine(program: &Path) -> Option<Engine> {
 }
 
 /// Apply the runtime environment expected by valo to a target process.
-pub fn configure_target(cmd: &mut Command, gpu: bool) {
+pub fn configure_target(cmd: &mut Command, gpu: bool) -> Result<()> {
     let engine = autodetect_engine(Path::new(cmd.get_program()));
 
     // Set env vars for the child to nudge it onto a deterministic, software rendering path.
@@ -48,7 +50,7 @@ pub fn configure_target(cmd: &mut Command, gpu: bool) {
 
     if gpu {
         cmd.env("VIRTGPU_KUMQUAT", "1");
-        if let Some(icd) = std::env::var_os("VALO_GFXSTREAM_ICD") {
+        if let Some(icd) = crate::resolve_gfxstream_icd()? {
             cmd.env("VK_DRIVER_FILES", icd);
             cmd.env_remove("VK_LOADER_DRIVERS_SELECT");
         } else {
@@ -75,6 +77,7 @@ pub fn configure_target(cmd: &mut Command, gpu: bool) {
         }
         None => {}
     }
+    Ok(())
 }
 
 fn ensure_cmd_argument(cmd: &mut Command, arg: &str) {

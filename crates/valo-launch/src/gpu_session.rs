@@ -1,7 +1,6 @@
 // TODO(ai-review): generated, not yet audited
 //! One Kumquat GPU host and one completion pipe per `valo run` session.
 
-use std::ffi::OsStr;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
@@ -44,14 +43,14 @@ impl GpuSession {
         let read_fd = result_read.as_raw_fd();
         let write_fd = result_write.as_raw_fd();
 
-        let kumquat_bin = std::env::var_os("VALO_KUMQUAT_BIN");
-        let kumquat_bin = kumquat_bin.as_deref().unwrap_or(OsStr::new("kumquat"));
-        let mut cmd = Command::new(kumquat_bin);
+        let mut cmd = Command::new(crate::resolve_kumquat_bin()?);
         cmd.arg("--capset-names=gfxstream-vulkan")
             .arg(format!("--gpu-socket-path={}", socket.display()))
             .arg(format!("--snapshot-base={}", slots_base.display()))
             .arg(format!("--result-fd={write_fd}"))
             .env_remove("VK_DRIVER_FILES")
+            .env_remove("VK_ICD_FILENAMES")
+            .env_remove("VK_LOADER_DRIVERS_SELECT")
             .env_remove("VN_DEBUG")
             .env_remove("LD_PRELOAD")
             .stdout(Stdio::from(log.try_clone()?))
