@@ -148,7 +148,7 @@ fn run(
 
     let mut cmd = build_command(gdb, &program, &args, &lib);
     let use_gpu = config.use_gpu;
-    valo_launch::command::configure_target(&mut cmd, use_gpu);
+    valo_launch::command::configure_target(&mut cmd, use_gpu)?;
 
     if use_tui {
         // Don't let the child's stdout/stderr clobber the alternate screen.

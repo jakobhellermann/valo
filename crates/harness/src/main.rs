@@ -174,7 +174,7 @@ fn run(
     log_path: &Path,
 ) -> Result<Output> {
     let mut cmd = Command::new(binary);
-    valo_launch::command::configure_target(&mut cmd, config.gpu);
+    valo_launch::command::configure_target(&mut cmd, config.gpu)?;
     match config.link_mode {
         LinkMode::Link => {
             cmd.env("LD_LIBRARY_PATH", out_dir);

@@ -65,7 +65,7 @@ pub fn spawn(
         .with_context(|| format!("canonicalize libvalo.so path {}", lib.display()))?;
 
     let mut cmd = crate::build_command(false, &PathBuf::from(program), &target[1..], &lib);
-    valo_launch::command::configure_target(&mut cmd, use_gpu);
+    valo_launch::command::configure_target(&mut cmd, use_gpu)?;
     cmd.env("VALO_SOCK", sock);
 
     use std::os::unix::process::CommandExt;
