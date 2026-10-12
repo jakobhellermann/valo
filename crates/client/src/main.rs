@@ -5,7 +5,8 @@ mod msg;
 mod overlay;
 mod tui;
 
-use std::io::ErrorKind;
+use std::fs::File;
+use std::io::{ErrorKind, Read};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode};
@@ -155,6 +156,8 @@ fn run(
     let lib = std::fs::canonicalize(&lib)
         .with_context(|| format!("canonicalize libvalo.so path {}", lib.display()))?;
 
+    ensure_elf(&program)?;
+
     let mut cmd = build_command(gdb, &program, &args, &lib);
     let use_gpu = config.use_gpu;
     valo_launch::command::configure_target(&mut cmd, use_gpu)?;
@@ -270,6 +273,31 @@ fn run(
     } else {
         Ok(ExitCode::from(1))
     }
+}
+
+/// libvalo initializes in the first process it is preloaded into, so a wrapper script would capture it.
+fn ensure_elf(program: &Path) -> Result<()> {
+    let path = resolve_program(program)?;
+    let mut magic = [0u8; 4];
+    File::open(&path)
+        .and_then(|mut f| f.read_exact(&mut magic))
+        .with_context(|| format!("read ELF header of {}", path.display()))?;
+    if &magic != b"\x7fELF" {
+        bail!("{} is not an ELF executable", path.display());
+    }
+    Ok(())
+}
+
+fn resolve_program(program: &Path) -> Result<PathBuf> {
+    if program.components().count() > 1 {
+        return Ok(program.to_owned());
+    }
+    std::env::var_os("PATH")
+        .iter()
+        .flat_map(std::env::split_paths)
+        .map(|dir| dir.join(program))
+        .find(|candidate| candidate.is_file())
+        .with_context(|| format!("{} not found in PATH", program.display()))
 }
 
 pub(crate) fn report_kumquat_exit(session: &mut GpuSession) -> Result<bool> {
