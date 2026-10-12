@@ -3,6 +3,7 @@ use clap::{Args, ValueEnum};
 use valo_ipc::config::{Config, FrameConfig, LogConfig, LogLevel};
 
 #[derive(Args)]
+#[command(next_help_heading = "Auto checkpoints")]
 pub(crate) struct ConfigArgs {
     /// Frame at which the lib checkpoints
     #[arg(long)]
@@ -16,11 +17,11 @@ pub(crate) struct ConfigArgs {
     #[arg(long)]
     pub(crate) max_restores: Option<u64>,
 
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, help_heading = "Runtime")]
     pub(crate) log_level: Option<CliLogLevel>,
 
     /// Enable GPU checkpoint orchestration (kumquat host)
-    #[arg(long)]
+    #[arg(long, help_heading = "Runtime")]
     pub(crate) use_gpu: bool,
 }
 

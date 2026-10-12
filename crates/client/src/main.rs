@@ -28,43 +28,53 @@ const HANG_TIMEOUT: Duration = Duration::from_secs(2);
 const GPU_HANG_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Parser)]
-#[command(name = "valo", about = "valo client")]
+#[command(
+    name = "valo",
+    about = "Run programs with checkpoint/restore support and forced determinism",
+    disable_help_flag = true,
+    disable_help_subcommand = true
+)]
 struct Cli {
+    /// Print help
+    #[arg(short = 'h', long, action = clap::ArgAction::HelpShort, hide = true, global = true)]
+    help: Option<bool>,
+
     #[command(subcommand)]
     command: Cmd,
 }
 
 #[derive(Subcommand)]
+#[command(verbatim_doc_comment)]
 enum Cmd {
-    /// Run a binary with libvalo.so injected via LD_PRELOAD.
+    /// Run a binary through valo.
     Run {
         /// Path to libvalo.so. Defaults to libvalo.so next to the valo binary.
-        #[arg(long)]
+        #[arg(long, help_heading = "Runtime", value_name = "PATH")]
         lib: Option<PathBuf>,
-
-        /// Run the target inside gdb (gdb --args \<program\> [args...]).
-        #[arg(long, conflicts_with = "tui")]
-        gdb: bool,
-
-        /// Show a TUI for play/pause/snapshot/restore instead of
-        /// auto-advancing every frame.
-        #[arg(long)]
-        tui: bool,
 
         #[command(flatten)]
         config: ConfigArgs,
 
+        /// Run the target inside gdb.
+        #[arg(long, conflicts_with = "tui", help_heading = "Runtime")]
+        gdb: bool,
+
+        /// Show a TUI for play/pause/snapshot/restore
+        #[arg(long, help_heading = "Runtime")]
+        tui: bool,
+
         /// Target program to execute.
+        #[arg(help_heading = None)]
         program: PathBuf,
 
         /// Arguments forwarded to the target program.
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, help_heading = None)]
         args: Vec<String>,
     },
-    /// Spawn a detached target. Control via `valo msg`.
+    /// Spawn a detached target.
     Spawn {
         /// Path to libvalo.so. Defaults to libvalo.so next to the valo binary.
-        #[arg(long)]
+        #[arg(long, help_heading = "Runtime")]
         lib: Option<PathBuf>,
 
         /// Socket path shared with `valo msg`.
@@ -79,14 +89,14 @@ enum Cmd {
         config: ConfigArgs,
 
         /// Target program and arguments.
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, help_heading = None)]
         target: Vec<String>,
     },
 
     /// Send a command to a `valo spawn` session.
     Msg {
         /// Socket path of the spawned session.
-        #[arg(long)]
+        #[arg(long, global = true)]
         sock: Option<PathBuf>,
 
         #[command(subcommand)]

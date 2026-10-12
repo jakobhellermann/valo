@@ -24,7 +24,7 @@ const HELLO_TIMEOUT: Duration = Duration::from_secs(4);
 
 #[derive(Subcommand)]
 pub enum MsgCmd {
-    /// Query the current frame counter.
+    /// Get the current state
     State,
     /// Draw frames, then pause at the next frame boundary (default: 1).
     Advance {
