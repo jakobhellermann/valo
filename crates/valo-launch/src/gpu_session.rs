@@ -133,6 +133,13 @@ impl GpuSession {
         Ok(self.host.try_wait()?)
     }
 
+    pub fn abort(&mut self) -> Result<ExitStatus> {
+        let pid = rustix::process::Pid::from_child(&self.host);
+        rustix::process::kill_process(pid, rustix::process::Signal::ABORT)
+            .with_context(|| format!("SIGABRT kumquat (pid {pid})"))?;
+        Ok(self.host.wait()?)
+    }
+
     fn wait_ready(&mut self, socket: &Path) -> Result<()> {
         let deadline = Instant::now() + Duration::from_secs(6);
         loop {

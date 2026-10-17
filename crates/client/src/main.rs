@@ -235,6 +235,15 @@ fn run(
     }
 
     if matches!(result, Ok(SessionEnd::Hung)) && !gdb {
+        if let Some(gpu) = gpu.as_mut()
+            && gpu.exit_status()?.is_none()
+        {
+            eprintln!(
+                "[valo-client] aborting kumquat (pid {}) for a core dump",
+                gpu.pid()
+            );
+            gpu.abort()?;
+        }
         let host_died = gpu
             .as_mut()
             .map(report_kumquat_exit)
