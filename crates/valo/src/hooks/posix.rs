@@ -100,8 +100,12 @@ unsafe fn c_str<'a>(ptr: *const c_char) -> Option<&'a CStr> {
     (!ptr.is_null()).then(|| unsafe { CStr::from_ptr(ptr) })
 }
 
-/// `Some(fd)` when `path` is a randomness device, `None` to open it for real.
+/// `Some(fd)` (`Some(-1)` with errno on failure) when `path` is a randomness
+/// device, `None` to open it for real.
 fn device_open(path: Option<&CStr>, flags: c_int) -> Option<c_int> {
+    if !crate::is_target() {
+        return None;
+    }
     if !path.is_some_and(|path| RANDOM.should_hook_random_device(path)) {
         return None;
     }
@@ -115,7 +119,8 @@ fn device_open(path: Option<&CStr>, flags: c_int) -> Option<c_int> {
     })
 }
 
-/// `Some(stream)` when `path` is a randomness device, `None` to open it for real.
+/// `Some(stream)` (null with errno on failure) when `path` is a randomness
+/// device, `None` to open it for real.
 fn device_fopen(path: Option<&CStr>, mode: Option<&CStr>) -> Option<*mut libc::FILE> {
     let mode = mode?;
     if !path.is_some_and(|path| RANDOM.should_hook_random_device(path)) {

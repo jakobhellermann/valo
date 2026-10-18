@@ -90,7 +90,9 @@ pub(crate) fn link_function(
 /// ```
 ///
 /// A `variadic` hook additionally binds the caller's variadic arguments; its
-/// body runs in an `unsafe fn` and calls `real` with the forwarded values:
+/// body runs in an `unsafe fn` and calls `real` with the forwarded values.
+/// Unlike other hooks its body also runs outside the target process, as
+/// varargs can't be forwarded generically:
 ///
 /// ```ignore
 /// override_sym!(variadic open(path: *const c_char, flags: c_int) -> c_int |real, args| {
@@ -145,7 +147,11 @@ macro_rules! override_sym {
 
             let $real = fn_ptr;
 
-            $($block)?
+            if !$crate::is_target() {
+                $real($($param),*)
+            } else {
+                $($block)?
+            }
 
         }
     };
