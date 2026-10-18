@@ -1,0 +1,2 @@
+layer vkGetInstanceProcAddr is its own: yes
+loader vkGetInstanceProcAddr from: libvalo.so
