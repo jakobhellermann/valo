@@ -256,6 +256,7 @@ fn run(
     } else {
         wait_or_kill(&mut child)?
     };
+    eprintln!("[valo-client] target (pid {}) exited: {status}", child.id());
     let _ = std::fs::remove_file(sock_path);
     let host_died = gpu
         .as_mut()
