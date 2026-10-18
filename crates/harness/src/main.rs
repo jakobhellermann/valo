@@ -49,6 +49,8 @@ struct Config {
     env: Vec<(String, String)>,
     /// Shared libraries built from `tests/<path>.c`, preloaded after libvalo
     preload_after: Vec<String>,
+    /// Shared libraries built from `tests/<path>.c` without loading them
+    build_libs: Vec<String>,
 }
 
 #[derive(Default)]
@@ -101,6 +103,9 @@ fn parse_config(source: &Path) -> Config {
                     }
                     "preload_after" => {
                         config.preload_after.push(value.to_string());
+                    }
+                    "build_lib" => {
+                        config.build_libs.push(value.to_string());
                     }
                     "env" => {
                         if let Some((k, v)) = value.split_once('=') {
@@ -168,14 +173,14 @@ fn compile(
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    for lib in &config.preload_after {
-        compile_preload(lib, tests_dir, tests_out_dir)?;
+    for lib in config.preload_after.iter().chain(&config.build_libs) {
+        compile_lib(lib, tests_dir, tests_out_dir)?;
     }
     Ok(binary)
 }
 
-fn compile_preload(lib: &str, tests_dir: &Path, tests_out_dir: &Path) -> Result<PathBuf> {
-    let output_path = preload_path(lib, tests_out_dir);
+fn compile_lib(lib: &str, tests_dir: &Path, tests_out_dir: &Path) -> Result<PathBuf> {
+    let output_path = lib_path(lib, tests_out_dir);
     fs::create_dir_all(output_path.parent().unwrap())?;
     let output = Command::new("clang")
         .args(["-O2", "-g", "-shared", "-fPIC"])
@@ -193,7 +198,7 @@ fn compile_preload(lib: &str, tests_dir: &Path, tests_out_dir: &Path) -> Result<
     Ok(output_path)
 }
 
-fn preload_path(lib: &str, tests_out_dir: &Path) -> PathBuf {
+fn lib_path(lib: &str, tests_out_dir: &Path) -> PathBuf {
     tests_out_dir.join(format!("{lib}.so"))
 }
 
@@ -229,7 +234,7 @@ fn run(
         config
             .preload_after
             .iter()
-            .map(|lib| preload_path(lib, tests_out_dir)),
+            .map(|lib| lib_path(lib, tests_out_dir)),
     );
     if !preload.is_empty() {
         cmd.env("LD_PRELOAD", std::env::join_paths(&preload)?);

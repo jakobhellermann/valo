@@ -86,9 +86,7 @@ unsafe extern "C" fn dlsym_hook(handle: *mut c_void, symbol: *const c_char) -> *
             b"xcb_present_select_input" => {
                 Some(crate::hooks::xcb::xcb_present_select_input as *mut c_void)
             }
-            b"vkGetInstanceProcAddr" => {
-                Some(crate::hooks::vulkan::vkGetInstanceProcAddr as *mut c_void)
-            }
+            b"vkGetInstanceProcAddr" => crate::hooks::vulkan::dlsym_instance_proc_addr(resolved),
             b"vkGetDeviceProcAddr" => crate::hooks::vulkan::dlsym_device_proc_addr(resolved),
             b"glXGetProcAddress" => Some(crate::hooks::glx::glXGetProcAddress as *mut c_void),
             b"glXGetProcAddressARB" => Some(crate::hooks::glx::glXGetProcAddressARB as *mut c_void),
