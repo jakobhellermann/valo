@@ -56,21 +56,43 @@ pub(crate) fn link_function(
         name.to_str().unwrap_or("invalid utf8")
     );
 
-    real = run_native(|| unsafe { libc::dlsym(libc::RTLD_NEXT, source) });
+    // glibc's dlsym: an interposer's dlsym may answer with its own hook table, whose entries
+    // can bind to libvalo's hooks (MangoHud's GL shim) and make a hook its own real.
+    let libc_dlsym = dlhook::libc_dlsym();
+    // SAFETY: `source` is nul-terminated.
+    real = unsafe { libc_dlsym(libc::RTLD_NEXT, source) };
     if real.is_null() && !library.is_null() {
         let handle =
             run_native(|| unsafe { libc::dlopen(library, libc::RTLD_LAZY | libc::RTLD_NOLOAD) });
         if !handle.is_null() {
-            real = run_native(|| unsafe { libc::dlsym(handle, source) });
+            // SAFETY: a valid handle and a nul-terminated `source`.
+            real = unsafe { libc_dlsym(handle, source) };
             unsafe { libc::dlclose(handle) };
         }
     }
     if !real.is_null() {
+        assert!(
+            !in_libvalo(real),
+            "the real '{}' resolved into libvalo itself",
+            name.to_str().unwrap_or("invalid utf8")
+        );
         orig.store(real, Ordering::SeqCst);
         return Some(real);
     }
 
     None
+}
+
+fn in_libvalo(addr: *const c_void) -> bool {
+    fn base(addr: *const c_void) -> *mut c_void {
+        let mut info = std::mem::MaybeUninit::<libc::Dl_info>::uninit();
+        // SAFETY: the out pointer is valid for writes.
+        let found = unsafe { libc::dladdr(addr, info.as_mut_ptr()) };
+        assert!(found != 0, "{addr:p} is in no loaded object");
+        // SAFETY: dladdr succeeded, so it filled `info`.
+        unsafe { info.assume_init() }.dli_fbase
+    }
+    base(addr) == base(in_libvalo as *const c_void)
 }
 
 /// Defines an `extern "C"` function that overrides a symbol via `LD_PRELOAD`.
