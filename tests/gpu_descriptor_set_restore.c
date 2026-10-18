@@ -129,8 +129,7 @@ static void make_buffer(VkDevice dev, VkPhysicalDevice pd, VkDeviceSize size,
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .allocationSize = reqs.size,
         .memoryTypeIndex = find_mem_type(pd, reqs.memoryTypeBits,
-                                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+                                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT),
     };
     CHECK(vkAllocateMemory(dev, &mai, NULL, mem));
     CHECK(vkBindBufferMemory(dev, *buf, *mem, 0));
@@ -162,6 +161,11 @@ static void run_copy(const char *phase) {
     };
     CHECK(vkQueueSubmit(queue, 1, &si, fence));
     CHECK(vkWaitForFences(device, 1, &fence, VK_TRUE, (uint64_t)-1));
+    // The memory need not be coherent.
+    VkMappedMemoryRange out_range = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+                                     .memory = out_mem,
+                                     .size = VK_WHOLE_SIZE};
+    CHECK(vkInvalidateMappedMemoryRanges(device, 1, &out_range));
 
     for (uint32_t i = 0; i < N; i++) {
         uint32_t expect = 0xC0FFEE00u + i;
@@ -238,6 +242,10 @@ int main(void) {
     void *in_map;
     CHECK(vkMapMemory(device, in_mem, 0, VK_WHOLE_SIZE, 0, &in_map));
     for (uint32_t i = 0; i < N; i++) ((uint32_t *)in_map)[i] = 0xC0FFEE00u + i;
+    VkMappedMemoryRange in_range = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+                                    .memory = in_mem,
+                                    .size = VK_WHOLE_SIZE};
+    CHECK(vkFlushMappedMemoryRanges(device, 1, &in_range));
     vkUnmapMemory(device, in_mem);
 
     VkDescriptorPoolSize pool_sizes = {
