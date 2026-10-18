@@ -8,14 +8,15 @@
 //! libTAS, which detects hotkeys in its program process the same way
 //! (`GameEventsXcb`), except we poll lazily instead of per-frame.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use x11rb::connection::{Connection, RequestConnection};
-use x11rb::protocol::res::{self, ClientIdMask, ClientIdSpec};
+use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
-    ChangeWindowAttributesAux, ConnectionExt, EventMask, KeyButMask, MapState, Window, WindowClass,
+    ChangeWindowAttributesAux, ConnectionExt, EventMask, KeyButMask, MapState, Window,
 };
 use x11rb::rust_connection::RustConnection;
 
@@ -59,33 +60,31 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// Poll interval while waiting for the game window to (re)appear.
 const DISCOVER_INTERVAL: Duration = Duration::from_millis(200);
 
-/// Spawn the hotkey listener thread. It finds the game window via the
-/// X-Resource client pid, selects key events on it, and calls `on_event` for
-/// attachment status, hotkey presses (auto-repeat suppressed) and fatal errors.
+/// Spawn the hotkey listener thread. It attaches to the game window the lib
+/// reports, selects key events on it, and calls `on_event` for attachment
+/// status, hotkey presses (auto-repeat suppressed) and fatal errors.
 ///
 /// The thread exits on unrecoverable X errors; hotkeys are a convenience,
 /// not a guarantee.
-pub fn spawn_thread<F>(target_pid: u32, on_event: F)
+pub fn spawn_thread<F>(game_window: GameWindow, on_event: F)
 where
     F: Fn(HotkeyEvent) + Send + 'static,
 {
     thread::Builder::new()
         .name("game-hotkeys".into())
         .spawn(move || {
-            if let Err(e) = listen(target_pid, &on_event) {
+            if let Err(e) = listen(&game_window, &on_event) {
                 on_event(HotkeyEvent::Fatal(format!("{e:#}")));
             }
         })
         .expect("spawn hotkey thread");
 }
 
-fn listen<F>(target_pid: u32, on_event: &F) -> Result<()>
+fn listen<F>(game_window: &AtomicU32, on_event: &F) -> Result<()>
 where
     F: Fn(HotkeyEvent),
 {
-    let (conn, screen) = x11rb::connect(None).context("connect to X")?;
-    let root = conn.setup().roots[screen].root;
-    require_xres(&conn)?;
+    let (conn, _) = x11rb::connect(None).context("connect to X")?;
     let keymap = Keymap::load(&conn)?;
 
     // keycode -> currently held, so auto-repeat fires once per press.
@@ -95,7 +94,7 @@ where
     // (fullscreen switches recreate windows).
     'discover: loop {
         let window = loop {
-            match find_window_by_pid(&conn, root, target_pid) {
+            match viewable_game_window(&conn, game_window) {
                 Some(w) => break w,
                 None => thread::sleep(DISCOVER_INTERVAL),
             }
@@ -138,51 +137,21 @@ where
     }
 }
 
-pub(crate) fn require_xres(conn: &RustConnection) -> Result<()> {
-    conn.extension_information(res::X11_EXTENSION_NAME)
-        .context("query X-Resource extension")?
-        .context("X server lacks the X-Resource extension needed to find the game window")?;
-    Ok(())
-}
+/// The game's current top-level X window as reported at frame boundaries; 0 while unknown.
+pub type GameWindow = Arc<AtomicU32>;
 
-/// Depth-first search for a viewable, managed window owned by an X client
-/// with process id `pid`. Best-effort: windows that vanish mid-walk are
-/// skipped, a dead connection yields None.
-pub(crate) fn find_window_by_pid(conn: &RustConnection, root: Window, pid: u32) -> Option<Window> {
-    let reply = conn.query_tree(root).ok()?.reply().ok()?;
-    for child in reply.children {
-        let Some(attrs) = conn
-            .get_window_attributes(child)
-            .ok()
-            .and_then(|c| c.reply().ok())
-        else {
-            continue;
-        };
-        if attrs.map_state == MapState::VIEWABLE
-            && !attrs.override_redirect
-            && attrs.class == WindowClass::INPUT_OUTPUT
-            && client_pid(conn, child) == Some(pid)
-        {
-            return Some(child);
-        }
-        if let Some(found) = find_window_by_pid(conn, child, pid) {
-            return Some(found);
-        }
+/// The reported game window once it is viewable. A dead connection or a window that vanished
+/// yields None.
+pub(crate) fn viewable_game_window(
+    conn: &RustConnection,
+    game_window: &AtomicU32,
+) -> Option<Window> {
+    let window = game_window.load(Ordering::Relaxed);
+    if window == 0 {
+        return None;
     }
-    None
-}
-
-fn client_pid(conn: &RustConnection, window: Window) -> Option<u32> {
-    let spec = ClientIdSpec {
-        client: window,
-        mask: ClientIdMask::LOCAL_CLIENT_PID,
-    };
-    let reply = res::query_client_ids(conn, &[spec]).ok()?.reply().ok()?;
-    reply
-        .ids
-        .iter()
-        .find(|id| id.spec.mask.contains(ClientIdMask::LOCAL_CLIENT_PID))
-        .and_then(|id| id.value.first().copied())
+    let attrs = conn.get_window_attributes(window).ok()?.reply().ok()?;
+    (attrs.map_state == MapState::VIEWABLE).then_some(window)
 }
 
 /// keycode -> keysyms table built from GetKeyboardMapping.

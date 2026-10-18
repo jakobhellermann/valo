@@ -83,6 +83,8 @@ pub struct InputState {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrameBoundary {
     pub frame: u64,
+    /// The game's current top-level X window, most recently mapped first.
+    pub game_window: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
