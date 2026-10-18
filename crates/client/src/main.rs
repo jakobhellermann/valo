@@ -220,6 +220,8 @@ fn run(
     if let Ok(SessionEnd::Hung { pid: game_pid }) = result
         && !gdb
     {
+        eprintln!("[valo-client] aborting the stalled game (pid {game_pid}) for a core dump");
+        abort_game(game_pid);
         if let Some(gpu) = gpu.as_mut()
             && gpu.exit_status()?.is_none()
         {
@@ -229,17 +231,11 @@ fn run(
             );
             gpu.abort()?;
         }
-        let host_died = gpu
-            .as_mut()
-            .map(report_kumquat_exit)
-            .transpose()?
-            .unwrap_or(false);
-        if host_died {
-            eprintln!("[valo-client] terminating the stalled game");
-            kill_game(game_pid);
-            let _ = child.kill();
-            let _ = child.wait();
+        if let Some(gpu) = gpu.as_mut() {
+            report_kumquat_exit(gpu)?;
         }
+        eprintln!("[valo-client] inspect game core dump: coredumpctl debug {game_pid}");
+        wait_or_kill(&mut child, Duration::from_secs(10))?;
         let _ = std::fs::remove_file(sock_path);
         remove_savestates(&mut child);
 
@@ -250,7 +246,7 @@ fn run(
     let status = if gdb {
         child.wait().context("wait for gdb")?
     } else {
-        wait_or_kill(&mut child)?
+        wait_or_kill(&mut child, Duration::from_millis(500))?
     };
     eprintln!("[valo-client] target (pid {}) exited: {status}", child.id());
     let _ = std::fs::remove_file(sock_path);
@@ -460,11 +456,11 @@ fn spawn_game_ui(pid: u32) -> (mpsc::Receiver<input::HotkeyEvent>, hud::Hud) {
     (hotkey_rx, hud::Hud::new(overlay))
 }
 
-/// SIGKILL the game, which is not the direct child behind a wrapper.
-fn kill_game(pid: u32) {
+/// SIGABRT the game, which is not the direct child behind a wrapper.
+fn abort_game(pid: u32) {
     let pid = rustix::process::Pid::from_raw(pid.cast_signed()).expect("game pid is nonzero");
-    if let Err(e) = rustix::process::kill_process(pid, rustix::process::Signal::KILL) {
-        eprintln!("[valo-client] kill game pid {pid}: {e}");
+    if let Err(e) = rustix::process::kill_process(pid, rustix::process::Signal::ABORT) {
+        eprintln!("[valo-client] abort game pid {pid}: {e}");
     }
 }
 
@@ -513,12 +509,10 @@ fn establish_or_child_exit(sock: &Path, child: &mut Child) -> Result<Option<Clie
     }
 }
 
-/// Wait for the child to exit. If it doesn't exit within a short grace
+/// Wait for the child to exit. If it doesn't exit within the grace
 /// period, SIGKILL it — covers the case where a failed restore left the
 /// child deadlocked and `wait()` would otherwise block forever.
-fn wait_or_kill(child: &mut Child) -> Result<std::process::ExitStatus> {
-    use std::time::Duration;
-    let grace = Duration::from_millis(500);
+fn wait_or_kill(child: &mut Child, grace: Duration) -> Result<std::process::ExitStatus> {
     let poll = Duration::from_millis(50);
     let start = std::time::Instant::now();
     loop {
