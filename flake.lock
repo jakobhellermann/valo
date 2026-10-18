@@ -40,11 +40,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1792259480,
-        "narHash": "sha256-y3KRDY7Zwmj0ARXEgLLWUZ0ypVXkEAj2C9oWlqBY440=",
+        "lastModified": 1792356402,
+        "narHash": "sha256-dJ3POHmhBukUmVwxDUC7AThN9B+AsXn4ZovyJD1zO0I=",
         "owner": "jakobhellermann",
         "repo": "gfxstream",
-        "rev": "a4b13f7657f06b5f3ace95042c90f64b57ec6f62",
+        "rev": "b53f3b93baf35b11007d2594458e724a24ec4ca3",
         "type": "github"
       },
       "original": {
@@ -85,11 +85,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1792259667,
-        "narHash": "sha256-qiiR3gIkrWOEI3iFpBE7lKrzXJivT/n1TCewdJI6QtA=",
+        "lastModified": 1792356322,
+        "narHash": "sha256-IYulzr38LaZQYy2g4FZ7xqZXvG7iuEmhtEjPIhDQ/yw=",
         "owner": "jakobhellermann",
         "repo": "mesa",
-        "rev": "d4a1772c8553fe561c9d767e93c5a8db1e84f151",
+        "rev": "6a8cd21df0e9b78f22003040587c7222a6e6ba8c",
         "type": "github"
       },
       "original": {
