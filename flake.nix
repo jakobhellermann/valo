@@ -180,11 +180,21 @@
                 file -b "$elf" | grep -q interpreter || continue
                 patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 "$elf"
               done
+              # Steam's LD_LIBRARY_PATH carries the host /usr/lib (e.g. an ABI-incompatible
+              # abseil), which outranks RUNPATH but not DT_RPATH. Objects loaded into the game
+              # keep RUNPATH and defer to its environment.
+              set_rpath() {
+                case "$1" in
+                  $appdir/usr/bin/libvalo.so | $libdir/libvulkan_gfxstream.so)
+                    patchelf --set-rpath "$2" "$1" ;;
+                  *) patchelf --force-rpath --set-rpath "$2" "$1" ;;
+                esac
+              }
               for elf in $appdir/usr/bin/*; do
-                patchelf --set-rpath '$ORIGIN/../lib' "$elf"
+                set_rpath "$elf" '$ORIGIN/../lib'
               done
               for elf in $libdir/*; do
-                patchelf --set-rpath '$ORIGIN' "$elf"
+                set_rpath "$elf" '$ORIGIN'
               done
 
               # glibc compatibility check
