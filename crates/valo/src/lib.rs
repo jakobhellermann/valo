@@ -84,7 +84,7 @@ fn init() -> Result<()> {
     home::init()?;
     log::init();
     install_panic_hook();
-    // SAFETY: since this is an initializer there is unique access
+    // SAFETY: the only call of `set`, from the once-run, single-threaded initializer.
     unsafe { GlobalState::set(GlobalState::new()?) };
     thread_tracker::init_main();
     checkpoint::threads::init_main();

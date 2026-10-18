@@ -17,6 +17,7 @@ use valo_ipc::config::{Config, SkipDrawMode};
 
 static GLOBAL_STATE: SyncUnsafeCell<MaybeUninit<GlobalState>> =
     SyncUnsafeCell::new(MaybeUninit::zeroed());
+static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 pub struct GlobalState {
     pub reserved: &'static ReservedMemory,
@@ -40,17 +41,25 @@ pub struct GlobalState {
 
 impl GlobalState {
     /// # Safety
-    /// Must have unique access
+    /// Must have unique access and be called at most once.
     pub unsafe fn set(global_state: GlobalState) {
         // SAFETY: has unique access
         unsafe {
             *GLOBAL_STATE.get() = MaybeUninit::new(global_state);
         }
+        INITIALIZED.store(true, Ordering::Release);
     }
+
+    pub fn try_get() -> Option<&'static GlobalState> {
+        if !INITIALIZED.load(Ordering::Acquire) {
+            return None;
+        }
+        // SAFETY: the acquire pairs with the release in `set`, which runs at most once.
+        Some(unsafe { (*GLOBAL_STATE.get()).assume_init_ref() })
+    }
+
     pub fn get() -> &'static GlobalState {
-        // SAFETY: Since `set` was called in the .init_array, this will be initialized afterwards
-        // Only immutable references are handed out.
-        unsafe { (*GLOBAL_STATE.get()).assume_init_mut() }
+        Self::try_get().expect("GlobalState used before init")
     }
 
     pub fn reserved_shared() -> &'static ReservedShared {
