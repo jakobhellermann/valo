@@ -81,6 +81,20 @@ override_sym!("system" vkGetDeviceProcAddr(device: VkDevice, name: *const c_char
     }
 });
 
+/// Replacement for a `dlsym` of `vkGetInstanceProcAddr`. `None` for lookups into
+/// other libraries: the loader resolves each layer's own entry point this way, and
+/// handing it the hook would make the hook dispatch back into itself.
+pub(crate) fn dlsym_instance_proc_addr(resolved: *mut c_void) -> Option<*mut c_void> {
+    let loader = crate::hooks::link_function(
+        &LOADER_INSTANCE_PROC_ADDR,
+        c"vkGetInstanceProcAddr".as_ptr(),
+        LIB,
+    )?;
+    (resolved == loader).then_some(vkGetInstanceProcAddr as *mut c_void)
+}
+
+static LOADER_INSTANCE_PROC_ADDR: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
 /// Replacement for a direct `dlsym` of the loader's `vkGetDeviceProcAddr`,
 /// which drivers layered on Vulkan (zink) use instead of the
 /// `vkGetInstanceProcAddr` chain. Their presents run inside the GL frame
