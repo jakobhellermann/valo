@@ -76,6 +76,10 @@ pub fn track_destroy(window: u32) {
     FEED.lock().unwrap().windows.retain(|&w| w != window);
 }
 
+pub fn current_window() -> Option<u32> {
+    FEED.lock().unwrap().windows.front().copied()
+}
+
 /// Queues the events for the client's latest state; waits for a game window to address them to.
 pub fn feed_frame() {
     if !is_controlled() {

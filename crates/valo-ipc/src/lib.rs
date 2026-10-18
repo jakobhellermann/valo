@@ -302,7 +302,10 @@ mod tests {
 
         let lib_msgs = vec![
             LibToClient::Hello(LibHello::new(Config::default())),
-            LibToClient::FrameBoundary(FrameBoundary { frame: 42 }),
+            LibToClient::FrameBoundary(FrameBoundary {
+                frame: 42,
+                game_window: Some(0x400001),
+            }),
             LibToClient::State(State { frame: 100 }),
             LibToClient::CheckpointDone,
             LibToClient::RestoreSucceeded(RestoreSucceeded { frame: 7 }),

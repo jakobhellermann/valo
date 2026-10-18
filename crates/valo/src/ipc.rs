@@ -214,7 +214,11 @@ fn held_turn(session: &mut Session, frame: u64) {
             // Detach): an EPIPE here must not drop the connection before
             // its pending input is drained — recv returns the queued data
             // before the EOF.
-            match conn.send(&LibToClient::FrameBoundary(FrameBoundary { frame })) {
+            let boundary = FrameBoundary {
+                frame,
+                game_window: crate::input_feed::current_window(),
+            };
+            match conn.send(&LibToClient::FrameBoundary(boundary)) {
                 Ok(()) => {}
                 Err(e) if is_hangup(&e) => info!(Ipc, "client closed before FrameBoundary"),
                 Err(e) => warn!(Ipc, "send FrameBoundary: {e}"),

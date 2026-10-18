@@ -1,6 +1,7 @@
 //! Debug overlay: short toasts in a click-through child window in the
 //! bottom-right corner of the game window, on its own X connection.
 
+use std::sync::atomic::AtomicU32;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -16,6 +17,8 @@ use x11rb::protocol::xproto::{
     VisualClass, Window, WindowClass,
 };
 use x11rb::rust_connection::RustConnection;
+
+use crate::input::{GameWindow, viewable_game_window};
 
 const DISCOVER_INTERVAL: Duration = Duration::from_millis(200);
 const DISCOVER_REPORT_AFTER: Duration = Duration::from_secs(5);
@@ -73,7 +76,7 @@ impl Overlay {
     }
 }
 
-pub fn spawn_thread<F>(target_pid: u32, on_event: F) -> Overlay
+pub fn spawn_thread<F>(game_window: GameWindow, on_event: F) -> Overlay
 where
     F: Fn(OverlayEvent) + Send + 'static,
 {
@@ -81,7 +84,7 @@ where
     thread::Builder::new()
         .name("overlay".into())
         .spawn(move || {
-            if let Err(e) = run(target_pid, &rx, &on_event) {
+            if let Err(e) = run(&game_window, &rx, &on_event) {
                 on_event(OverlayEvent::Fatal(format!("{e:#}")));
             }
         })
@@ -95,9 +98,12 @@ struct Ctx<'a> {
     gc: Gcontext,
 }
 
-fn run(pid: u32, toasts: &Receiver<Toast>, on_event: &impl Fn(OverlayEvent)) -> Result<()> {
+fn run(
+    game_window: &AtomicU32,
+    toasts: &Receiver<Toast>,
+    on_event: &impl Fn(OverlayEvent),
+) -> Result<()> {
     let (conn, screen) = x11rb::connect(None).context("connect to X")?;
-    crate::input::require_xres(&conn)?;
     if conn.setup().image_byte_order != ImageOrder::LSB_FIRST {
         bail!("X server image byte order is not LSB first");
     }
@@ -125,13 +131,13 @@ fn run(pid: u32, toasts: &Receiver<Toast>, on_event: &impl Fn(OverlayEvent)) -> 
         let started = Instant::now();
         let mut reported = false;
         let game = loop {
-            if let Some(w) = crate::input::find_window_by_pid(&conn, root, pid) {
+            if let Some(w) = viewable_game_window(&conn, game_window) {
                 break w;
             }
             if !reported && started.elapsed() > DISCOVER_REPORT_AFTER {
-                on_event(OverlayEvent::Status(format!(
-                    "no viewable X window owned by pid {pid} yet"
-                )));
+                on_event(OverlayEvent::Status(
+                    "the game reported no viewable X window yet".into(),
+                ));
                 reported = true;
             }
             thread::sleep(DISCOVER_INTERVAL);

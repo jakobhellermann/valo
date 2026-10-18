@@ -135,6 +135,10 @@ pub enum LibToClient {
 }
 ```
 
+`FrameBoundary` carries the frame number and the game's current top-level X
+window as tracked by the lib's window hooks; the client's overlay and hotkeys
+attach to that window.
+
 `Config` (`crates/valo-ipc/src/config.rs`): log level,
 auto-checkpoint/restore frames, restore cap, GPU orchestration flag,
 input mode (`input.uncontrolled_input`).

@@ -293,7 +293,7 @@ fn drive(child: &mut Child, timeline: &Timeline, use_gpu: bool) -> Result<()> {
     'boundary: loop {
         match conn.recv()? {
             Some(
-                LibToClient::FrameBoundary(FrameBoundary { frame })
+                LibToClient::FrameBoundary(FrameBoundary { frame, .. })
                 | LibToClient::RestoreSucceeded(RestoreSucceeded { frame }),
             ) => {
                 for entry in timeline.lines.get(&frame).into_iter().flatten() {
