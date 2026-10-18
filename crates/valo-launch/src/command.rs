@@ -44,6 +44,17 @@ pub fn configure_target(cmd: &mut Command, gpu: bool) -> Result<()> {
 
     if gpu {
         cmd.env("VIRTGPU_KUMQUAT", "1");
+        // WSLg's XWayland has no DRI3, which the Vulkan X11 WSI needs for presentation.
+        if crate::is_wsl_gpu() {
+            let mut wsi_debug = std::env::var("MESA_VK_WSI_DEBUG").unwrap_or_default();
+            if !wsi_debug.split(',').any(|flag| flag == "sw") {
+                if !wsi_debug.is_empty() {
+                    wsi_debug.push(',');
+                }
+                wsi_debug.push_str("sw");
+            }
+            cmd.env("MESA_VK_WSI_DEBUG", wsi_debug);
+        }
         if let Some(icd) = crate::resolve_gfxstream_icd()? {
             cmd.env("VK_DRIVER_FILES", icd);
             cmd.env_remove("VK_LOADER_DRIVERS_SELECT");
