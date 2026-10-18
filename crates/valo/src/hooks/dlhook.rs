@@ -1,27 +1,50 @@
 use std::ffi::{CStr, c_char, c_void};
-use std::sync::LazyLock;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::trace;
 
-fn find_real_dlsym() -> unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void {
-    // SAFETY: dlvsym won't recurse into our hook
-    unsafe {
-        let ptr = libc::dlvsym(libc::RTLD_NEXT, c"dlsym".as_ptr(), c"GLIBC_2.2.5".as_ptr());
-        std::mem::transmute(ptr)
-    }
-}
+type DlsymFn = unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void;
 
+/// Null until resolved, then the next `dlsym` definition after libvalo.
+static REAL_DLSYM: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+/// glibc resolves `RTLD_NEXT` against the return address, so that case reaches the real `dlsym`
+/// via `jmp` with the caller's frame untouched.
+#[unsafe(naked)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void {
-    static REAL_DLSYM: LazyLock<unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void> =
-        LazyLock::new(find_real_dlsym);
+    core::arch::naked_asm!(
+        "cmp rdi, -1", // RTLD_NEXT
+        "jne {hook}",
+        "mov rax, qword ptr [rip + {real}]",
+        "test rax, rax",
+        "jz 2f",
+        "jmp rax",
+        "2:",
+        // entry rsp is 8 mod 16: two pushes plus 8 realign it for the call
+        "push rdi",
+        "push rsi",
+        "sub rsp, 8",
+        "call {resolve}",
+        "add rsp, 8",
+        "pop rsi",
+        "pop rdi",
+        "jmp rax",
+        hook = sym dlsym_hook,
+        real = sym REAL_DLSYM,
+        resolve = sym resolve_real_dlsym,
+    )
+}
+
+unsafe extern "C" fn dlsym_hook(handle: *mut c_void, symbol: *const c_char) -> *mut c_void {
+    let real = real_dlsym();
 
     if super::is_native() || !crate::is_target() {
-        return unsafe { REAL_DLSYM(handle, symbol) };
+        return unsafe { real(handle, symbol) };
     }
 
     // SAFETY: forwarding to the real dlsym
-    let resolved = unsafe { REAL_DLSYM(handle, symbol) };
+    let resolved = unsafe { real(handle, symbol) };
     if resolved.is_null() {
         return resolved;
     }
@@ -78,4 +101,23 @@ pub unsafe extern "C" fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *m
     }
 
     resolved
+}
+
+fn real_dlsym() -> DlsymFn {
+    let mut ptr = REAL_DLSYM.load(Ordering::Relaxed);
+    if ptr.is_null() {
+        ptr = resolve_real_dlsym();
+    }
+    // SAFETY: non-null values of REAL_DLSYM come from `resolve_real_dlsym`, which only stores a
+    // `dlsym` definition, and those have the `DlsymFn` signature.
+    unsafe { std::mem::transmute::<*mut c_void, DlsymFn>(ptr) }
+}
+
+extern "C" fn resolve_real_dlsym() -> *mut c_void {
+    // SAFETY: both strings are nul-terminated literals; dlvsym is not interposed, so this does not
+    // re-enter `dlsym`.
+    let ptr = unsafe { libc::dlvsym(libc::RTLD_NEXT, c"dlsym".as_ptr(), c"GLIBC_2.2.5".as_ptr()) };
+    assert!(!ptr.is_null(), "no dlsym@GLIBC_2.2.5 after libvalo");
+    REAL_DLSYM.store(ptr, Ordering::Relaxed);
+    ptr
 }
