@@ -75,11 +75,10 @@ pub fn spawn(
     cmd.process_group(0);
 
     if !use_gpu {
-        let child = cmd
-            .spawn()
+        cmd.spawn()
             .with_context(|| format!("spawning {}", cmd.get_program().to_string_lossy()))?;
-        init_session(sock, &config, paused)?;
-        print_spawned(child.id(), sock, paused);
+        let pid = init_session(sock, &config, paused)?;
+        print_spawned(pid, sock, paused);
         return Ok(());
     }
 
@@ -136,12 +135,15 @@ pub fn spawn(
         }
     };
     gpu.game_started();
-    if let Err(e) = init_session(sock, &config, paused) {
-        report(&format!("error {e:#}"));
-        drop(gpu);
-        std::process::exit(1);
-    }
-    report(&format!("pid {}\n", child.id()));
+    let pid = match init_session(sock, &config, paused) {
+        Ok(pid) => pid,
+        Err(e) => {
+            report(&format!("error {e:#}"));
+            drop(gpu);
+            std::process::exit(1);
+        }
+    };
+    report(&format!("pid {pid}\n"));
     let status = child.wait().context("wait for game")?;
     let host_died = crate::report_kumquat_exit(&mut gpu)?;
     // std::process::exit skips destructors; the drop kills kumquat.
@@ -167,15 +169,15 @@ fn print_spawned(pid: u32, sock: &Path, paused: bool) {
 
 /// The spawn process is the session's init client: it delivers the config
 /// and either detaches (session runs) or closes (session starts paused).
-fn init_session(sock: &Path, config: &Config, paused: bool) -> Result<()> {
+fn init_session(sock: &Path, config: &Config, paused: bool) -> Result<u32> {
     let mut conn =
         ClientIPC::establish(sock).with_context(|| format!("connect {}", sock.display()))?;
-    conn.init(config)
-        .with_context(|| format!("init {}", sock.display()))?;
+    let pid =
+        crate::init_game(&mut conn, config).with_context(|| format!("init {}", sock.display()))?;
     if !paused {
         conn.send(&ClientToLib::Detach)?;
     }
-    Ok(())
+    Ok(pid)
 }
 
 pub fn msg(sock: &Path, command: &MsgCmd) -> Result<()> {

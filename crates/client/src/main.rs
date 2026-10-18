@@ -141,7 +141,7 @@ enum SessionEnd {
     /// Finished normally
     Done,
     /// Frame watchdog expired
-    Hung,
+    Hung { pid: u32 },
 }
 
 fn run(
@@ -156,13 +156,14 @@ fn run(
     let lib = std::fs::canonicalize(&lib)
         .with_context(|| format!("canonicalize libvalo.so path {}", lib.display()))?;
 
-    ensure_elf(&program)?;
+    if std::env::var_os("VALO_TARGET").is_none() {
+        ensure_elf(&program)?;
+    }
 
     let mut cmd = build_command(gdb, &program, &args, &lib);
     let use_gpu = !config.software_rendering;
     valo_launch::command::configure_target(&mut cmd, use_gpu)?;
-    let mut config = config.config();
-    config.resolved_modules = resolve_modules(&program)?;
+    let config = config.config();
 
     if use_tui {
         // Don't let the child's stdout/stderr clobber the alternate screen.
@@ -193,7 +194,7 @@ fn run(
     }
 
     let result = if use_tui {
-        let tui_result = tui::run(sock_path, Some(log_path.as_path()), child.id(), config);
+        let tui_result = tui::run(sock_path, Some(log_path.as_path()), config);
         // The alternate screen is gone; report where this session's files landed
         eprintln!(
             "[valo-client] session ended: target pid {}, home {}",
@@ -210,28 +211,15 @@ fn run(
         }
         tui_result.map(|_| SessionEnd::Done)
     } else {
-        let (hotkey_tx, hotkey_rx) = mpsc::channel::<input::HotkeyEvent>();
-        input::spawn_thread(child.id(), move |ev| {
-            let _ = hotkey_tx.send(ev);
-        });
-        let overlay = overlay::spawn_thread(child.id(), |ev| match ev {
-            overlay::OverlayEvent::Status(msg) => eprintln!("[valo-client] overlay: {msg}"),
-            overlay::OverlayEvent::Fatal(msg) => eprintln!("[valo-client] overlay failed: {msg}"),
-        });
-        run_ipc_loop(
-            sock_path,
-            &mut child,
-            gdb,
-            config,
-            &hotkey_rx,
-            hud::Hud::new(overlay),
-        )
+        run_ipc_loop(sock_path, &mut child, gdb, config)
     };
     if let Err(e) = &result {
         eprintln!("ipc loop ended: {e:#}");
     }
 
-    if matches!(result, Ok(SessionEnd::Hung)) && !gdb {
+    if let Ok(SessionEnd::Hung { pid: game_pid }) = result
+        && !gdb
+    {
         if let Some(gpu) = gpu.as_mut()
             && gpu.exit_status()?.is_none()
         {
@@ -248,6 +236,7 @@ fn run(
             .unwrap_or(false);
         if host_died {
             eprintln!("[valo-client] terminating the stalled game");
+            kill_game(game_pid);
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -285,7 +274,7 @@ fn run(
     }
 }
 
-/// libvalo initializes in the first process it is preloaded into, so a wrapper script would capture it.
+/// Without `VALO_TARGET`, libvalo attaches to the first process it is preloaded into, so a wrapper script would capture it.
 fn ensure_elf(program: &Path) -> Result<()> {
     let path = resolve_program(program)?;
     let mut magic = [0u8; 4];
@@ -367,14 +356,9 @@ pub(crate) fn report_kumquat_exit(session: &mut GpuSession) -> Result<bool> {
     Ok(true)
 }
 
-fn run_ipc_loop(
-    sock: &Path,
-    child: &mut Child,
-    gdb: bool,
-    config: Config,
-    hotkeys: &mpsc::Receiver<input::HotkeyEvent>,
-    mut hud: hud::Hud,
-) -> Result<SessionEnd> {
+fn run_ipc_loop(sock: &Path, child: &mut Child, gdb: bool, config: Config) -> Result<SessionEnd> {
+    // Bound to the first attached game; a gdb rerun keeps it.
+    let mut game_ui = None;
     loop {
         let Some(mut conn) = establish_or_child_exit(sock, child)? else {
             eprintln!("[valo-client] child exited before ipc connection");
@@ -382,11 +366,10 @@ fn run_ipc_loop(
         };
         eprintln!("[valo-client] ipc connected on {}", sock.display());
 
-        conn.init(&config)?;
+        let pid = init_game(&mut conn, &config)?;
         conn.set_read_timeout(FIRST_HANG_TIMEOUT)
             .context("set hang watchdog timeout")?;
-
-        let pid = child.id();
+        let (hotkeys, hud) = game_ui.get_or_insert_with(|| spawn_game_ui(pid));
         let mut first_boundary = true;
         loop {
             let msg = match conn.recv() {
@@ -397,7 +380,7 @@ fn run_ipc_loop(
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => {
                     report_hang(pid)?;
-                    return Ok(SessionEnd::Hung);
+                    return Ok(SessionEnd::Hung { pid });
                 }
                 Err(e) => return Err(e).context("ipc recv"),
             };
@@ -449,6 +432,39 @@ fn run_ipc_loop(
         if !gdb {
             return Ok(SessionEnd::Done);
         }
+    }
+}
+
+/// Init exchange with the game behind `conn`, which can sit below wrapper
+/// processes; the socket peer is the process libvalo attached to.
+pub(crate) fn init_game(conn: &mut ClientIPC, config: &Config) -> Result<u32> {
+    let pid = conn.peer_pid().context("game pid from socket peer")?;
+    let exe = std::fs::read_link(format!("/proc/{pid}/exe"))
+        .with_context(|| format!("resolve exe of game pid {pid}"))?;
+    eprintln!("[valo-client] attached to pid {pid}: {}", exe.display());
+    let mut config = config.clone();
+    config.resolved_modules = resolve_modules(&exe)?;
+    conn.init(&config)?;
+    Ok(pid)
+}
+
+fn spawn_game_ui(pid: u32) -> (mpsc::Receiver<input::HotkeyEvent>, hud::Hud) {
+    let (hotkey_tx, hotkey_rx) = mpsc::channel::<input::HotkeyEvent>();
+    input::spawn_thread(pid, move |ev| {
+        let _ = hotkey_tx.send(ev);
+    });
+    let overlay = overlay::spawn_thread(pid, |ev| match ev {
+        overlay::OverlayEvent::Status(msg) => eprintln!("[valo-client] overlay: {msg}"),
+        overlay::OverlayEvent::Fatal(msg) => eprintln!("[valo-client] overlay failed: {msg}"),
+    });
+    (hotkey_rx, hud::Hud::new(overlay))
+}
+
+/// SIGKILL the game, which is not the direct child behind a wrapper.
+fn kill_game(pid: u32) {
+    let pid = rustix::process::Pid::from_raw(pid.cast_signed()).expect("game pid is nonzero");
+    if let Err(e) = rustix::process::kill_process(pid, rustix::process::Signal::KILL) {
+        eprintln!("[valo-client] kill game pid {pid}: {e}");
     }
 }
 

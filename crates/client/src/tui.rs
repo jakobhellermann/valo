@@ -171,13 +171,13 @@ impl App {
     }
 }
 
-pub fn run(sock: &Path, log_path: Option<&Path>, target_pid: u32, config: Config) -> Result<()> {
+pub fn run(sock: &Path, log_path: Option<&Path>, config: Config) -> Result<()> {
     if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
         bail!("--tui requires stdout to be a tty");
     }
 
     let mut conn = ClientIPC::establish(sock).context("ipc establish")?;
-    conn.init(&config)?;
+    let target_pid = crate::init_game(&mut conn, &config)?;
 
     let (tx, rx) = mpsc::channel::<AppEvent>();
 
