@@ -58,6 +58,10 @@ impl GpuSession {
         if std::env::var_os("GFXSTREAM_LOG_LEVEL").is_none() {
             cmd.env("GFXSTREAM_LOG_LEVEL", "info");
         }
+        if let Err(reason) = crate::host_visible_memory_sharing() {
+            eprintln!("[valo-launch] copying host visible GPU memory: {reason}");
+            cmd.arg("--renderer-features=VirtioGpuNext:disabled");
+        }
 
         // SAFETY: this closure runs after fork and uses only fcntl/close;
         // the write end belongs to the Kumquat child after exec.

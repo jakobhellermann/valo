@@ -7,6 +7,7 @@ pub mod symbols;
 pub mod unity;
 
 use std::ffi::OsString;
+use std::fs::File;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
@@ -53,6 +54,21 @@ pub fn resolve_kumquat_bin() -> Result<OsString> {
         true => candidate.into_os_string(),
         false => OsString::from("kumquat"),
     })
+}
+
+pub fn is_wsl_gpu() -> bool {
+    Path::new("/dev/dxg").exists()
+}
+
+/// Whether kumquat can share host visible memory with the game, or why not.
+pub fn host_visible_memory_sharing() -> Result<(), &'static str> {
+    if is_wsl_gpu() {
+        return Err("the WSL GPU (/dev/dxg) cannot import guest memory");
+    }
+    if File::open("/dev/udmabuf").is_err() {
+        return Err("/dev/udmabuf is not readable");
+    }
+    Ok(())
 }
 
 pub fn resolve_gfxstream_icd() -> Result<Option<PathBuf>> {
