@@ -73,6 +73,18 @@ static void make_buffer(VkDevice dev, VkPhysicalDevice pd, VkDeviceSize size,
         CHECK(vkMapMemory(dev, *mem, 0, size, 0, map));
 }
 
+// The staging memory need not be coherent: host writes are flushed and
+// device writes invalidated explicitly.
+static void sync_staging(VkDeviceMemory mem, int to_device) {
+    VkMappedMemoryRange range = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+                                 .memory = mem,
+                                 .size = VK_WHOLE_SIZE};
+    if (to_device)
+        CHECK(vkFlushMappedMemoryRanges(device, 1, &range));
+    else
+        CHECK(vkInvalidateMappedMemoryRanges(device, 1, &range));
+}
+
 static void gpu_copy(VkBuffer src, VkBuffer dst, VkDeviceSize size) {
     CHECK(vkResetCommandBuffer(cmdbuf, 0));
     VkCommandBufferBeginInfo bi = {
@@ -143,9 +155,8 @@ int main() {
     make_buffer(device, pd, size,
                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                     VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                NULL, &staging, &staging_mem, &staging_map);
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, NULL, &staging,
+                &staging_mem, &staging_map);
 
     // Device-local: exportable (dmabuf) -> gfxstream blob resource via kumquat.
     VkBuffer devbuf;
@@ -164,6 +175,7 @@ int main() {
 
     // 3. fill staging, GPU-copy into the device-local blob.
     strcpy(staging_map, "PRESERVED");
+    sync_staging(staging_mem, 1);
     gpu_copy(staging, devbuf, size);
 
     // 4. checkpoint: GPU blob resources + backing exist now.
@@ -179,12 +191,15 @@ int main() {
     // The readback goes through the GPU (blob -> staging), exercising the
     // restored command pool/queue/host context.
     memset(staging_map, 0, size);
+    sync_staging(staging_mem, 1);
     gpu_copy(devbuf, staging, size);
+    sync_staging(staging_mem, 0);
     tprintf("blob readback: %s\n", (char *)staging_map);
 
     // 5. corrupt staging + blob (in the restored timeline this sets up the
     //    next cycle; the harness caps restores).
     strcpy(staging_map, "CORRUPTED");
+    sync_staging(staging_mem, 1);
     gpu_copy(staging, devbuf, size);
 
     // 6. restore: undoes the CPU memory AND (via the GPU snapshot trigger)
