@@ -62,8 +62,11 @@ fn run_lib(mut conn: LibIPC) -> Result<()> {
     eprintln!("[Lib] got hello: {peer:?}");
 
     for frame in 0..3 {
-        conn.send(&LibToClient::FrameBoundary(FrameBoundary { frame }))
-            .with_context(|| format!("send frame {frame}"))?;
+        conn.send(&LibToClient::FrameBoundary(FrameBoundary {
+            frame,
+            game_window: None,
+        }))
+        .with_context(|| format!("send frame {frame}"))?;
         eprintln!("[Lib] sent frame {frame}, waiting for client");
         let cmd = conn
             .recv()
@@ -98,7 +101,7 @@ fn run_client(mut conn: ClientIPC) -> Result<()> {
             }
         };
         match msg {
-            LibToClient::FrameBoundary(FrameBoundary { frame }) => {
+            LibToClient::FrameBoundary(FrameBoundary { frame, .. }) => {
                 eprintln!("[Client] frame {frame}, advancing in 250ms");
                 std::thread::sleep(Duration::from_millis(250));
                 conn.send(&ClientToLib::AdvanceFrames(1))

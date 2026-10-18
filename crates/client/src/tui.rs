@@ -20,7 +20,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::hud::Hud;
-use crate::input::{HotkeyAction, HotkeyEvent};
+use crate::input::{GameWindow, HotkeyAction, HotkeyEvent};
 use crate::overlay::OverlayEvent;
 
 use anyhow::{Context, Result, bail};
@@ -73,6 +73,8 @@ struct App {
     /// match `CheckpointDone`/`RestoreSucceeded` replies.
     pending_op_slot: Option<u32>,
     hud: Hud,
+    /// Shared with the hotkey and overlay threads.
+    game_window: GameWindow,
     /// Per-slot savestate bookkeeping for the status display.
     slots: Vec<SlotInfo>,
     /// The slot `s`/`r` act on; chosen with the digit keys.
@@ -106,11 +108,12 @@ enum EventKind {
 }
 
 impl App {
-    fn new(target_pid: u32, hud: Hud) -> Self {
+    fn new(target_pid: u32, hud: Hud, game_window: GameWindow) -> Self {
         let slots = Self::scan_disk_slots();
         Self {
             target_pid,
             hud,
+            game_window,
             paused: false,
             pending_advance: None,
             queued_command: None,
@@ -186,15 +189,16 @@ pub fn run(sock: &Path, log_path: Option<&Path>, config: Config) -> Result<()> {
         reader_lock: Mutex::new(()),
     });
     spawn_keyboard_thread(tx.clone(), Arc::clone(&keyboard_input));
+    let game_window = GameWindow::default();
     {
         let tx = tx.clone();
-        crate::input::spawn_thread(target_pid, move |ev| {
+        crate::input::spawn_thread(game_window.clone(), move |ev| {
             let _ = tx.send(AppEvent::Hotkey(ev));
         });
     }
     let overlay = {
         let tx = tx.clone();
-        crate::overlay::spawn_thread(target_pid, move |ev| {
+        crate::overlay::spawn_thread(game_window.clone(), move |ev| {
             let _ = tx.send(AppEvent::Overlay(ev));
         })
     };
@@ -215,6 +219,7 @@ pub fn run(sock: &Path, log_path: Option<&Path>, config: Config) -> Result<()> {
             target_pid,
             &keyboard_input,
             Hud::new(overlay),
+            game_window,
         )
     }));
     let _ = restore_terminal(&mut terminal);
@@ -231,8 +236,9 @@ fn main_loop(
     target_pid: u32,
     keyboard_input: &KeyboardInput,
     hud: Hud,
+    game_window: GameWindow,
 ) -> Result<()> {
-    let mut app = App::new(target_pid, hud);
+    let mut app = App::new(target_pid, hud, game_window);
     app.push_event(EventKind::User, "ipc connected; running");
 
     draw(terminal, &app)?;
@@ -273,7 +279,9 @@ fn handle_event(app: &mut App, conn: &mut ClientIPC, ev: AppEvent) -> Result<()>
         app.hud.received(msg);
     }
     match ev {
-        AppEvent::Ipc(LibToClient::FrameBoundary(FrameBoundary { frame })) => {
+        AppEvent::Ipc(LibToClient::FrameBoundary(FrameBoundary { frame, game_window })) => {
+            app.game_window
+                .store(game_window.unwrap_or(0), Ordering::Relaxed);
             app.last_frame = Some(frame);
             // Don't push every FrameBoundary into the events panel; the
             // status pane shows the current frame already.

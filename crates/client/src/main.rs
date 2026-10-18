@@ -10,6 +10,7 @@ use std::io::{ErrorKind, Read};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode};
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -357,6 +358,7 @@ pub(crate) fn report_kumquat_exit(session: &mut GpuSession) -> Result<bool> {
 fn run_ipc_loop(sock: &Path, child: &mut Child, gdb: bool, config: Config) -> Result<SessionEnd> {
     // Bound to the first attached game; a gdb rerun keeps it.
     let mut game_ui = None;
+    let game_window = input::GameWindow::default();
     loop {
         let Some(mut conn) = establish_or_child_exit(sock, child)? else {
             eprintln!("[valo-client] child exited before ipc connection");
@@ -367,7 +369,7 @@ fn run_ipc_loop(sock: &Path, child: &mut Child, gdb: bool, config: Config) -> Re
         let pid = init_game(&mut conn, &config)?;
         conn.set_read_timeout(FIRST_HANG_TIMEOUT)
             .context("set hang watchdog timeout")?;
-        let (hotkeys, hud) = game_ui.get_or_insert_with(|| spawn_game_ui(pid));
+        let (hotkeys, hud) = game_ui.get_or_insert_with(|| spawn_game_ui(game_window.clone()));
         let mut first_boundary = true;
         loop {
             let msg = match conn.recv() {
@@ -383,7 +385,11 @@ fn run_ipc_loop(sock: &Path, child: &mut Child, gdb: bool, config: Config) -> Re
                 Err(e) => return Err(e).context("ipc recv"),
             };
             match msg {
-                LibToClient::FrameBoundary(FrameBoundary { frame: _ }) => {
+                LibToClient::FrameBoundary(FrameBoundary {
+                    frame: _,
+                    game_window: window,
+                }) => {
+                    game_window.store(window.unwrap_or(0), Ordering::Relaxed);
                     if first_boundary {
                         first_boundary = false;
                         conn.set_read_timeout(HANG_TIMEOUT)
@@ -446,12 +452,12 @@ pub(crate) fn init_game(conn: &mut ClientIPC, config: &Config) -> Result<u32> {
     Ok(pid)
 }
 
-fn spawn_game_ui(pid: u32) -> (mpsc::Receiver<input::HotkeyEvent>, hud::Hud) {
+fn spawn_game_ui(game_window: input::GameWindow) -> (mpsc::Receiver<input::HotkeyEvent>, hud::Hud) {
     let (hotkey_tx, hotkey_rx) = mpsc::channel::<input::HotkeyEvent>();
-    input::spawn_thread(pid, move |ev| {
+    input::spawn_thread(game_window.clone(), move |ev| {
         let _ = hotkey_tx.send(ev);
     });
-    let overlay = overlay::spawn_thread(pid, |ev| match ev {
+    let overlay = overlay::spawn_thread(game_window, |ev| match ev {
         overlay::OverlayEvent::Status(msg) => eprintln!("[valo-client] overlay: {msg}"),
         overlay::OverlayEvent::Fatal(msg) => eprintln!("[valo-client] overlay failed: {msg}"),
     });
