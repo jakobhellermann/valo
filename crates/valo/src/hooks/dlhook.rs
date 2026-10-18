@@ -5,7 +5,7 @@ use crate::trace;
 
 type DlsymFn = unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void;
 
-/// Null until resolved, then the next `dlsym` definition after libvalo.
+/// Null until resolved, then the next `dlsym` definition after libvalo, of any version.
 static REAL_DLSYM: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 /// glibc resolves `RTLD_NEXT` against the return address, so that case reaches the real `dlsym`
@@ -114,10 +114,19 @@ fn real_dlsym() -> DlsymFn {
 }
 
 extern "C" fn resolve_real_dlsym() -> *mut c_void {
+    // dlvsym never matches unversioned definitions (e.g. Steam's overlay), so it only yields
+    // libc's dlsym, which then finds the next definition of any version.
     // SAFETY: both strings are nul-terminated literals; dlvsym is not interposed, so this does not
     // re-enter `dlsym`.
-    let ptr = unsafe { libc::dlvsym(libc::RTLD_NEXT, c"dlsym".as_ptr(), c"GLIBC_2.2.5".as_ptr()) };
-    assert!(!ptr.is_null(), "no dlsym@GLIBC_2.2.5 after libvalo");
+    let libc_dlsym =
+        unsafe { libc::dlvsym(libc::RTLD_NEXT, c"dlsym".as_ptr(), c"GLIBC_2.2.5".as_ptr()) };
+    assert!(!libc_dlsym.is_null(), "no dlsym@GLIBC_2.2.5 after libvalo");
+    // SAFETY: a `dlsym@GLIBC_2.2.5` definition has the `DlsymFn` signature.
+    let libc_dlsym = unsafe { std::mem::transmute::<*mut c_void, DlsymFn>(libc_dlsym) };
+    // SAFETY: libc's dlsym with a nul-terminated literal; called from here, RTLD_NEXT resolves
+    // relative to libvalo.
+    let ptr = unsafe { libc_dlsym(libc::RTLD_NEXT, c"dlsym".as_ptr()) };
+    assert!(!ptr.is_null(), "no dlsym after libvalo");
     REAL_DLSYM.store(ptr, Ordering::Relaxed);
     ptr
 }

@@ -50,6 +50,8 @@ struct Config {
     /// Makes the test binary look like a Unity player of this version
     unity_version: Option<String>,
     args: Vec<String>,
+    /// Shared libraries built from `tests/<path>.c`, preloaded after libvalo
+    preload_after: Vec<String>,
 }
 
 #[derive(Default)]
@@ -107,6 +109,9 @@ fn parse_config(source: &Path) -> Config {
                     }
                     "unity_version" => {
                         config.unity_version = Some(value.to_string());
+                    }
+                    "preload_after" => {
+                        config.preload_after.push(value.to_string());
                     }
                     "env" => {
                         if let Some((k, v)) = value.split_once('=') {
@@ -174,11 +179,38 @@ fn compile(
             String::from_utf8_lossy(&output.stderr)
         );
     }
+    for lib in &config.preload_after {
+        compile_preload(lib, tests_dir, tests_out_dir)?;
+    }
     Ok(binary)
+}
+
+fn compile_preload(lib: &str, tests_dir: &Path, tests_out_dir: &Path) -> Result<PathBuf> {
+    let output_path = preload_path(lib, tests_out_dir);
+    fs::create_dir_all(output_path.parent().unwrap())?;
+    let output = Command::new("clang")
+        .args(["-O2", "-g", "-shared", "-fPIC"])
+        .arg(tests_dir.join(format!("{lib}.c")))
+        .arg("-o")
+        .arg(&output_path)
+        .output()
+        .context("failed to run clang")?;
+    if !output.status.success() {
+        bail!(
+            "compiling {lib} failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(output_path)
+}
+
+fn preload_path(lib: &str, tests_out_dir: &Path) -> PathBuf {
+    tests_out_dir.join(format!("{lib}.so"))
 }
 
 fn run(
     binary: &Path,
+    tests_out_dir: &Path,
     config: &Config,
     out_dir: &Path,
     nocapture: bool,
@@ -190,6 +222,7 @@ fn run(
         cmd.env(k, v);
     }
     valo_launch::command::configure_target(&mut cmd, config.gpu)?;
+    let mut preload = Vec::new();
     match config.link_mode {
         LinkMode::Link => {
             let mut path = out_dir.as_os_str().to_os_string();
@@ -199,9 +232,16 @@ fn run(
             }
             cmd.env("LD_LIBRARY_PATH", path);
         }
-        LinkMode::Preload => {
-            cmd.env("LD_PRELOAD", out_dir.join("libvalo.so"));
-        }
+        LinkMode::Preload => preload.push(out_dir.join("libvalo.so")),
+    }
+    preload.extend(
+        config
+            .preload_after
+            .iter()
+            .map(|lib| preload_path(lib, tests_out_dir)),
+    );
+    if !preload.is_empty() {
+        cmd.env("LD_PRELOAD", std::env::join_paths(&preload)?);
     }
     let sock = PathBuf::from(format!("/tmp/valo-harness-{}.sock", std::process::id()));
     cmd.env("VALO_SOCK", &sock);
@@ -345,7 +385,14 @@ fn run_test(
         header.push(0);
         fs::write(data_dir.join("globalgamemanagers"), header)?;
     }
-    let output = run(&binary, &config, out_dir, nocapture, &log_path)?;
+    let output = run(
+        &binary,
+        tests_out_dir,
+        &config,
+        out_dir,
+        nocapture,
+        &log_path,
+    )?;
 
     if update {
         fs::write(&snapshot_path, &output.stdout)?;
