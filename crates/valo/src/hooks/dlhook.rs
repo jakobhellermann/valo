@@ -101,6 +101,26 @@ unsafe extern "C" fn dlsym_hook(handle: *mut c_void, symbol: *const c_char) -> *
     resolved
 }
 
+/// Null until resolved, then glibc's `dlsym`.
+static LIBC_DLSYM: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+/// glibc's `dlsym`, bypassing any interposed definition. Called from libvalo, `RTLD_NEXT`
+/// resolves relative to libvalo.
+pub(super) fn libc_dlsym() -> DlsymFn {
+    let mut ptr = LIBC_DLSYM.load(Ordering::Relaxed);
+    if ptr.is_null() {
+        // dlvsym never matches unversioned definitions (e.g. Steam's overlay), so it only yields
+        // libc's dlsym.
+        // SAFETY: both strings are nul-terminated literals; dlvsym is not interposed, so this
+        // does not re-enter `dlsym`.
+        ptr = unsafe { libc::dlvsym(libc::RTLD_NEXT, c"dlsym".as_ptr(), c"GLIBC_2.2.5".as_ptr()) };
+        assert!(!ptr.is_null(), "no dlsym@GLIBC_2.2.5 after libvalo");
+        LIBC_DLSYM.store(ptr, Ordering::Relaxed);
+    }
+    // SAFETY: a `dlsym@GLIBC_2.2.5` definition has the `DlsymFn` signature.
+    unsafe { std::mem::transmute::<*mut c_void, DlsymFn>(ptr) }
+}
+
 fn real_dlsym() -> DlsymFn {
     let mut ptr = REAL_DLSYM.load(Ordering::Relaxed);
     if ptr.is_null() {
@@ -112,15 +132,7 @@ fn real_dlsym() -> DlsymFn {
 }
 
 extern "C" fn resolve_real_dlsym() -> *mut c_void {
-    // dlvsym never matches unversioned definitions (e.g. Steam's overlay), so it only yields
-    // libc's dlsym, which then finds the next definition of any version.
-    // SAFETY: both strings are nul-terminated literals; dlvsym is not interposed, so this does not
-    // re-enter `dlsym`.
-    let libc_dlsym =
-        unsafe { libc::dlvsym(libc::RTLD_NEXT, c"dlsym".as_ptr(), c"GLIBC_2.2.5".as_ptr()) };
-    assert!(!libc_dlsym.is_null(), "no dlsym@GLIBC_2.2.5 after libvalo");
-    // SAFETY: a `dlsym@GLIBC_2.2.5` definition has the `DlsymFn` signature.
-    let libc_dlsym = unsafe { std::mem::transmute::<*mut c_void, DlsymFn>(libc_dlsym) };
+    let libc_dlsym = libc_dlsym();
     // SAFETY: libc's dlsym with a nul-terminated literal; called from here, RTLD_NEXT resolves
     // relative to libvalo.
     let ptr = unsafe { libc_dlsym(libc::RTLD_NEXT, c"dlsym".as_ptr()) };
