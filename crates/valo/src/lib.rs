@@ -68,11 +68,17 @@ extern "C" fn _init() {
 }
 
 fn init() -> Result<()> {
+    let pid = std::process::id();
     let exe = std::env::current_exe()?;
     if !is_target() {
+        eprintln!(
+            "[valo] pid {pid} ({}): not VALO_TARGET, passing through",
+            exe.display()
+        );
         // LD_PRELOAD stays so the target further down the exec chain loads valo
         return Ok(());
     }
+    eprintln!("[valo] pid {pid} ({}): attaching", exe.display());
 
     remove_ld_preload();
     home::init()?;
