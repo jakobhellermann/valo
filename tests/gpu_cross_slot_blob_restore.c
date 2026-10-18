@@ -60,6 +60,7 @@ static VkCommandPool cmdpool;
 static VkCommandBuffer cmdbuf;
 static VkFence fence;
 static VkBuffer staging;
+static VkDeviceMemory staging_mem;
 
 // The blob under test. Statics rewind with the memory image: slot-0
 // state leaves them zero (the blob does not exist there), slot-1 state
@@ -135,6 +136,18 @@ static void make_buffer(VkDevice dev, VkPhysicalDevice pd, VkDeviceSize size,
         CHECK(vkMapMemory(dev, *mem, 0, size, 0, map));
 }
 
+// The staging memory need not be coherent: host writes are flushed and
+// device writes invalidated explicitly.
+static void sync_staging(int to_device) {
+    VkMappedMemoryRange range = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+                                 .memory = staging_mem,
+                                 .size = VK_WHOLE_SIZE};
+    if (to_device)
+        CHECK(vkFlushMappedMemoryRanges(device, 1, &range));
+    else
+        CHECK(vkInvalidateMappedMemoryRanges(device, 1, &range));
+}
+
 static void gpu_copy(VkBuffer src, VkBuffer dst, VkDeviceSize size) {
     CHECK(vkResetCommandBuffer(cmdbuf, 0));
     VkCommandBufferBeginInfo bi = {
@@ -167,7 +180,9 @@ static void check_blob(void *staging_map) {
     // resume == one per started cycle.
     int cycle = pass_count() - 1;
     memset(staging_map, 0, 4096);
+    sync_staging(1);
     gpu_copy(devbuf, staging, 4096);
+    sync_staging(0);
     if (strcmp((char *)staging_map, MAGIC) != 0) {
         tprintf("cycle %d: FAIL: blob readback \"%s\", expected \"%s\"\n",
                 cycle, (char *)staging_map, MAGIC);
@@ -229,14 +244,12 @@ int main() {
 
     // Staging: host-visible, mappable, NOT exportable. Created before the
     // first snapshot, so both slots' images know it.
-    VkDeviceMemory staging_mem;
     void *staging_map;
     make_buffer(device, pd, size,
                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                     VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                NULL, &staging, &staging_mem, &staging_map);
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, NULL, &staging,
+                &staging_mem, &staging_map);
 
     // Slot 0: base resources only. Every "restore slot 0" rewinds to the
     // line below — a state without the blob. The pass counter is read
@@ -268,6 +281,7 @@ int main() {
                     &devmem, NULL);
 
         strcpy(staging_map, MAGIC);
+        sync_staging(1);
         gpu_copy(staging, devbuf, size);
 
         valo_checkpoint_slot(1);
