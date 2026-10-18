@@ -16,7 +16,7 @@ pub unsafe extern "C" fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *m
     static REAL_DLSYM: LazyLock<unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void> =
         LazyLock::new(find_real_dlsym);
 
-    if super::is_native() {
+    if super::is_native() || !crate::is_target() {
         return unsafe { REAL_DLSYM(handle, symbol) };
     }
 

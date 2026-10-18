@@ -28,6 +28,7 @@ mod token;
 mod utils;
 
 use std::ffi::OsStr;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use crate::global_state::GlobalState;
 use crate::log::structured;
@@ -64,6 +65,11 @@ extern "C" fn _init() {
 }
 
 fn init() -> Result<()> {
+    if !is_target() {
+        // LD_PRELOAD stays so the target further down the exec chain loads valo
+        return Ok(());
+    }
+
     remove_ld_preload();
     home::init()?;
     log::init();
@@ -80,6 +86,33 @@ fn init() -> Result<()> {
     info!(Init, "valo initialized");
     structured::events::init();
     Ok(())
+}
+
+/// Resolved lazily, as hooks can run in constructors before `_init`.
+pub(crate) fn is_target() -> bool {
+    const UNKNOWN: u8 = 0;
+    const YES: u8 = 1;
+    const NO: u8 = 2;
+    static IS_TARGET: AtomicU8 = AtomicU8::new(UNKNOWN);
+
+    match IS_TARGET.load(Ordering::Relaxed) {
+        YES => true,
+        NO => false,
+        _ => {
+            let is_target = resolve_target();
+            IS_TARGET.store(if is_target { YES } else { NO }, Ordering::Relaxed);
+            is_target
+        }
+    }
+}
+
+/// Matches the exe rather than `comm`, which truncates at 15 bytes.
+fn resolve_target() -> bool {
+    let Some(target) = std::env::var_os("VALO_TARGET") else {
+        return true;
+    };
+    let exe = std::env::current_exe().expect("failed to resolve /proc/self/exe");
+    exe.file_name() == Some(target.as_os_str())
 }
 
 /// Remove this library from `LD_PRELOAD` so exec'd children of the target do not load it.
