@@ -1,7 +1,9 @@
 // TOOD(ai-review)
 //! Length-prefixed postcard framing over a generic `Read`/`Write`.
 
-use std::io::{ErrorKind, Read, Write};
+use std::io::{ErrorKind, IoSlice, IoSliceMut, Read, Write};
+use std::mem::MaybeUninit;
+use std::os::fd::{BorrowedFd, OwnedFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -117,6 +119,67 @@ fn read_full_or_eof<R: Read>(r: &mut R, buf: &mut [u8]) -> Result<ReadFull> {
         }
     }
     Ok(ReadFull::Ok)
+}
+
+// ---------- descriptors ----------
+
+/// Send `fd` attached to a single byte, outside the framed message stream.
+pub(crate) fn send_descriptor(stream: &UnixStream, fd: BorrowedFd<'_>) -> Result<()> {
+    use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg};
+    let mut space = [MaybeUninit::<u8>::uninit(); rustix::cmsg_space!(ScmRights(1))];
+    let mut ancillary = SendAncillaryBuffer::new(&mut space);
+    let fds = [fd];
+    if !ancillary.push(SendAncillaryMessage::ScmRights(&fds)) {
+        return Err(std::io::Error::other(
+            "descriptor does not fit the ancillary buffer",
+        ));
+    }
+    let sent = sendmsg(
+        stream,
+        &[IoSlice::new(&[0])],
+        &mut ancillary,
+        SendFlags::NOSIGNAL,
+    )?;
+    if sent != 1 {
+        return Err(std::io::Error::new(
+            ErrorKind::WriteZero,
+            "descriptor byte not sent",
+        ));
+    }
+    Ok(())
+}
+
+/// Receive the descriptor [`send_descriptor`] attached to its byte.
+pub(crate) fn recv_descriptor(stream: &UnixStream) -> Result<OwnedFd> {
+    use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, recvmsg};
+    let mut space = [MaybeUninit::<u8>::uninit(); rustix::cmsg_space!(ScmRights(1))];
+    let mut ancillary = RecvAncillaryBuffer::new(&mut space);
+    let mut byte = [0u8];
+    let received = recvmsg(
+        stream,
+        &mut [IoSliceMut::new(&mut byte)],
+        &mut ancillary,
+        RecvFlags::CMSG_CLOEXEC,
+    )?;
+    if received.bytes != 1 {
+        return Err(std::io::Error::new(
+            ErrorKind::UnexpectedEof,
+            "peer closed before the descriptor byte",
+        ));
+    }
+    let mut fds = Vec::new();
+    for message in ancillary.drain() {
+        if let RecvAncillaryMessage::ScmRights(received) = message {
+            fds.extend(received);
+        }
+    }
+    match <[OwnedFd; 1]>::try_from(fds) {
+        Ok([fd]) => Ok(fd),
+        Err(fds) => Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!("expected one descriptor, got {}", fds.len()),
+        )),
+    }
 }
 
 // ---------- rendezvous ----------

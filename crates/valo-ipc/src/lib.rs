@@ -13,6 +13,7 @@ mod raw;
 
 pub type Result<T, E = std::io::Error> = std::result::Result<T, E>;
 
+use std::os::fd::{BorrowedFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
@@ -89,6 +90,12 @@ impl ClientIPC {
         raw::recv(&mut self.stream)
     }
 
+    /// Hand the GPU host's control socket to the lib.
+    pub fn send_gpu_control(&mut self, control: BorrowedFd<'_>) -> Result<()> {
+        self.send(&ClientToLib::GpuControl)?;
+        raw::send_descriptor(&self.stream, control)
+    }
+
     /// Pid of the peer process, as recorded by the kernel at its connect/listen.
     pub fn peer_pid(&self) -> Result<u32> {
         let cred = rustix::net::sockopt::socket_peercred(&self.stream)?;
@@ -147,6 +154,20 @@ impl LibIPC {
     pub fn recv(&mut self) -> Result<Option<ClientToLib>> {
         raw::recv(&mut self.stream)
     }
+    /// The GPU host's control socket, which must be the next message.
+    pub fn recv_gpu_control(&mut self) -> Result<OwnedFd> {
+        match self.recv()? {
+            Some(ClientToLib::GpuControl) => self.recv_descriptor(),
+            other => Err(std::io::Error::other(format!(
+                "expected GpuControl, got {other:?}"
+            ))),
+        }
+    }
+
+    /// The descriptor that follows a received [`ClientToLib::GpuControl`].
+    pub fn recv_descriptor(&mut self) -> Result<OwnedFd> {
+        raw::recv_descriptor(&self.stream)
+    }
 }
 
 #[cfg(test)]
@@ -187,6 +208,28 @@ mod tests {
 
         t_client.join().unwrap().unwrap();
         t_lib.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn gpu_control_descriptor_reaches_the_lib() {
+        use std::io::{Read, Write};
+        let (client_end, lib_end) = UnixStream::pair().unwrap();
+        let mut client = ClientIPC::from_accepted(client_end);
+        let mut lib = LibIPC::from_accepted(lib_end);
+        let (mut a, b) = UnixStream::pair().unwrap();
+
+        client
+            .send_gpu_control(std::os::fd::AsFd::as_fd(&b))
+            .unwrap();
+        client.send(&ClientToLib::GetState).unwrap();
+        drop(b);
+
+        let mut received = UnixStream::from(lib.recv_gpu_control().unwrap());
+        assert_eq!(lib.recv().unwrap(), Some(ClientToLib::GetState));
+        a.write_all(b"x").unwrap();
+        let mut byte = [0u8];
+        received.read_exact(&mut byte).unwrap();
+        assert_eq!(&byte, b"x");
     }
 
     /// Stale socket file from a previous run should be cleaned up on the

@@ -59,6 +59,10 @@ still in its constructor — no frame runs before it completes:
    before anything runs, no ack. The init client is the source of truth
    for runtime config; there is no config env (`VALO_SOCK` /
    `VALO_LOG` are bootstrap-only).
+3. With `use_gpu`, `GpuControl`, followed by one byte that carries the
+   GPU host's control socket (`SCM_RIGHTS`). The client starts the GPU
+   host outside the target's launcher chain; inherited descriptors do not
+   survive wrappers such as Steam's, the rendezvous socket does.
 
 The session then starts held with the init connection, and the first
 frame boundary's notification drives it:
@@ -122,6 +126,7 @@ pub enum ClientToLib {
     SetInputs(InputState), // full keyboard state for input feeding
     GetState,
     Quit,
+    GpuControl,           // init only: the control socket follows on the next byte
 }
 
 pub enum LibToClient {

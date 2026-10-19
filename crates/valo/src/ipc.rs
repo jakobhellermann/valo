@@ -305,6 +305,18 @@ fn handle_command(
             }
             Action::Hold
         }
+        ClientToLib::GpuControl => {
+            error!(Ipc, "unexpected GpuControl mid-session");
+            if let Err(e) = conn.recv_descriptor() {
+                warn!(Ipc, "receive the stray GpuControl descriptor: {e}");
+            }
+            if let Err(e) = conn.send(&LibToClient::Error(Error {
+                message: "GpuControl is part of the init exchange".into(),
+            })) {
+                warn!(Ipc, "send GpuControl error: {e}");
+            }
+            Action::Hold
+        }
         ClientToLib::Quit => {
             info!(Ipc, "quit requested, exiting");
             std::process::exit(0);
