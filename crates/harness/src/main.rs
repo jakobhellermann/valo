@@ -177,7 +177,12 @@ fn run(
     valo_launch::command::configure_target(&mut cmd, config.gpu)?;
     match config.link_mode {
         LinkMode::Link => {
-            cmd.env("LD_LIBRARY_PATH", out_dir);
+            let mut path = out_dir.as_os_str().to_os_string();
+            if let Some(inherited) = std::env::var_os("LD_LIBRARY_PATH") {
+                path.push(":");
+                path.push(&inherited);
+            }
+            cmd.env("LD_LIBRARY_PATH", path);
         }
         LinkMode::Preload => {
             cmd.env("LD_PRELOAD", out_dir.join("libvalo.so"));
