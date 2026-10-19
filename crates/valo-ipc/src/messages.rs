@@ -64,6 +64,8 @@ pub enum ClientToLib {
     SetInputs(InputState),
     GetState,
     Quit,
+    /// The descriptor of the GPU host's control socket follows on the next byte.
+    GpuControl,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
