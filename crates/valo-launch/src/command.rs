@@ -21,6 +21,10 @@ pub fn configure_target(cmd: &mut Command, gpu: bool) -> Result<()> {
     cmd.env("WAYLAND_DISPLAY", "");
     // Deterministic time zone.
     cmd.env("TZ", "UTC0");
+    // Old Mono keeps file handle share info in /dev/shm segments that a restore rewinds only
+    // partially; private tables rewind with the process.
+    // TODO: save shared file mappings whole, not only their pages mapped at the checkpoint
+    cmd.env("MONO_DISABLE_SHM", "1");
 
     // Everything the target writes lands under one per-run home.
     cmd.env("VALO_HOME", paths::valo_home());
