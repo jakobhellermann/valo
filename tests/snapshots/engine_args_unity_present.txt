@@ -1,0 +1,3 @@
+argv[1]=-force-gfx-direct
+argv[2]=-custom
+argv[3]=-force-opengl

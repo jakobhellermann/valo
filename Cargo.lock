@@ -1824,6 +1824,7 @@ dependencies = [
  "memchr",
  "rustix",
  "valo-ipc",
+ "valo-launch",
  "vulkan-headers",
  "x11rb-protocol",
 ]

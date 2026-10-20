@@ -1,0 +1,71 @@
+// TODO(ai-review): generated, not yet audited
+//! Engine-dependent setup, applied by libvalo inside the target, where the real executable is known.
+
+use std::path::Path;
+
+use anyhow::{Context, Result};
+
+use crate::unity;
+
+pub struct LibSetup {
+    /// Applied before `main`; `None` removes the variable.
+    pub env: &'static [(&'static str, Option<&'static str>)],
+    /// Appended to the target's argv unless already present.
+    pub args: &'static [&'static str],
+}
+
+pub fn setup_lib(exe: &Path, gpu: bool) -> Result<LibSetup> {
+    let engine = autodetect_engine(exe)?;
+
+    let require_zink = gpu && matches!(engine, Some(Engine::UnityGl));
+    let zink_requested =
+        std::env::var_os("MESA_LOADER_DRIVER_OVERRIDE").is_some_and(|v| v == "zink");
+
+    // Under forced software GL, zink requests a CPU Vulkan device the guest ICD lacks.
+    let env: &'static [_] = match (require_zink, zink_requested) {
+        (true, _) => &[
+            ("MESA_LOADER_DRIVER_OVERRIDE", Some("zink")),
+            ("LIBGL_ALWAYS_SOFTWARE", None),
+        ],
+        (false, true) => &[("LIBGL_ALWAYS_SOFTWARE", None)],
+        (false, false) => &[],
+    };
+
+    let args: &'static [_] = match (engine, gpu) {
+        (None, _) => &[],
+        (Some(Engine::UnityVulkan), true) => &["-force-gfx-direct", "-force-vulkan"],
+        (Some(Engine::UnityGl), true) => &["-force-gfx-direct", "-force-glcore"],
+        (Some(_), false) => &["-force-gfx-direct", "-force-opengl"],
+    };
+
+    Ok(LibSetup { env, args })
+}
+
+#[derive(Debug)]
+enum Engine {
+    /// Unity with native Vulkan support
+    UnityVulkan,
+    /// Unity without Vulkan support (pre-5.6)
+    UnityGl,
+}
+
+fn autodetect_engine(program: &Path) -> Result<Option<Engine>> {
+    let Some(data_dir) = unity::data_dir(program) else {
+        return Ok(None);
+    };
+    let version = unity::version(&data_dir).context("read the unity version")?;
+    let (major, minor) =
+        major_minor(&version).with_context(|| format!("unrecognized unity version {version}"))?;
+    Ok(Some(match (major, minor) >= (5, 6) {
+        true => Engine::UnityVulkan,
+        false => Engine::UnityGl,
+    }))
+}
+
+/// Extracts (major, minor) from a version like "5.4.3f1".
+fn major_minor(version: &str) -> Option<(u32, u32)> {
+    let mut parts = version.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some((major, minor))
+}
