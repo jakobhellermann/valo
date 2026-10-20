@@ -19,7 +19,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use config::ConfigArgs;
 use valo_ipc::ClientIPC;
-use valo_ipc::config::{Config, ResolvedModule};
+use valo_ipc::config::Config;
 use valo_ipc::messages::{ClientToLib, FrameBoundary, LibToClient};
 use valo_launch::gpu_session::GpuSession;
 use valo_launch::{paths, resolve_lib};
@@ -291,47 +291,6 @@ fn resolve_program(program: &Path) -> Result<PathBuf> {
         .with_context(|| format!("{} not found in PATH", program.display()))
 }
 
-/// Symbols of the engine modules valo hooks in `program`: the Unity player, if it is a Unity game.
-pub(crate) fn resolve_modules(program: &Path) -> Result<Vec<ResolvedModule>> {
-    let Some(data_dir) = valo_launch::unity::data_dir(program) else {
-        return Ok(Vec::new());
-    };
-
-    let version = match valo_launch::unity::version(&data_dir) {
-        Ok(version) => version,
-        Err(e) => {
-            eprintln!(
-                "[valo-client] warning: could not read the unity version from {}: {e:#}; \
-                 the gamespecific unity hooks stay disabled",
-                data_dir.display()
-            );
-            return Ok(Vec::new());
-        }
-    };
-    match valo_launch::unity::resolve_player(program) {
-        Ok(player) => {
-            eprintln!(
-                "[valo-client] unity {version}: {} player symbols resolved",
-                player.symbols.len()
-            );
-            Ok(vec![player])
-        }
-        // The game still runs without the resolved symbols — the lib
-        // installs no gamespecific hooks then, and loads run undriven.
-        // Resolution needs the separate debug file (UnityPlayer_s.debug)
-        // whose build id matches the player; custom engine builds ship
-        // neither the file nor a public one.
-        Err(e) => {
-            eprintln!(
-                "[valo-client] warning: could not resolve the unity {version} player \
-                 symbols: {e:#}; the gamespecific unity hooks stay disabled, loads run \
-                 undriven and may be slow or nondeterministic"
-            );
-            Ok(Vec::new())
-        }
-    }
-}
-
 pub(crate) fn report_kumquat_exit(session: &mut GpuSession) -> Result<bool> {
     let Some(status) = session.exit_status()? else {
         return Ok(false);
@@ -370,7 +329,7 @@ fn run_ipc_loop(
         };
         eprintln!("[valo-client] ipc connected on {}", sock.display());
 
-        let pid = init_game(&mut conn, &config, gpu_control)?;
+        let pid = valo_launch::init_game(&mut conn, &config, gpu_control)?;
         conn.set_read_timeout(FIRST_HANG_TIMEOUT)
             .context("set hang watchdog timeout")?;
         let (hotkeys, hud) = game_ui.get_or_insert_with(|| spawn_game_ui(game_window.clone()));
@@ -441,23 +400,6 @@ fn run_ipc_loop(
             return Ok(SessionEnd::Done);
         }
     }
-}
-
-/// Init exchange with the game behind `conn`, which can sit below wrapper
-/// processes; the socket peer is the process libvalo attached to.
-pub(crate) fn init_game(
-    conn: &mut ClientIPC,
-    config: &Config,
-    gpu_control: Option<BorrowedFd<'_>>,
-) -> Result<u32> {
-    let pid = conn.peer_pid().context("game pid from socket peer")?;
-    let exe = std::fs::read_link(format!("/proc/{pid}/exe"))
-        .with_context(|| format!("resolve exe of game pid {pid}"))?;
-    eprintln!("[valo-client] attached to pid {pid}: {}", exe.display());
-    let mut config = config.clone();
-    config.resolved_modules = resolve_modules(&exe)?;
-    conn.init(&config, gpu_control)?;
-    Ok(pid)
 }
 
 fn spawn_game_ui(game_window: input::GameWindow) -> (mpsc::Receiver<input::HotkeyEvent>, hud::Hud) {

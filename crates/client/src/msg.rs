@@ -187,7 +187,7 @@ fn init_session(
 ) -> Result<u32> {
     let mut conn =
         ClientIPC::establish(sock).with_context(|| format!("connect {}", sock.display()))?;
-    let pid = crate::init_game(&mut conn, config, gpu_control)
+    let pid = valo_launch::init_game(&mut conn, config, gpu_control)
         .with_context(|| format!("init {}", sock.display()))?;
     if !paused {
         conn.send(&ClientToLib::Detach)?;

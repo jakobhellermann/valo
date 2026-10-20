@@ -186,7 +186,7 @@ pub fn run(
     }
 
     let mut conn = ClientIPC::establish(sock).context("ipc establish")?;
-    let target_pid = crate::init_game(&mut conn, &config, gpu_control)?;
+    let target_pid = valo_launch::init_game(&mut conn, &config, gpu_control)?;
 
     let (tx, rx) = mpsc::channel::<AppEvent>();
 
