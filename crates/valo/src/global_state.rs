@@ -2,7 +2,7 @@ use std::cell::SyncUnsafeCell;
 
 use std::mem::MaybeUninit;
 use std::ops::Range;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 use rustix::mm;
 
@@ -13,7 +13,7 @@ use crate::checkpoint::fd_sync::keepalive::FdKeepaliveRegistry;
 use crate::thread_tracker::MAX_THREADS;
 use crate::token::{Exclusive, ExclusiveCell};
 use crate::utils::PAGE_SIZE;
-use valo_ipc::config::{Config, SkipDrawMode};
+use valo_ipc::config::{Config, RestoreRedraw, SkipDrawMode};
 
 static GLOBAL_STATE: SyncUnsafeCell<MaybeUninit<GlobalState>> =
     SyncUnsafeCell::new(MaybeUninit::zeroed());
@@ -37,6 +37,8 @@ pub struct GlobalState {
     pub skip_draw: AtomicBool,
     /// The skip_draw minimum wall-clock interval between rendered frames
     pub skip_draw_min_render_ms: AtomicU32,
+    /// A `RestoreRedraw` discriminant.
+    restore_redraw: AtomicU8,
 }
 
 impl GlobalState {
@@ -101,6 +103,8 @@ impl GlobalState {
         crate::determinism::time::CLOCK.set_config(&config.determinism.time);
         crate::determinism::randomness::RANDOM.set_config(&config.determinism.randomness);
         self.set_skip_draw(config.skip_draw);
+        self.restore_redraw
+            .store(config.restore_redraw as u8, Ordering::Relaxed);
         crate::input_feed::set_config(&config.input);
         crate::log::set_level(config.log.level.into());
     }
@@ -117,6 +121,18 @@ impl GlobalState {
         self.skip_draw.store(enabled, Ordering::Relaxed);
         self.skip_draw_min_render_ms
             .store(min_render_ms, Ordering::Relaxed);
+    }
+
+    pub fn restore_redraw(&self) -> RestoreRedraw {
+        const NONE: u8 = RestoreRedraw::None as u8;
+        const EARLY: u8 = RestoreRedraw::Early as u8;
+        const LATE: u8 = RestoreRedraw::Late as u8;
+        match self.restore_redraw.load(Ordering::Relaxed) {
+            NONE => RestoreRedraw::None,
+            EARLY => RestoreRedraw::Early,
+            LATE => RestoreRedraw::Late,
+            other => unreachable!("stored restore_redraw {other}"),
+        }
     }
 
     /// The currently applied skip_draw mode.
@@ -235,6 +251,7 @@ impl GlobalState {
             use_gpu: AtomicBool::new(false),
             skip_draw: AtomicBool::new(false),
             skip_draw_min_render_ms: AtomicU32::new(0),
+            restore_redraw: AtomicU8::new(RestoreRedraw::None as u8),
         })
     }
 

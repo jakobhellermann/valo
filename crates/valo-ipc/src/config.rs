@@ -51,6 +51,16 @@ pub enum SkipDrawMode {
     Interval { min_render_interval_ms: u32 },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum RestoreRedraw {
+    #[default]
+    None,
+    /// Before the rewind, so the frame shows while the restore runs
+    Early,
+    /// After the rewind
+    Late,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Framerate {
     pub num: NonZeroU32,
@@ -116,6 +126,8 @@ pub struct Config {
     pub determinism: DeterminismConfig,
     /// Which frames to skip/draw
     pub skip_draw: SkipDrawMode,
+    /// When a restore paints back the window pixels stored with the checkpoint.
+    pub restore_redraw: RestoreRedraw,
     pub input: InputConfig,
     /// Symbols the client resolved from modules the game loads; read once at
     /// the init handshake.
