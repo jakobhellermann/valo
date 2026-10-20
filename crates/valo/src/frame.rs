@@ -11,6 +11,9 @@ pub fn frame_boundary<T>(draw: impl FnOnce() -> T) -> T {
 
     trace!(Frame, "frame boundary {frame}");
 
+    // Present before the turn, so a held boundary shows its own frame.
+    let drawn = draw();
+
     let checkpoint_frame = global.checkpoint_frame.load(Ordering::Relaxed);
     let restore_frame = global.restore_frame.load(Ordering::Relaxed);
     if checkpoint_frame > 0 && frame == checkpoint_frame {
@@ -25,5 +28,5 @@ pub fn frame_boundary<T>(draw: impl FnOnce() -> T) -> T {
 
     input_feed::feed_frame();
 
-    draw()
+    drawn
 }
