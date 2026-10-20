@@ -1,10 +1,11 @@
 //# link_flags: -lxcb
 // A restore rewinds into a frame whose image is already acquired and whose
-// present is still pending: a boundary checkpoint is taken BEFORE the draw.
-// The presentation engine cannot rewind — the resumed present carries
-// swapchain state the discarded timeline may have destroyed server-side —
-// so the resumed vkQueuePresentKHR must answer OUT_OF_DATE, like the
-// acquire path's one-shot already does.
+// present is still pending: a direct valo_checkpoint() between submit and
+// present (boundary checkpoints come after the present). The presentation
+// engine cannot rewind — the resumed present carries swapchain state the
+// discarded timeline may have destroyed server-side — so the resumed
+// vkQueuePresentKHR must answer OUT_OF_DATE, like the acquire path's
+// one-shot already does.
 //
 // Timeline: frame 6 checkpoints mid-frame (after acquire+submit, before
 // present). Frame 10 destroys and recreates the swapchain, killing the old
@@ -268,7 +269,7 @@ int main(void) {
 
         if (frame == CHECKPOINT_FRAME) {
             // Mid-frame checkpoint: the image is acquired, the present is
-            // pending — the position a boundary checkpoint restores into.
+            // pending.
             tprintf("frame=%d checkpoint (present pending)\n", frame);
             valo_checkpoint();
         }
