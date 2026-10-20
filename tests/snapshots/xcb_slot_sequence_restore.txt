@@ -1,0 +1,12 @@
+after C1: ok
+after R1: ok
+after R1: ok
+after C2: ok
+after R1: ok
+after R2: ok
+after R1: ok
+after R2: ok
+after C3: ok
+after R2: ok
+after R3: ok
+sequence done
