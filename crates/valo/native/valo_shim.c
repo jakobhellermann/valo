@@ -7,6 +7,7 @@
 #include <sys/uio.h>
 #include <X11/Xlibint.h>
 #include <X11/Xlib-xcb.h>
+#include <xcb/present.h>
 
 /* These are libxcb 1.17.0's default build-time layout options. */
 #define HAVE_SENDMSG 1
@@ -402,6 +403,122 @@ int valo_x11_restore(Display *display, uint64_t last_request_read,
         conn->out.socket_closure = NULL;
     }
     return 0;
+}
+
+struct valo_window_image {
+    xcb_get_image_reply_t *reply;
+    const uint8_t *data;
+    uint32_t len;
+    uint16_t width;
+    uint16_t height;
+    uint8_t depth;
+};
+
+/* Reads a window's or pixmap's contents as a ZPixmap. Errors are taken here instead
+ * of reaching the connection's event queue. Returns zero or the X error
+ * code (-1 without one); on success the caller frees out->reply. */
+int valo_xcb_get_window_image(xcb_connection_t *conn, uint32_t drawable,
+                              struct valo_window_image *out)
+{
+    xcb_generic_error_t *err = NULL;
+    xcb_get_geometry_reply_t *geom =
+        xcb_get_geometry_reply(conn, xcb_get_geometry(conn, drawable), &err);
+    if (!geom) {
+        int code = err ? err->error_code : -1;
+        free(err);
+        return code;
+    }
+    out->width = geom->width;
+    out->height = geom->height;
+    free(geom);
+
+    out->reply = xcb_get_image_reply(
+        conn,
+        xcb_get_image(conn, XCB_IMAGE_FORMAT_Z_PIXMAP, drawable, 0, 0,
+                      out->width, out->height, UINT32_MAX),
+        &err);
+    if (!out->reply) {
+        int code = err ? err->error_code : -1;
+        free(err);
+        return code;
+    }
+    out->data = xcb_get_image_data(out->reply);
+    out->len = xcb_get_image_data_length(out->reply);
+    out->depth = out->reply->depth;
+    return 0;
+}
+
+static int request_error(xcb_connection_t *conn, xcb_void_cookie_t cookie)
+{
+    xcb_generic_error_t *err = xcb_request_check(conn, cookie);
+    if (!err)
+        return 0;
+    int code = err->error_code;
+    free(err);
+    return code;
+}
+
+/* Writes a ZPixmap read by valo_xcb_get_window_image to `drawable`, split
+ * into row bands that fit the maximum request length. Returns zero or the
+ * first X error code (-1 without one). */
+static int put_image(xcb_connection_t *conn, uint32_t drawable, uint16_t width,
+                     uint16_t height, uint8_t depth, const uint8_t *data,
+                     uint32_t len)
+{
+    if (height == 0 || len % height != 0)
+        return -1;
+    const uint32_t stride = len / height;
+    /* 24 bytes of PutImage request header */
+    const uint32_t max_bytes = xcb_get_maximum_request_length(conn) * 4 - 24;
+    const uint32_t band = max_bytes / stride;
+    if (band == 0)
+        return -1;
+
+    xcb_gcontext_t gc = xcb_generate_id(conn);
+    int code = request_error(conn, xcb_create_gc_checked(conn, gc, drawable, 0, NULL));
+    if (code)
+        return code;
+    for (uint32_t y = 0; y < height && !code; y += band) {
+        uint32_t rows = height - y < band ? height - y : band;
+        code = request_error(
+            conn, xcb_put_image_checked(conn, XCB_IMAGE_FORMAT_Z_PIXMAP, drawable,
+                                        gc, width, rows, 0, y, 0, depth,
+                                        rows * stride, data + (size_t)y * stride));
+    }
+    xcb_free_gc(conn, gc);
+    return code;
+}
+
+int valo_xcb_put_window_image(xcb_connection_t *conn, uint32_t window,
+                              uint16_t width, uint16_t height, uint8_t depth,
+                              const uint8_t *data, uint32_t len)
+{
+    int code = put_image(conn, window, width, height, depth, data, len);
+    xcb_flush(conn);
+    return code;
+}
+
+/* Presents the image like a swapchain frame: a write into the window would
+ * make the server stop flipping the swapchain's buffers onto it. Serial 0
+ * precedes every serial a swapchain hands out. */
+int valo_xcb_present_window_image(xcb_connection_t *conn, uint32_t window,
+                                  uint16_t width, uint16_t height, uint8_t depth,
+                                  const uint8_t *data, uint32_t len)
+{
+    xcb_pixmap_t pixmap = xcb_generate_id(conn);
+    int code = request_error(
+        conn, xcb_create_pixmap_checked(conn, depth, pixmap, window, width, height));
+    if (code)
+        return code;
+    code = put_image(conn, pixmap, width, height, depth, data, len);
+    if (!code)
+        code = request_error(
+            conn, xcb_present_pixmap_checked(conn, window, pixmap, 0, 0, 0, 0, 0, 0,
+                                             0, 0, XCB_PRESENT_OPTION_NONE, 0, 0,
+                                             0, 0, NULL));
+    xcb_free_pixmap(conn, pixmap);
+    xcb_flush(conn);
+    return code;
 }
 
 #endif

@@ -77,6 +77,7 @@ impl ConfigArgs {
                 level: self.log_level.map_or(LogLevel::Trace, Into::into),
             },
             use_gpu: !self.software_rendering,
+            restore_redraw: Default::default(),
             determinism: DeterminismConfig {
                 time: TimeConfig {
                     uncontrolled_time: self.uncontrolled_time || self.uncontrolled,

@@ -28,6 +28,7 @@ mod sys;
 mod thread_tracker;
 mod token;
 mod utils;
+mod window_image;
 
 use std::ffi::OsStr;
 use std::sync::atomic::{AtomicU8, Ordering};
