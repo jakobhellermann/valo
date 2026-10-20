@@ -12,6 +12,7 @@ mod alt_stack;
 mod checkpoint;
 mod debug;
 mod determinism;
+mod engine_setup;
 mod frame;
 mod gamespecific;
 mod glibc;
@@ -91,6 +92,7 @@ fn init() -> Result<()> {
     checkpoint::init_thread()?;
     sigsegv::install()?;
     ipc::init()?;
+    engine_setup::init(&exe)?;
     checkpoint::gpu::init()?;
 
     info!(Init, "valo initialized");

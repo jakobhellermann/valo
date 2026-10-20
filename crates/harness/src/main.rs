@@ -51,6 +51,9 @@ struct Config {
     preload_after: Vec<String>,
     /// Shared libraries built from `tests/<path>.c` without loading them
     build_libs: Vec<String>,
+    /// Makes the test binary look like a Unity player of this version
+    unity_version: Option<String>,
+    args: Vec<String>,
 }
 
 #[derive(Default)]
@@ -106,6 +109,14 @@ fn parse_config(source: &Path) -> Config {
                     }
                     "build_lib" => {
                         config.build_libs.push(value.to_string());
+                    }
+                    "args" => {
+                        config
+                            .args
+                            .extend(value.split_whitespace().map(String::from));
+                    }
+                    "unity_version" => {
+                        config.unity_version = Some(value.to_string());
                     }
                     "env" => {
                         if let Some((k, v)) = value.split_once('=') {
@@ -211,9 +222,7 @@ fn run(
     log_path: &Path,
 ) -> Result<Output> {
     let mut cmd = Command::new(binary);
-    // Directives first: the declared target environment is input to
-    // configure_target (a zink override suppresses the llvmpipe forcing,
-    // which reads the command's environment).
+    cmd.args(&config.args);
     for (k, v) in &config.env {
         cmd.env(k, v);
     }
@@ -372,6 +381,16 @@ fn run_test(
     let log_path = logs_dir.join(format!("{name}.log"));
 
     let binary = compile(name, source, &config, tests_dir, out_dir, tests_out_dir)?;
+    if let Some(version) = &config.unity_version {
+        let data_dir = tests_out_dir.join(format!("{name}_Data"));
+        fs::create_dir_all(&data_dir)?;
+        // serialized file header of format 17: the version string at 0x14
+        let mut header = vec![0u8; 0x14];
+        header[8..12].copy_from_slice(&17u32.to_be_bytes());
+        header.extend_from_slice(version.as_bytes());
+        header.push(0);
+        fs::write(data_dir.join("globalgamemanagers"), header)?;
+    }
     let output = run(
         &binary,
         tests_out_dir,
