@@ -33,6 +33,34 @@ pub fn version(data_dir: &Path) -> Result<String> {
     Ok(version.to_string())
 }
 
+/// The Unity player's symbols the lib hooks, if `program` is a Unity game.
+pub fn resolve_modules(program: &Path) -> Result<Vec<ResolvedModule>> {
+    let Some(data_dir) = data_dir(program) else {
+        return Ok(Vec::new());
+    };
+    let version = version(&data_dir).context("read the unity version")?;
+    match resolve_player(program) {
+        Ok(player) => {
+            eprintln!(
+                "[valo-launch] unity {version}: {} player symbols resolved",
+                player.symbols.len()
+            );
+            Ok(vec![player])
+        }
+        // Resolution needs UnityPlayer.so plus its separate debug file with a
+        // matching build id; old Unity versions bake the engine into the
+        // executable, custom engine builds ship no public debug file.
+        Err(e) => {
+            eprintln!(
+                "[valo-launch] warning: could not resolve the unity {version} player \
+                 symbols: {e:#}; the gamespecific unity hooks stay disabled, loads run \
+                 undriven and may be slow or nondeterministic"
+            );
+            Ok(Vec::new())
+        }
+    }
+}
+
 /// Resolves the player symbols the lib hooks, from `UnityPlayer.so` next to `program`.
 pub fn resolve_player(program: &Path) -> Result<ResolvedModule> {
     let player = program
