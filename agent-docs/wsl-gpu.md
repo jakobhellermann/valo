@@ -83,7 +83,7 @@ aus 1–3, mit zwei Ausnahmen:
   nicht nötig (Gegentest grün); sie verhindern Lesen über das Host-Mapping
   hinaus bei `VK_WHOLE_SIZE` mit Offset.
 
-`tests/gpu_mapped_ranges.c` deckt die Größenkonsistenz ab (mit dem alten
+`tests/gpu_host_visible_flush_invalidate.c` deckt die Größenkonsistenz ab (mit dem alten
 Encoder gerät der Stream außer Takt).
 
 ### 4. Nicht nötig für die Änderung selbst

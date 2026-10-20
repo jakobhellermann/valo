@@ -319,7 +319,7 @@ auf der Xlib-Verbindung nutzt und auf Replies wartet.
 konfigurierte das frisch gemappte Fenster um und erzeugte ein OUT_OF_DATE
 vor dem Checkpoint. Der Test nutzt jetzt ein `override_redirect`-Fenster.
 
-**`gpu_mapped_ranges`** prüft Kopiermodus-Semantik (Invalidate holt
+**`gpu_host_visible_flush_invalidate`** prüft Kopiermodus-Semantik (Invalidate holt
 überschriebene Bytes zurück) und kann mit geteilten Mappings nur
 fehlschlagen. Er liegt mit dem Kopiermodus auf `copy-mode`.
 
@@ -387,7 +387,7 @@ ist nur der Ring umzuhängen).
   anonym neu angelegt; im Spawn-Pfad fehlt die Hang-Erkennung.
 - Kopiermodus für WSL: Bookmark `copy-mode` in gfxstream (6 Commits; die
   Bereichsprüfung ist inzwischen upstream), mesa (4 Commits) und valo
-  (`gpu_mapped_ranges`). Ungetestet.
+  (`gpu_host_visible_flush_invalidate`). Ungetestet.
 - Aus dem Fork nicht übernommen, weil HK sie nicht braucht und kein roter
   Test sie belegt: Catch-all-Barrieren mit `MEMORY_READ|MEMORY_WRITE`,
   Snapshot von BC3/BC7-Images, die 1.1-Instanz-Fähigkeiten. Die
