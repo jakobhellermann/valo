@@ -229,6 +229,15 @@ pub fn fd_pin(fd: RawFd, keepalive: RawFd, dev: Dev, ino: u64, link: &str) {
     });
 }
 
+/// A descriptor of a GPU host object, which the GPU host replaces at restore.
+pub fn fd_gpu(fd: RawFd, resource_id: u32) {
+    structured_write(|w| {
+        write_field(w, "e", "checkpoint.fds.gpu");
+        write_field(w, "fd", fd as u32);
+        write_field(w, "resource", resource_id);
+    });
+}
+
 pub fn trace_step(event: &'static str) {
     trace_event(event);
 }

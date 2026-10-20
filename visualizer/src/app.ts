@@ -49,6 +49,7 @@ type Segment = {
   fds: FdEntry[]; // open descriptors logged while the guest was frozen
   fdActions: { fd: number; action: string }[]; // what the fd sync did on restore
   keepalives: FdKeepalive[]; // pins for descriptors that cannot be reopened at restore
+  gpuFds: { fd: number; resource: number }[]; // GPU host objects, replaced at restore
 };
 
 type Run = { pid: number; segments: Segment[] };
@@ -81,6 +82,7 @@ function parseFile(text: string): Run[] {
           fds: [],
           fdActions: [],
           keepalives: [],
+          gpuFds: [],
         };
         run.segments.push(cur);
       } else if (ev.e === "restore.begin" || ev.e === "restore_begin") {
@@ -94,19 +96,23 @@ function parseFile(text: string): Run[] {
           fds: [],
           fdActions: [],
           keepalives: [],
+          gpuFds: [],
         };
         run.segments.push(cur);
       } else if (cur) {
         if (ev.e === `${cur.kind}.fds`) cur.fds.push(ev);
         else if (cur.kind === "checkpoint" && ev.e === "checkpoint.fds.pin")
           cur.keepalives.push({ fd: ev.fd, ka: ev.ka, dev: ev.dev, ino: ev.ino, link: ev.link });
+        else if (cur.kind === "checkpoint" && ev.e === "checkpoint.fds.gpu")
+          cur.gpuFds.push({ fd: ev.fd, resource: ev.resource });
         else if (cur.kind === "restore" && ev.e.startsWith("restore.fds.")) {
           const action = ev.e.slice("restore.fds.".length);
           if (
             action === "close" ||
             action === "reopen" ||
             action === "reopen_failed" ||
-            action === "missing"
+            action === "missing" ||
+            action === "remap"
           )
             cur.fdActions.push({ fd: ev.fd, action });
         } else if (ev.e === `${cur.kind}.end`) cur.endUs = ev.ts_us;
@@ -385,12 +391,31 @@ function fdTable(entries: FdEntry[]): string {
   </table>`;
 }
 
-function fdDiffTable(rows: FdDiffRow[]): string {
-  return `<table>${FD_COLUMNS}
+type FdAction = { fd: number; action: string };
+
+// A difference the restore resolves: it closed an fd the checkpoint lacks, or
+// put the checkpoint's descriptor back (reopen, keepalive, GPU host remap).
+function fdExplained(row: FdDiffRow, action: string | undefined): boolean {
+  if (row.ok) return true;
+  if (!row.checkpoint) return action === "close";
+  return action === "reopen" || action === "remap";
+}
+
+function fdUnexplained(rows: FdDiffRow[], actions: FdAction[]): number {
+  const byFd = new Map(actions.map((a) => [a.fd, a.action]));
+  return rows.filter((row) => !fdExplained(row, byFd.get(row.checkpoint?.fd ?? row.process!.fd)))
+    .length;
+}
+
+function fdDiffTable(rows: FdDiffRow[], actions: FdAction[]): string {
+  const byFd = new Map(actions.map((a) => [a.fd, a.action]));
+  return `<table><tr><th>fd</th><th>kind</th><th>cloexec</th><th>status</th><th>offset</th><th>size</th><th>dev:ino</th><th>link</th><th>restore</th></tr>
     ${rows
       .map((row) => {
+        const fd = row.checkpoint?.fd ?? row.process!.fd;
+        const action = byFd.get(fd);
         const status = !row.checkpoint ? "added" : !row.process ? "removed" : "";
-        return `<tr class="${row.ok ? "" : "bad"}"><td>${row.checkpoint?.fd ?? row.process!.fd}${status ? ` <span class="mismatch">${status}</span>` : ""}</td>${fdRowCells(row.checkpoint, row.process)}</tr>`;
+        return `<tr class="${fdExplained(row, action) ? "" : "bad"}"><td>${fd}${status ? ` <span class="mismatch">${status}</span>` : ""}</td>${fdRowCells(row.checkpoint, row.process)}<td>${action ?? ""}</td></tr>`;
       })
       .join("")}
   </table>`;
@@ -755,7 +780,7 @@ async function main() {
     );
     const changed = rows.filter((r) => !r.ok).length;
     const fdRows = diffFds(checkpoint?.fds ?? [], seg.fds);
-    const fdChanged = fdRows.filter((r) => !r.ok).length;
+    const fdChanged = fdUnexplained(fdRows, seg.fdActions);
     const missing = seg.fdActions.filter((a) => a.action === "missing");
     const fdReconcile = seg.fdActions.length
       ? `<p class="dim">fd sync: ${fdRowSummary(seg.fdActions)}${missing.length ? ` · missing: ${missing.map((a) => a.fd).join(", ")}` : ""}</p>`
@@ -763,10 +788,13 @@ async function main() {
     const kaNote = checkpoint?.keepalives.length
       ? `<p class="dim">${checkpoint.keepalives.length} keepalives pin the descriptors that cannot be reopened (restore re-dups them onto their fd numbers)</p>`
       : "";
+    const gpuNote = checkpoint?.gpuFds.length
+      ? `<p class="dim">${checkpoint.gpuFds.length} descriptors are GPU host objects (the GPU host re-creates them; restore puts the new ones onto their fd numbers)</p>`
+      : "";
     const fdView = checkpoint
       ? fdSection(
-          `file descriptors — checkpoint ${checkpoint.fds.length} vs process ${seg.fds.length} <span class="${fdChanged ? "mismatch" : ""}">${fdChanged} changed</span>`,
-          `${fdDiffTable(fdRows)}${fdReconcile}${kaNote}`,
+          `file descriptors — checkpoint ${checkpoint.fds.length} vs process ${seg.fds.length} <span class="${fdChanged ? "mismatch" : ""}">${fdChanged} unexplained</span>`,
+          `${fdDiffTable(fdRows, seg.fdActions)}${fdReconcile}${kaNote}${gpuNote}`,
         )
       : fdSection(
           `file descriptors — ${seg.fds.length} (no matching checkpoint)`,

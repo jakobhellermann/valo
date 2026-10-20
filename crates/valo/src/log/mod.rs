@@ -57,6 +57,7 @@ pub(crate) mod structured {
         pub fn fd(_event: &'static str, _entry: &crate::procfs::fds::OpenFd) {}
         pub fn fd_action(_event: &'static str, _fd: i32) {}
         pub fn fd_pin(_fd: RawFd, _keepalive: RawFd, _dev: Dev, _ino: u64, _link: &str) {}
+        pub fn fd_gpu(_fd: RawFd, _resource_id: u32) {}
     }
 }
 
