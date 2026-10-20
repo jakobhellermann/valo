@@ -1,32 +1,38 @@
-// TODO(ai-review): generated, not yet audited
-//! Coordinate a frozen guest with its Kumquat GPU host. SIGUSR1/2 start an
-//! operation, carrying the savestate slot in the sigqueue value; one byte on
-//! the result pipe reports its completion. The pipe is read through an
-//! init-time duplicate owned by valo, independent of the guest's fd numbers
-//! and of fd_table checkpoint state.
+//! Coordinate a frozen guest with its Kumquat GPU host over Kumquat's control connection, which
+//! the client hands over during the IPC init. A request names the slot's snapshot directory;
+//! Kumquat answers each one with OK or an error text.
 
+use std::fmt::NumBuffer;
 use std::io;
-use std::os::fd::{BorrowedFd, OwnedFd};
+use std::os::fd::OwnedFd;
+use std::os::unix::ffi::OsStringExt;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use rustix::event::{PollFd, PollFlags};
 use rustix::io::Errno;
+use rustix::net::{RecvFlags, SendFlags};
 use rustix::time::Timespec;
-
-use crate::global_state::GlobalState;
+use valo_ipc::kumquat;
 
 use crate::checkpoint::SnapshotSlot;
 use crate::determinism::time::real_monotonic;
-use crate::{Result, error, info};
+use crate::global_state::GlobalState;
+use crate::{Result, error, home, info};
 
 const GPU_WAIT_TIMEOUT: Duration = Duration::from_secs(6);
-static KUMQUAT_PID: AtomicI32 = AtomicI32::new(0);
+const MAX_MESSAGE_SIZE: usize = 4 + 4096;
 
-/// Kumquat's end of the result pipe, duplicated at init and owned by valo
-/// from then on. `None` means GPU orchestration is off.
-static RESULT_FD: OnceLock<Option<OwnedFd>> = OnceLock::new();
+static CONTROL: OnceLock<OwnedFd> = OnceLock::new();
+/// `<home>/slots`, laid out at init so that requests need no allocation.
+static SLOTS_DIR: OnceLock<Vec<u8>> = OnceLock::new();
+
+pub fn set_control(control: OwnedFd) -> Result<()> {
+    CONTROL
+        .set(control)
+        .map_err(|_| io::Error::other("GPU control socket received twice"))
+}
 
 pub fn init() -> Result<()> {
     if !use_gpu() {
@@ -36,55 +42,74 @@ pub fn init() -> Result<()> {
         info!(Init, "gpu orchestration disabled");
         return Ok(());
     }
-
-    let pid = env_i32("KUMQUAT_PID")?;
-    let result_fd = env_i32("VALO_GPU_RESULT_FD")?;
-
-    // SAFETY: signal 0 only checks whether the launcher's child still exists.
-    if unsafe { libc::kill(pid, 0) } < 0 {
-        return Err(io::Error::last_os_error());
+    if CONTROL.get().is_none() {
+        return Err(io::Error::other("use_gpu without a GPU control socket"));
     }
-
-    // SAFETY: the launcher set the fd number, and nothing has closed it yet.
-    let inherited = unsafe { BorrowedFd::borrow_raw(result_fd) };
-    if rustix::io::fcntl_getfd(inherited).is_err() {
-        return Err(io::Error::last_os_error());
-    }
-
-    // The duplicate is owned by valo and never closed, so the result pipe
-    // stays readable even if the guest closes or reuses its inherited copy.
-    let owned = rustix::io::fcntl_dupfd_cloexec(inherited, 3)?;
-    KUMQUAT_PID.store(pid, Ordering::SeqCst);
-
-    let _ = RESULT_FD.set(Some(owned));
-    info!(Init, "gpu orchestration: kumquat pid {pid}");
-
+    let slots = home::get().join("slots").into_os_string().into_vec();
+    SLOTS_DIR
+        .set(slots)
+        .map_err(|_| io::Error::other("gpu orchestration initialized twice"))?;
+    info!(
+        Init,
+        "gpu orchestration over the kumquat control connection"
+    );
     Ok(())
 }
 
 /// Start the GPU snapshot.
 pub fn trigger_snapshot(slot: SnapshotSlot) -> Result<()> {
-    signal_kumquat(libc::SIGUSR1, slot)
+    send_request(kumquat::SNAPSHOT, slot)
 }
 
 pub fn wait_snapshot_complete() -> Result<()> {
-    wait_result(b'S')
+    wait_response("snapshot")
 }
 
-/// Signal kumquat to start restoring its host state.
+/// Ask kumquat to start restoring its host state.
 /// Returns immediately, the restore runs in the kumquat process.
 /// Complete it with [`wait_restore_complete`].
 pub fn trigger_restore(slot: SnapshotSlot) -> Result<()> {
-    signal_kumquat(libc::SIGUSR2, slot)
+    send_request(kumquat::RESTORE, slot)
 }
 
 /// Wait for the kumquat restore triggered by [`trigger_restore`] to finish.
 pub fn wait_restore_complete() -> Result<()> {
-    wait_result(b'R')
+    wait_response("restore")
 }
 
-fn wait_result(expected: u8) -> Result<()> {
-    let Some(fd) = RESULT_FD.get().and_then(Option::as_ref) else {
+/// Sends `kind` with the slot's snapshot directory `<home>/slots/<slot>/gpu`.
+fn send_request(kind: u32, slot: SnapshotSlot) -> Result<()> {
+    let Some(control) = CONTROL.get() else {
+        return Ok(());
+    };
+    let slots = SLOTS_DIR
+        .get()
+        .ok_or_else(|| io::Error::other("gpu orchestration not initialized"))?;
+    let mut message = [0u8; MAX_MESSAGE_SIZE];
+    let mut len = 0;
+    let mut push = |bytes: &[u8]| -> Result<()> {
+        let end = len + bytes.len();
+        let target = message
+            .get_mut(len..end)
+            .ok_or_else(|| io::Error::from_raw_os_error(libc::ENAMETOOLONG))?;
+        target.copy_from_slice(bytes);
+        len = end;
+        Ok(())
+    };
+    push(&kind.to_le_bytes())?;
+    push(slots)?;
+    push(b"/")?;
+    push(slot.0.format_into(&mut NumBuffer::new()).as_bytes())?;
+    push(b"/gpu")?;
+    let sent = rustix::net::send(control, &message[..len], SendFlags::NOSIGNAL)?;
+    if sent != len {
+        return Err(io::Error::from_raw_os_error(libc::EMSGSIZE));
+    }
+    Ok(())
+}
+
+fn wait_response(operation: &str) -> Result<()> {
+    let Some(control) = CONTROL.get() else {
         return Ok(());
     };
 
@@ -95,7 +120,7 @@ fn wait_result(expected: u8) -> Result<()> {
             return Err(io::Error::from_raw_os_error(libc::ETIMEDOUT));
         }
 
-        let mut poll_fds = [PollFd::new(fd, PollFlags::IN | PollFlags::HUP)];
+        let mut poll_fds = [PollFd::new(control, PollFlags::IN | PollFlags::HUP)];
         let timeout = Timespec {
             tv_sec: remaining.as_secs() as i64,
             tv_nsec: remaining.subsec_nanos() as i64,
@@ -108,64 +133,29 @@ fn wait_result(expected: u8) -> Result<()> {
             return Err(io::Error::from_raw_os_error(libc::ETIMEDOUT));
         }
 
-        let mut status = [0_u8];
-        let count = match rustix::io::read(fd, &mut status) {
+        let mut message = [0u8; MAX_MESSAGE_SIZE];
+        let len = match rustix::net::recv(control, &mut message, RecvFlags::empty()) {
             Err(e) if e == Errno::INTR => continue,
-            count => count?,
+            received => received?.0,
         };
-
-        return match (count, status[0]) {
-            (0, _) => {
-                error!(
-                    "kumquat exited during the {}",
-                    match expected {
-                        b'R' => "restore",
-                        _ => "snapshot",
-                    }
-                );
-                Err(io::Error::from_raw_os_error(libc::EPIPE))
-            }
-            (1, value) if value == expected => Ok(()),
-            (1, b's' | b'r') => {
-                error!(
-                    "kumquat reported the {} as failed",
-                    match expected {
-                        b'R' => "restore",
-                        _ => "snapshot",
-                    }
-                );
+        if len == 0 {
+            error!("kumquat exited during the {operation}");
+            return Err(io::Error::from_raw_os_error(libc::EPIPE));
+        }
+        if len < 4 {
+            return Err(io::Error::from_raw_os_error(libc::EPROTO));
+        }
+        let kind = u32::from_le_bytes([message[0], message[1], message[2], message[3]]);
+        return match kind {
+            kumquat::RESP_OK => Ok(()),
+            kumquat::RESP_ERR => {
+                let text = std::str::from_utf8(&message[4..len]).unwrap_or("<not UTF-8>");
+                error!("kumquat {operation} failed: {text}");
                 Err(io::Error::from_raw_os_error(libc::EIO))
             }
             _ => Err(io::Error::from_raw_os_error(libc::EPROTO)),
         };
     }
-}
-
-fn signal_kumquat(signal: i32, slot: SnapshotSlot) -> Result<()> {
-    let pid = KUMQUAT_PID.load(Ordering::SeqCst);
-    if pid == 0 {
-        return Ok(());
-    }
-    // libc's linux sigval only exposes the pointer field; the integer rides
-    // in the low 32 bits, which is what kumquat reads from ssi_int.
-    let value = libc::sigval {
-        sival_ptr: slot.0 as usize as *mut libc::c_void,
-    };
-    // SAFETY: pid was validated during init; sigqueue reports races with
-    // exit. sigqueue is not in POSIX's async-signal-safe list, but works
-    // in glibc in practice.
-    if unsafe { libc::sigqueue(pid, signal, value) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-fn env_i32(name: &str) -> Result<i32> {
-    std::env::var(name)
-        .ok()
-        .and_then(|s| s.parse::<i32>().ok())
-        .filter(|v| *v > 0)
-        .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))
 }
 
 /// Whether GPU orchestration is enabled. The client sets this via the init

@@ -8,6 +8,7 @@
 
 pub mod config;
 pub mod gamespecific;
+pub mod kumquat;
 pub mod messages;
 mod raw;
 
@@ -58,11 +59,25 @@ impl ClientIPC {
 
     /// The init exchange every session starts with: hello, then exactly one
     /// SetConfig — fire-and-forget, the lib applies it before anything
-    /// runs. The session starts held; a Detach sent here drains at the
-    /// first frame boundary and frees the session.
-    pub fn init(&mut self, config: &crate::config::Config) -> Result<()> {
+    /// runs — and with `use_gpu` the GPU host's control socket. The session
+    /// starts held; a Detach sent here drains at the first frame boundary
+    /// and frees the session.
+    pub fn init(
+        &mut self,
+        config: &crate::config::Config,
+        gpu_control: Option<BorrowedFd<'_>>,
+    ) -> Result<()> {
+        if config.use_gpu != gpu_control.is_some() {
+            return Err(std::io::Error::other(
+                "use_gpu requires the GPU control socket and vice versa",
+            ));
+        }
         self.hello()?;
-        self.send(&ClientToLib::SetConfig(config.clone()))
+        self.send(&ClientToLib::SetConfig(config.clone()))?;
+        if let Some(control) = gpu_control {
+            self.send_gpu_control(control)?;
+        }
+        Ok(())
     }
 
     /// Connect-only handshake for one-shot clients.
@@ -90,8 +105,7 @@ impl ClientIPC {
         raw::recv(&mut self.stream)
     }
 
-    /// Hand the GPU host's control socket to the lib.
-    pub fn send_gpu_control(&mut self, control: BorrowedFd<'_>) -> Result<()> {
+    fn send_gpu_control(&mut self, control: BorrowedFd<'_>) -> Result<()> {
         self.send(&ClientToLib::GpuControl)?;
         raw::send_descriptor(&self.stream, control)
     }
@@ -218,18 +232,30 @@ mod tests {
         let mut lib = LibIPC::from_accepted(lib_end);
         let (mut a, b) = UnixStream::pair().unwrap();
 
-        client
-            .send_gpu_control(std::os::fd::AsFd::as_fd(&b))
+        let config = Config {
+            use_gpu: true,
+            ..Config::default()
+        };
+        let t_client = thread::spawn(move || {
+            client
+                .init(&config, Some(std::os::fd::AsFd::as_fd(&b)))
+                .unwrap();
+            client.send(&ClientToLib::GetState).unwrap();
+        });
+        assert!(matches!(lib.recv().unwrap(), Some(ClientToLib::Hello(_))));
+        lib.send(&LibToClient::Hello(LibHello::new(Config::default())))
             .unwrap();
-        client.send(&ClientToLib::GetState).unwrap();
-        drop(b);
-
+        assert!(matches!(
+            lib.recv().unwrap(),
+            Some(ClientToLib::SetConfig(_))
+        ));
         let mut received = UnixStream::from(lib.recv_gpu_control().unwrap());
         assert_eq!(lib.recv().unwrap(), Some(ClientToLib::GetState));
         a.write_all(b"x").unwrap();
         let mut byte = [0u8];
         received.read_exact(&mut byte).unwrap();
         assert_eq!(&byte, b"x");
+        t_client.join().unwrap();
     }
 
     /// Stale socket file from a previous run should be cleaned up on the

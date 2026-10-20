@@ -251,7 +251,7 @@ fn run(
     let sock = PathBuf::from(format!("/tmp/valo-harness-{}.sock", std::process::id()));
     cmd.env("VALO_SOCK", &sock);
     cmd.env("VALO_LOG", log_path);
-    let mut gpu = if config.gpu {
+    let gpu = if config.gpu {
         let session = valo_launch::gpu_session::GpuSession::start()?;
         session.configure_game(&mut cmd);
         Some(session)
@@ -268,9 +268,6 @@ fn run(
     }
 
     let mut child = cmd.spawn().context("failed to spawn test")?;
-    if let Some(gpu) = &mut gpu {
-        gpu.game_started();
-    }
 
     // The harness is the test's init client: deliver the config (restore
     // cap), then detach so the test runs freely.
@@ -304,8 +301,12 @@ fn run(
             bail!("test exited before the ipc connection");
         }
     };
-    conn.init(&valo_config)
-        .context("init exchange with test binary")?;
+    conn.init(
+        &valo_config,
+        gpu.as_ref()
+            .map(valo_launch::gpu_session::GpuSession::control_for_lib),
+    )
+    .context("init exchange with test binary")?;
     conn.send(&ClientToLib::Detach)
         .context("detach test binary")?;
     drop(conn);
