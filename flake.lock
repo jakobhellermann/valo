@@ -40,16 +40,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1792356402,
-        "narHash": "sha256-dJ3POHmhBukUmVwxDUC7AThN9B+AsXn4ZovyJD1zO0I=",
+        "lastModified": 1792622751,
+        "narHash": "sha256-MIUMzwemaqPjhVFZHX68CUk6UzqMHIyvI69PPCiAwhM=",
         "owner": "jakobhellermann",
         "repo": "gfxstream",
-        "rev": "b53f3b93baf35b11007d2594458e724a24ec4ca3",
+        "rev": "d8c266ad5561be0e97bfdb2f3cd01ccb7b0410c2",
         "type": "github"
       },
       "original": {
         "owner": "jakobhellermann",
-        "ref": "wip",
+        "ref": "dev",
         "repo": "gfxstream",
         "type": "github"
       }
@@ -64,16 +64,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1791821614,
-        "narHash": "sha256-eDZBTEe8r1JvP1vjAlwuuStn7LSh4ZtpSz8W6smReNI=",
+        "lastModified": 1792531858,
+        "narHash": "sha256-f8yS+BLLPet+ydMqP+VzZ7r8iqmSN+yryOa6xDpKezg=",
         "owner": "jakobhellermann",
         "repo": "rutabaga_gfx",
-        "rev": "e96682611dd4c8ebc9647440ea1d86317e59e9e7",
+        "rev": "a8d63403b4bed1ab8bee9371bb7e305cd45262c2",
         "type": "github"
       },
       "original": {
         "owner": "jakobhellermann",
-        "ref": "wip",
+        "ref": "dev",
         "repo": "rutabaga_gfx",
         "type": "github"
       }
@@ -85,18 +85,19 @@
         ]
       },
       "locked": {
-        "lastModified": 1792356322,
-        "narHash": "sha256-IYulzr38LaZQYy2g4FZ7xqZXvG7iuEmhtEjPIhDQ/yw=",
-        "owner": "jakobhellermann",
-        "repo": "mesa",
-        "rev": "6a8cd21df0e9b78f22003040587c7222a6e6ba8c",
-        "type": "github"
+        "lastModified": 1792621318,
+        "narHash": "sha256-FYHzxhNYALPNLYlNtW8eQ2L0j0nD6M3VKIkWLpCNFxw=",
+        "ref": "dev",
+        "rev": "f399d121aebc292dfcbd6c7135b63ae48cafaf78",
+        "shallow": true,
+        "type": "git",
+        "url": "https://gitlab.freedesktop.org/jakobhellermann/mesa"
       },
       "original": {
-        "owner": "jakobhellermann",
-        "ref": "wip",
-        "repo": "mesa",
-        "type": "github"
+        "ref": "dev",
+        "shallow": true,
+        "type": "git",
+        "url": "https://gitlab.freedesktop.org/jakobhellermann/mesa"
       }
     },
     "nixpkgs": {
