@@ -1,0 +1,6 @@
+frame=6 checkpoint (present pending)
+frame=10 swapchain destroyed and recreated
+frame=12 restore
+frame=6 present out-of-date, recreated
+frame=10 swapchain destroyed and recreated
+frame=12 restore
