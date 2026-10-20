@@ -220,21 +220,18 @@ fn run(
     if let Ok(SessionEnd::Hung { pid: game_pid }) = result
         && !gdb
     {
-        eprintln!("[valo-client] aborting the stalled game (pid {game_pid}) for a core dump");
+        eprintln!("[valo-client] core dump: coredumpctl debug {game_pid}");
+        eprintln!("[valo-client] valo log: {}", log_path.display());
+
         abort_game(game_pid);
-        if let Some(gpu) = gpu.as_mut()
-            && gpu.exit_status()?.is_none()
-        {
-            eprintln!(
-                "[valo-client] aborting kumquat (pid {}) for a core dump",
-                gpu.pid()
-            );
-            gpu.abort()?;
-        }
+
         if let Some(gpu) = gpu.as_mut() {
+            if gpu.exit_status()?.is_none() {
+                gpu.abort()?;
+            }
+
             report_kumquat_exit(gpu)?;
         }
-        eprintln!("[valo-client] inspect game core dump: coredumpctl debug {game_pid}");
         wait_or_kill(&mut child, Duration::from_secs(10))?;
         let _ = std::fs::remove_file(sock_path);
         remove_savestates(&mut child);
@@ -340,15 +337,20 @@ pub(crate) fn report_kumquat_exit(session: &mut GpuSession) -> Result<bool> {
     let Some(status) = session.exit_status()? else {
         return Ok(false);
     };
+
     let pid = session.pid();
-    eprintln!("[valo-client] kumquat (pid {pid}) exited: {status}");
-    if status.signal().is_some() {
-        eprintln!("[valo-client] inspect core dump: coredumpctl debug {pid}");
+    let aborted = status.signal() == Some(rustix::process::Signal::ABORT.as_raw());
+    if aborted {
+        eprintln!("[valo-client] kumquat core dump: coredumpctl debug {pid}");
+    } else {
+        eprintln!("[valo-client] kumquat (pid {pid}) exited: {status}");
     }
+
     eprintln!(
         "[valo-client] kumquat log: {}",
         session.log_path().display()
     );
+
     Ok(true)
 }
 
@@ -480,8 +482,6 @@ pub(crate) fn report_hang(pid: u32) -> Result<()> {
             wchan.trim()
         );
     }
-    eprintln!("[valo-client] attach with:");
-    eprintln!("  gdb -p {pid} -ex 'thread apply all bt'");
     Ok(())
 }
 
