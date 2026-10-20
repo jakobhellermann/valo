@@ -1,0 +1,40 @@
+pass 0
+slot0 a cpu: SLOT0
+slot0 a gpu: SLOT0
+slot0 a identity: IDENTITY
+slot1 a cpu: SLOT1A
+slot1 a gpu: SLOT1A
+slot1 a identity: IDENTITY
+slot1 b cpu: SLOT1B
+slot1 b gpu: SLOT1B
+slot1 b identity: IDENTITY
+pass 1
+slot0 a cpu: SLOT0
+slot0 a gpu: SLOT0
+slot0 a identity: IDENTITY
+slot1 a cpu: SLOT1A
+slot1 a gpu: SLOT1A
+slot1 a identity: IDENTITY
+slot1 b cpu: SLOT1B
+slot1 b gpu: SLOT1B
+slot1 b identity: IDENTITY
+pass 2
+slot0 a cpu: SLOT0
+slot0 a gpu: SLOT0
+slot0 a identity: IDENTITY
+slot1 a cpu: SLOT1A
+slot1 a gpu: SLOT1A
+slot1 a identity: IDENTITY
+slot1 b cpu: SLOT1B
+slot1 b gpu: SLOT1B
+slot1 b identity: IDENTITY
+pass 3
+slot0 a cpu: SLOT0
+slot0 a gpu: SLOT0
+slot0 a identity: IDENTITY
+slot1 a cpu: SLOT1A
+slot1 a gpu: SLOT1A
+slot1 a identity: IDENTITY
+slot1 b cpu: SLOT1B
+slot1 b gpu: SLOT1B
+slot1 b identity: IDENTITY
