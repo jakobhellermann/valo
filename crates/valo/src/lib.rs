@@ -12,6 +12,7 @@ mod alt_stack;
 mod checkpoint;
 mod debug;
 mod determinism;
+mod engine_setup;
 mod frame;
 mod gamespecific;
 mod glibc;
@@ -67,6 +68,7 @@ extern "C" fn _init() {
 }
 
 fn init() -> Result<()> {
+    let exe = std::env::current_exe()?;
     if !is_target() {
         // LD_PRELOAD stays so the target further down the exec chain loads valo
         return Ok(());
@@ -84,6 +86,7 @@ fn init() -> Result<()> {
     checkpoint::init_thread()?;
     sigsegv::install()?;
     ipc::init()?;
+    engine_setup::init(&exe)?;
     checkpoint::gpu::init()?;
 
     info!(Init, "valo initialized");

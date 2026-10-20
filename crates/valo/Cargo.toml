@@ -21,6 +21,7 @@ libc = "0.2"
 memchr = "2.7"
 rustix = { version = "1.1", features = ["fs", "mm", "event", "time", "pipe", "thread", "process"] }
 valo-ipc = { path = "../valo-ipc" }
+valo-launch = { path = "../valo-launch" }
 vulkan-headers = "0.2"
 x11rb-protocol = "0.14"
 
