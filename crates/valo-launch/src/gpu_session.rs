@@ -1,10 +1,9 @@
 // TODO(ai-review): generated, not yet audited
-//! One Kumquat GPU host and one completion pipe per `valo run` session.
+//! One Kumquat GPU host and its control connection per `valo run` session.
 
-use std::os::fd::{AsRawFd, OwnedFd};
-use std::os::unix::fs::FileTypeExt;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -18,7 +17,8 @@ static NEXT_SESSION: AtomicU32 = AtomicU32::new(0);
 
 pub struct GpuSession {
     host: Child,
-    result_read: Option<OwnedFd>,
+    /// The lib's end of Kumquat's control connection; handed over at init.
+    control: OwnedFd,
     runtime_dir: PathBuf,
 }
 
@@ -34,20 +34,28 @@ impl GpuSession {
         fs::create_dir(&runtime_dir)
             .with_context(|| format!("create {}", runtime_dir.display()))?;
         let socket = runtime_dir.join("gpu.sock");
-        let slots_base = home.join("slots");
         let log = fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(runtime_dir.join("kumquat.log"))?;
-        let (result_read, result_write) = new_pipe()?;
-        let read_fd = result_read.as_raw_fd();
-        let write_fd = result_write.as_raw_fd();
+        let (control, host_control) = control_socketpair()?;
+        let control_fd = control.as_raw_fd();
+        let host_control_fd = host_control.as_raw_fd();
+
+        let mut renderer_features = vec!["VulkanSnapshots:enabled"];
+        if let Err(reason) = crate::host_visible_memory_sharing() {
+            eprintln!("[valo-launch] copying host visible GPU memory: {reason}");
+            renderer_features.push("VirtioGpuNext:disabled");
+        }
 
         let mut cmd = Command::new(crate::resolve_kumquat_bin()?);
         cmd.arg("--capset-names=gfxstream-vulkan")
             .arg(format!("--gpu-socket-path={}", socket.display()))
-            .arg(format!("--snapshot-base={}", slots_base.display()))
-            .arg(format!("--result-fd={write_fd}"))
+            .arg(format!("--control-fd={host_control_fd}"))
+            .arg(format!(
+                "--renderer-features={}",
+                renderer_features.join(",")
+            ))
             .env_remove("VK_DRIVER_FILES")
             .env_remove("VK_ICD_FILENAMES")
             .env_remove("VK_LOADER_DRIVERS_SELECT")
@@ -58,13 +66,9 @@ impl GpuSession {
         if std::env::var_os("GFXSTREAM_LOG_LEVEL").is_none() {
             cmd.env("GFXSTREAM_LOG_LEVEL", "info");
         }
-        if let Err(reason) = crate::host_visible_memory_sharing() {
-            eprintln!("[valo-launch] copying host visible GPU memory: {reason}");
-            cmd.arg("--renderer-features=VirtioGpuNext:disabled");
-        }
 
-        // SAFETY: this closure runs after fork and uses only fcntl/close;
-        // the write end belongs to the Kumquat child after exec.
+        // SAFETY: this closure runs after fork and uses only prctl/getppid/close/fcntl;
+        // the host's end of the control socket belongs to the Kumquat child after exec.
         let parent_pid = std::process::id() as libc::pid_t;
         unsafe {
             cmd.pre_exec(move || {
@@ -77,8 +81,8 @@ impl GpuSession {
                 if libc::getppid() != parent_pid {
                     return Err(io::Error::from_raw_os_error(libc::ESRCH));
                 }
-                libc::close(read_fd);
-                if libc::fcntl(write_fd, libc::F_SETFD, 0) < 0 {
+                libc::close(control_fd);
+                if libc::fcntl(host_control_fd, libc::F_SETFD, 0) < 0 {
                     return Err(io::Error::last_os_error());
                 }
                 Ok(())
@@ -91,38 +95,26 @@ impl GpuSession {
                 return Err(error).context("failed to start kumquat");
             }
         };
-        drop(result_write);
+        drop(host_control);
         let mut session = Self {
             host,
-            result_read: Some(result_read),
+            control,
             runtime_dir,
         };
-        session.wait_ready(&socket)?;
+        session.wait_ready()?;
         Ok(session)
     }
 
     pub fn configure_game(&self, cmd: &mut Command) {
-        let read_fd = self.result_read.as_ref().unwrap().as_raw_fd();
-        cmd.env("KUMQUAT_PID", self.host.id().to_string())
-            .env("VALO_GPU_RESULT_FD", read_fd.to_string())
-            .env(
-                "VIRTGPU_KUMQUAT_SOCKET_PATH",
-                self.runtime_dir.join("gpu.sock"),
-            );
-        // SAFETY: only fcntl is called after fork; the game's inherited read
-        // end must survive exec so libvalo can use it before and after restore.
-        unsafe {
-            cmd.pre_exec(move || {
-                if libc::fcntl(read_fd, libc::F_SETFD, 0) < 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
+        cmd.env(
+            "VIRTGPU_KUMQUAT_SOCKET_PATH",
+            self.runtime_dir.join("gpu.sock"),
+        );
     }
 
-    pub fn game_started(&mut self) {
-        self.result_read = None;
+    /// The control socket to hand to the lib during its init.
+    pub fn control_for_lib(&self) -> BorrowedFd<'_> {
+        self.control.as_fd()
     }
 
     pub fn pid(&self) -> u32 {
@@ -144,14 +136,34 @@ impl GpuSession {
         Ok(self.host.wait()?)
     }
 
-    fn wait_ready(&mut self, socket: &Path) -> Result<()> {
+    /// Waits for Kumquat to report that its GPU socket accepts connections.
+    fn wait_ready(&mut self) -> Result<()> {
         let deadline = Instant::now() + Duration::from_secs(6);
         loop {
-            if socket
-                .metadata()
-                .is_ok_and(|metadata| metadata.file_type().is_socket())
-            {
-                return Ok(());
+            let mut poll_fds = [rustix::event::PollFd::new(
+                &self.control,
+                rustix::event::PollFlags::IN,
+            )];
+            let slice = rustix::time::Timespec {
+                tv_sec: 0,
+                tv_nsec: 10_000_000,
+            };
+            let ready = match rustix::event::poll(&mut poll_fds, Some(&slice)) {
+                Err(rustix::io::Errno::INTR) => continue,
+                ready => ready.map_err(io::Error::from)?,
+            };
+            if ready > 0 {
+                let mut message = [0u8; 4];
+                let len =
+                    rustix::net::recv(&self.control, &mut message, rustix::net::RecvFlags::empty())
+                        .map_err(io::Error::from)?
+                        .0;
+                if len == 4 && u32::from_le_bytes(message) == valo_ipc::kumquat::READY {
+                    return Ok(());
+                }
+                if len != 0 {
+                    bail!("Kumquat sent an unexpected first control message ({len} bytes)");
+                }
             }
             if let Some(status) = self.host.try_wait()? {
                 let debug_hint = if status.signal().is_some() {
@@ -167,12 +179,10 @@ impl GpuSession {
             }
             if Instant::now() >= deadline {
                 bail!(
-                    "Kumquat did not create {}; see {}",
-                    socket.display(),
+                    "Kumquat did not report ready; see {}",
                     self.runtime_dir.join("kumquat.log").display()
                 );
             }
-            std::thread::sleep(Duration::from_millis(10));
         }
     }
 }
@@ -184,8 +194,20 @@ impl Drop for GpuSession {
     }
 }
 
-fn new_pipe() -> Result<(OwnedFd, OwnedFd)> {
-    rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC)
-        .map_err(std::io::Error::from)
-        .context("create GPU result pipe")
+fn control_socketpair() -> Result<(OwnedFd, OwnedFd)> {
+    let mut fds = [0; 2];
+    // SAFETY: socketpair writes two fresh descriptors into `fds` on success.
+    let ret = unsafe {
+        libc::socketpair(
+            libc::AF_UNIX,
+            libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
+            0,
+            fds.as_mut_ptr(),
+        )
+    };
+    if ret < 0 {
+        return Err(io::Error::last_os_error()).context("create Kumquat control socketpair");
+    }
+    // SAFETY: both descriptors are owned from here on.
+    Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
 }

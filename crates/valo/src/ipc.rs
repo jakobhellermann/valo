@@ -72,6 +72,9 @@ pub fn init() -> Result<()> {
         )));
     };
     GlobalState::get().apply_config(&config);
+    if config.use_gpu {
+        checkpoint::gpu::set_control(conn.recv_gpu_control()?)?;
+    }
     // Bind the msg listener before the (possibly slow) hook installation:
     // the rendezvous socket dies with the init client, and a `msg` connect
     // in between would hit an unbound path.

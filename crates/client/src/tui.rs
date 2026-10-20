@@ -10,6 +10,7 @@
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Seek, SeekFrom, Stdout};
+use std::os::fd::BorrowedFd;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
@@ -174,13 +175,18 @@ impl App {
     }
 }
 
-pub fn run(sock: &Path, log_path: Option<&Path>, config: Config) -> Result<()> {
+pub fn run(
+    sock: &Path,
+    log_path: Option<&Path>,
+    config: Config,
+    gpu_control: Option<BorrowedFd<'_>>,
+) -> Result<()> {
     if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
         bail!("--tui requires stdout to be a tty");
     }
 
     let mut conn = ClientIPC::establish(sock).context("ipc establish")?;
-    let target_pid = crate::init_game(&mut conn, &config)?;
+    let target_pid = crate::init_game(&mut conn, &config, gpu_control)?;
 
     let (tx, rx) = mpsc::channel::<AppEvent>();
 

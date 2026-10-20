@@ -6,7 +6,7 @@ edition.workspace = true
 
 [dependencies]
 valo-ipc = { path = "../valo-ipc" }
-rustix = { version = "1.1", features = ["pipe", "process"] }
+rustix = { version = "1.1", features = ["event", "net", "pipe", "process", "time"] }
 anyhow = "1"
 libc = "0.2"
 object = { version = "0.40", default-features = false, features = ["read_core", "elf", "std"] }
