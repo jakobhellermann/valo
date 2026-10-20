@@ -8,13 +8,17 @@ pub mod writer;
 use libc::{siginfo_t, ucontext_t};
 use std::fmt::{NumBuffer, Write};
 use std::fs::{File, OpenOptions};
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
+use valo_ipc::config::RestoreRedraw;
 
 use crate::global_state::GlobalState;
 use crate::log::structured;
 use crate::token::{Exclusive, ExclusiveCell, Frozen};
 use crate::utils::SignalSafeFormat;
-use crate::{Result, abort, alt_stack, error, home, info, sys, thread_tracker, utils};
+use crate::{
+    Result, abort, alt_stack, error, home, info, sys, thread_tracker, utils, window_image,
+};
 
 pub(crate) const SIG_CHECKPOINT: i32 = libc::SIGSYS;
 
@@ -57,12 +61,15 @@ fn unfreeze(exclusive: &mut Exclusive, e: std::io::Error) -> std::io::Error {
 /// Best-effort removal of a slot directory no usable snapshot reached;
 /// a partial save must not leave data a later restore preflight accepts.
 fn discard_slot(slot: SnapshotSlot) {
-    let _ = std::fs::remove_dir_all(home::get().join("slots").join(slot.0.to_string()));
+    let _ = std::fs::remove_dir_all(slot_dir(slot));
 }
 
 pub(crate) fn ensure_slot_dir(slot: SnapshotSlot) -> Result<()> {
-    let path = home::get().join("slots").join(slot.0.to_string());
-    std::fs::create_dir_all(path)
+    std::fs::create_dir_all(slot_dir(slot))
+}
+
+fn slot_dir(slot: SnapshotSlot) -> PathBuf {
+    home::get().join("slots").join(slot.0.to_string())
 }
 
 fn open_snapshot_files(slot: SnapshotSlot) -> Result<(File, File), std::io::Error> {
@@ -342,6 +349,7 @@ pub fn checkpoint(slot: SnapshotSlot) -> Result<()> {
     // complete all GL work before the freeze: asynchronous driver submit
     // workers must be idle when suspended, not parked mid-transfer
     crate::hooks::glx::quiesce(exclusive);
+    window_image::capture(&slot_dir(slot));
     // quiesce X before the freeze: no thread is inside an Xlib call when
     // suspended, and no request or reply is in flight
     crate::hooks::xlib::xsync::lock_and_sync_displays();
@@ -450,6 +458,7 @@ pub fn checkpoint(slot: SnapshotSlot) -> Result<()> {
     alt_stack::restore_stack(exclusive)?;
 
     if restoring {
+        window_image::redraw(&slot_dir(slot), RestoreRedraw::Late);
         structured::events::restore_end(slot);
     } else {
         structured::events::checkpoint_end(slot);
@@ -475,6 +484,7 @@ pub fn restore(slot: SnapshotSlot) -> Result<()> {
     }
 
     let snapshot = reader::SnapshotReader::new(slot)?;
+    window_image::redraw(&slot_dir(slot), RestoreRedraw::Early);
 
     state.snapshot_slot.store(slot.0, Ordering::SeqCst);
     structured::events::restore_begin(slot);

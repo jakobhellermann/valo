@@ -449,6 +449,7 @@ pub fn effective_config() -> Config {
             randomness: determinism::randomness::RANDOM.config(),
         },
         skip_draw: state.skip_draw_mode(),
+        restore_redraw: state.restore_redraw(),
         input: crate::input_feed::config(),
         // consumed by the hooks at init, not kept
         resolved_modules: Vec::new(),
