@@ -1,4 +1,4 @@
-//! Debug overlay: short toasts in a click-through child window in the
+//! Debug overlay: short toasts in a click-through window over the
 //! bottom-right corner of the game window, on its own X connection.
 
 use std::sync::atomic::AtomicU32;
@@ -12,11 +12,12 @@ use x11rb::connection::Connection;
 use x11rb::protocol::Event;
 use x11rb::protocol::shape::{self, SK, SO};
 use x11rb::protocol::xproto::{
-    ChangeWindowAttributesAux, ClipOrdering, ColormapAlloc, ConfigureWindowAux, ConnectionExt,
-    CreateGCAux, CreateWindowAux, EventMask, Gcontext, ImageFormat, ImageOrder, StackMode,
-    VisualClass, Window, WindowClass,
+    AtomEnum, ChangeWindowAttributesAux, ClipOrdering, ColormapAlloc, ConfigureWindowAux,
+    ConnectionExt, CreateGCAux, CreateWindowAux, EventMask, Gcontext, ImageFormat, ImageOrder,
+    PropMode, StackMode, VisualClass, Window, WindowClass,
 };
 use x11rb::rust_connection::RustConnection;
+use x11rb::wrapper::ConnectionExt as _;
 
 use crate::input::{GameWindow, viewable_game_window};
 
@@ -94,6 +95,7 @@ where
 
 struct Ctx<'a> {
     conn: &'a RustConnection,
+    root: Window,
     overlay: Window,
     gc: Gcontext,
 }
@@ -149,12 +151,13 @@ fn run(
         .check()
         .context("select StructureNotify on game window")?;
 
-        // A child window bypasses the window manager's toplevel/popup heuristics.
+        // A mapped child would stop the server from flipping the game's presents, showing the
+        // window's stale contents; override-redirect keeps the window manager's heuristics out.
         let overlay = conn.generate_id()?;
         conn.create_window(
             32,
             overlay,
-            game,
+            root,
             0,
             0,
             WIN_W,
@@ -166,10 +169,20 @@ fn run(
                 .background_pixel(0)
                 .border_pixel(0)
                 .colormap(colormap)
+                .override_redirect(1)
                 .event_mask(EventMask::EXPOSURE),
         )?
         .check()
         .context("create overlay window")?;
+        conn.change_property32(
+            PropMode::REPLACE,
+            overlay,
+            AtomEnum::WM_TRANSIENT_FOR,
+            AtomEnum::WINDOW,
+            &[game],
+        )?
+        .check()
+        .context("set overlay WM_TRANSIENT_FOR")?;
         shape::rectangles(
             &conn,
             SO::SET,
@@ -189,6 +202,7 @@ fn run(
 
         let ctx = Ctx {
             conn: &conn,
+            root,
             overlay,
             gc,
         };
@@ -250,9 +264,14 @@ fn show(ctx: &Ctx, game: Window, toast: &Toast) -> Result<()> {
         .get_geometry(game)?
         .reply()
         .context("query game window geometry")?;
+    let origin = ctx
+        .conn
+        .translate_coordinates(game, ctx.root, 0, 0)?
+        .reply()
+        .context("query game window position")?;
     let (width, pixels) = render(toast, usize::from(WIN_W.min(size.width)));
-    let x = (i32::from(size.width) - width as i32 - MARGIN).max(0);
-    let y = (i32::from(size.height) - i32::from(WIN_H) - MARGIN).max(0);
+    let x = i32::from(origin.dst_x) + (i32::from(size.width) - width as i32 - MARGIN).max(0);
+    let y = i32::from(origin.dst_y) + (i32::from(size.height) - i32::from(WIN_H) - MARGIN).max(0);
     ctx.conn
         .configure_window(
             ctx.overlay,
