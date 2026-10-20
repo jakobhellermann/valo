@@ -131,6 +131,10 @@ int main(void) {
     xcb_create_window(conn, screen->root_depth, window, screen->root, 0, 0, 128, 128, 0,
                       XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual,
                       XCB_CW_OVERRIDE_REDIRECT, &override_redirect);
+    // WM_CLASS instance and class, for desktop window rules
+    const char wm_class[] = "valo-test\0valo-test";
+    xcb_change_property(conn, XCB_PROP_MODE_REPLACE, window, XCB_ATOM_WM_CLASS,
+                        XCB_ATOM_STRING, 8, sizeof(wm_class), wm_class);
     xcb_map_window(conn, window);
     xcb_flush(conn);
 
