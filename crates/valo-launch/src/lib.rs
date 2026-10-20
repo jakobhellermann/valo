@@ -10,9 +10,28 @@ pub mod unity;
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::ErrorKind;
+use std::os::fd::BorrowedFd;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use valo_ipc::ClientIPC;
+use valo_ipc::config::Config;
+
+/// Resolves the modules from the socket peer's exe: behind wrappers, the spawned program is not the game.
+pub fn init_game(
+    conn: &mut ClientIPC,
+    config: &Config,
+    gpu_control: Option<BorrowedFd<'_>>,
+) -> Result<u32> {
+    let pid = conn.peer_pid().context("game pid from socket peer")?;
+    let exe = std::fs::read_link(format!("/proc/{pid}/exe"))
+        .with_context(|| format!("resolve exe of game pid {pid}"))?;
+    eprintln!("[valo-launch] attached to pid {pid}: {}", exe.display());
+    let mut config = config.clone();
+    config.resolved_modules = unity::resolve_modules(&exe)?;
+    conn.init(&config, gpu_control)?;
+    Ok(pid)
+}
 
 fn exe_dir() -> Result<PathBuf> {
     let exe = std::env::current_exe().context("current_exe failed")?;
