@@ -137,6 +137,8 @@ pub struct AreaMeta {
     skip: bool,
     uncommitted: bool,
     page_data_offset: u64,
+    /// Maps a GPU host object, which the GPU remap replaces after a restore.
+    gpu: bool,
 }
 impl AreaMeta {
     pub(crate) fn as_bytes(&self) -> &[u8] {
@@ -161,6 +163,13 @@ impl Header {
 static FD_SNAPSHOT: ExclusiveCell<Vec<fd_sync::FdRecord>> = ExclusiveCell::new(Vec::new());
 fn fd_snapshot(excl: &mut Exclusive) -> &[fd_sync::FdRecord] {
     FD_SNAPSHOT.get(excl).as_slice()
+}
+
+// The GPU host objects of the checkpoint and where the guest maps them, in restorable memory.
+static GPU_OBJECTS: ExclusiveCell<Vec<gpu::GpuObject>> = ExclusiveCell::new(Vec::new());
+static GPU_AREAS: ExclusiveCell<Vec<gpu::GpuArea>> = ExclusiveCell::new(Vec::new());
+fn gpu_objects(excl: &mut Exclusive) -> &[gpu::GpuObject] {
+    GPU_OBJECTS.get(excl).as_slice()
 }
 
 fn snapshot_create(
@@ -191,14 +200,7 @@ fn snapshot_restore(
     // GPU restore time: trigger + wait
     let mut gpu_ns = 0_u64;
 
-    // Restore the GPU host concurrently with the CPU memory restore:
-    // Memory and kumquat handle disjoint data:
-    // - the CPU restore rewrites the guest-shared memfd contents
-    //   (kumquat-guest-blob areas, ASG rings) from the snapshot,
-    // - kumquat's restore only re-attaches those mappings and replays its
-    //   own host state; the single guest-visible write it performs (ASG ring
-    //   control state) is identical to the snapshot content, so racing
-    //   writers produce the same bytes either way.
+    // The CPU memory restore leaves the GPU host's objects alone, so both run concurrently.
     structured::events::trace_step("restore.gpu.trigger.begin");
     let gpu_start = monotonic_ns();
     gpu::trigger_restore(slot)?;
@@ -357,12 +359,22 @@ pub fn checkpoint(slot: SnapshotSlot) -> Result<()> {
     // Xlib lock state
     crate::hooks::xlib::xsync::unlock_displays();
 
+    structured::events::trace_step("checkpoint.gpu.objects.begin");
+    let mut gpu_objects = std::mem::take(GPU_OBJECTS.get(exclusive));
+    let mut gpu_areas = std::mem::take(GPU_AREAS.get(exclusive));
+    if let Err(e) = gpu::capture_objects(&mut gpu_objects, &mut gpu_areas) {
+        return Err(unfreeze(exclusive, e));
+    }
+    structured::events::trace_step("checkpoint.gpu.objects.end");
+
     structured::events::trace_step("checkpoint.fds.begin");
-    let fd_records = match fd_sync::snapshot(exclusive, frozen, slot) {
+    let fd_records = match fd_sync::snapshot(exclusive, frozen, slot, &gpu_objects) {
         Ok(records) => records,
         Err(e) => return Err(unfreeze(exclusive, e)),
     };
     *FD_SNAPSHOT.get(exclusive) = fd_records;
+    *GPU_OBJECTS.get(exclusive) = gpu_objects;
+    *GPU_AREAS.get(exclusive) = gpu_areas;
     structured::events::trace_step("checkpoint.fds.end");
 
     structured::events::trace_step("checkpoint.gpu.trigger.begin");
@@ -413,13 +425,22 @@ pub fn checkpoint(slot: SnapshotSlot) -> Result<()> {
         structured::events::trace_step("restore.fds.sync.begin");
         // The rewind restored the slot's records into the channel.
         let fd_records = std::mem::take(FD_SNAPSHOT.get(exclusive));
-        if let Err(e) = fd_sync::restore(exclusive, frozen, slot, &fd_records) {
+        let gpu_objects = std::mem::take(GPU_OBJECTS.get(exclusive));
+        let gpu_areas = std::mem::take(GPU_AREAS.get(exclusive));
+        if let Err(e) = fd_sync::restore(exclusive, frozen, slot, &fd_records, &gpu_objects) {
             // the rewound timeline is half-restored; there is no state to
             // resume into
             error!(Checkpoint, "fd sync failed after restore: {e}");
             std::process::abort();
         }
         structured::events::trace_step("restore.fds.sync.end");
+
+        structured::events::trace_step("restore.gpu.remap.begin");
+        if let Err(e) = gpu::apply_remaps(&gpu_objects, &gpu_areas, &fd_records) {
+            error!(Checkpoint, "gpu remap failed after restore: {e}");
+            std::process::abort();
+        }
+        structured::events::trace_step("restore.gpu.remap.end");
     }
 
     threads::resume_others();

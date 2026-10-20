@@ -6,6 +6,7 @@ use rustix::fs::{self, Mode, OFlags, SeekFrom};
 use rustix::io::{self as rio, Errno, FdFlags};
 
 use crate::checkpoint::SnapshotSlot;
+use crate::checkpoint::gpu::{self, GpuObject};
 use crate::global_state::GlobalState;
 use crate::log::structured;
 use crate::procfs::fds::{self, FdKind, ProcFds};
@@ -30,20 +31,36 @@ pub struct FdRecord {
     link: String,
 }
 
-// Capture current fd table.
+impl FdRecord {
+    pub(crate) fn fd(&self) -> RawFd {
+        self.fd
+    }
+
+    pub(crate) fn identity(&self) -> (u64, u64) {
+        (self.dev, self.ino)
+    }
+
+    pub(crate) fn cloexec(&self) -> bool {
+        self.fd_flags.contains(FdFlags::CLOEXEC)
+    }
+}
+
+// Capture current fd table. GPU host objects are recorded but not pinned: a restore replaces them.
 pub(crate) fn snapshot(
     exclusive: &mut Exclusive,
     frozen: &Frozen,
     slot: SnapshotSlot,
+    gpu_objects: &[GpuObject],
 ) -> Result<Vec<FdRecord>> {
     let keepalives = GlobalState::fd_keepalives(exclusive);
-    capture(frozen, slot, keepalives)
+    capture(frozen, slot, keepalives, gpu_objects)
 }
 
 fn capture(
     frozen: &Frozen,
     slot: SnapshotSlot,
     keepalives: &mut FdKeepaliveRegistry,
+    gpu_objects: &[GpuObject],
 ) -> Result<Vec<FdRecord>> {
     // The previous generation of this slot dies with the snapshot image
     // that is about to replace it.
@@ -72,6 +89,10 @@ fn capture(
     // TODO: restore pipes normally
     for record in &records {
         if record.kind == FdKind::Regular {
+            continue;
+        }
+
+        if gpu::resource_of(gpu_objects, record.dev, record.ino).is_some() {
             continue;
         }
 
@@ -137,11 +158,13 @@ pub(crate) fn open_by_identity(records: &[FdRecord], dev: fs::Dev, ino: u64) -> 
 // - re-open missing fds at original number
 // - re-dup path-less fds from their keepalives
 // - restore offsets and flags
+// GPU host objects are left to the GPU remap.
 pub(crate) fn restore(
     exclusive: &mut Exclusive,
     frozen: &Frozen,
     slot: SnapshotSlot,
     records: &[FdRecord],
+    gpu_objects: &[GpuObject],
 ) -> Result<()> {
     let keepalives = GlobalState::fd_keepalives(exclusive);
 
@@ -169,6 +192,9 @@ pub(crate) fn restore(
     let mut reopened = 0;
     let mut missing = 0;
     for record in records {
+        if gpu::resource_of(gpu_objects, record.dev, record.ino).is_some() {
+            continue;
+        }
         // SAFETY: the function contract requires no other thread active.
         if !unsafe { is_open(record) }? {
             match record.kind {
@@ -458,7 +484,7 @@ mod tests {
         let frozen = &unsafe { Frozen::assume() };
         // SAFETY: the fd-table test lock serializes the only fd-churning tests.
         let exclusive = &mut unsafe { Exclusive::assume() };
-        let records = snapshot(exclusive, frozen, SnapshotSlot(0)).unwrap();
+        let records = snapshot(exclusive, frozen, SnapshotSlot(0), &[]).unwrap();
 
         let opened = open_by_identity(&records, stat.st_dev, stat.st_ino)
             .expect("snapshot must hold the open memfd");
