@@ -92,7 +92,8 @@ fn capture(
             continue;
         }
 
-        if gpu::resource_of(gpu_objects, record.dev, record.ino).is_some() {
+        if let Some(resource_id) = gpu::resource_of(gpu_objects, record.dev, record.ino) {
+            structured::events::fd_gpu(record.fd, resource_id);
             continue;
         }
 

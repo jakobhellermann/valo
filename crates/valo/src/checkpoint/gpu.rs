@@ -23,6 +23,7 @@ use crate::checkpoint::SnapshotSlot;
 use crate::checkpoint::fd_sync::FdRecord;
 use crate::determinism::time::real_monotonic;
 use crate::global_state::GlobalState;
+use crate::log::structured;
 use crate::procfs::maps::{MemoryMap, MemoryMapPermissions, ProcMaps};
 use crate::{Result, error, home, info};
 
@@ -349,6 +350,7 @@ pub(crate) fn apply_remaps(
                     if ret < 0 {
                         return Err(io::Error::last_os_error());
                     }
+                    structured::events::fd_action("restore.fds.remap", record.fd());
                 }
                 if !placed {
                     // SAFETY: the received descriptor is not one of the guest's numbers.
