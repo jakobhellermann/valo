@@ -9,15 +9,15 @@
     flake-utils.url = "github:numtide/flake-utils";
 
     mesaGpu = {
-      url = "github:jakobhellermann/mesa/wip";
+      url = "git+https://gitlab.freedesktop.org/jakobhellermann/mesa?ref=dev&shallow=1";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     gfxstream = {
-      url = "github:jakobhellermann/gfxstream/wip";
+      url = "github:jakobhellermann/gfxstream/dev";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     kumquat = {
-      url = "github:jakobhellermann/rutabaga_gfx/wip";
+      url = "github:jakobhellermann/rutabaga_gfx/dev";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.gfxstream.follows = "gfxstream";
     };
