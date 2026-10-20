@@ -19,7 +19,7 @@ detour = "0.10"
 heapless = "0.9"
 libc = "0.2"
 memchr = "2.7"
-rustix = { version = "1.1", features = ["fs", "mm", "event", "time", "pipe", "thread"] }
+rustix = { version = "1.1", features = ["fs", "mm", "event", "net", "time", "pipe", "thread"] }
 valo-ipc = { path = "../valo-ipc" }
 vulkan-headers = "0.2"
 x11rb-protocol = "0.14"

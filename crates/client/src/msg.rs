@@ -6,6 +6,7 @@
 //! boundaries.
 
 use std::io::ErrorKind;
+use std::os::fd::BorrowedFd;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -77,8 +78,8 @@ pub fn spawn(
     if !use_gpu {
         cmd.spawn()
             .with_context(|| format!("spawning {}", cmd.get_program().to_string_lossy()))?;
-        let pid = init_session(sock, &config, paused)?;
-        print_spawned(pid, sock, paused);
+        let pid = init_session(sock, &config, paused, None)?;
+        print_spawned(pid, None, sock, paused);
         return Ok(());
     }
 
@@ -102,9 +103,14 @@ pub fn spawn(
             use std::io::Read;
             std::fs::File::from(status_read).read_to_string(&mut status)?;
         }
-        if let Some(pid) = status.strip_prefix("pid ") {
-            let pid: u32 = pid.trim().parse().context("daemon status message")?;
-            print_spawned(pid, sock, paused);
+        if let Some(pids) = status.strip_prefix("pid ") {
+            let (pid, kumquat_pid) = pids
+                .trim()
+                .split_once(" kumquat ")
+                .context("daemon status message")?;
+            let pid: u32 = pid.parse().context("daemon status message")?;
+            let kumquat_pid: u32 = kumquat_pid.parse().context("daemon status message")?;
+            print_spawned(pid, Some(kumquat_pid), sock, paused);
             return Ok(());
         }
         bail!("session daemon: {}", status.trim());
@@ -134,8 +140,7 @@ pub fn spawn(
             std::process::exit(1);
         }
     };
-    gpu.game_started();
-    let pid = match init_session(sock, &config, paused) {
+    let pid = match init_session(sock, &config, paused, Some(gpu.control_for_lib())) {
         Ok(pid) => pid,
         Err(e) => {
             report(&format!("error {e:#}"));
@@ -143,7 +148,7 @@ pub fn spawn(
             std::process::exit(1);
         }
     };
-    report(&format!("pid {pid}\n"));
+    report(&format!("pid {pid} kumquat {}\n", gpu.pid()));
     let status = child.wait().context("wait for game")?;
     let host_died = crate::report_kumquat_exit(&mut gpu)?;
     // std::process::exit skips destructors; the drop kills kumquat.
@@ -154,10 +159,13 @@ pub fn spawn(
     std::process::exit(0);
 }
 
-fn print_spawned(pid: u32, sock: &Path, paused: bool) {
+fn print_spawned(pid: u32, kumquat_pid: Option<u32>, sock: &Path, paused: bool) {
     println!(
-        "[valo] spawned pid={} sock={}{}",
+        "[valo] spawned pid={}{} sock={}{}",
         pid,
+        kumquat_pid
+            .map(|pid| format!(" kumquat={pid}"))
+            .unwrap_or_default(),
         sock.display(),
         if paused {
             " (paused before frame 0)"
@@ -169,11 +177,16 @@ fn print_spawned(pid: u32, sock: &Path, paused: bool) {
 
 /// The spawn process is the session's init client: it delivers the config
 /// and either detaches (session runs) or closes (session starts paused).
-fn init_session(sock: &Path, config: &Config, paused: bool) -> Result<u32> {
+fn init_session(
+    sock: &Path,
+    config: &Config,
+    paused: bool,
+    gpu_control: Option<BorrowedFd<'_>>,
+) -> Result<u32> {
     let mut conn =
         ClientIPC::establish(sock).with_context(|| format!("connect {}", sock.display()))?;
-    let pid =
-        crate::init_game(&mut conn, config).with_context(|| format!("init {}", sock.display()))?;
+    let pid = crate::init_game(&mut conn, config, gpu_control)
+        .with_context(|| format!("init {}", sock.display()))?;
     if !paused {
         conn.send(&ClientToLib::Detach)?;
     }

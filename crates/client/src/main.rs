@@ -7,6 +7,7 @@ mod tui;
 
 use std::fs::File;
 use std::io::{ErrorKind, Read};
+use std::os::fd::BorrowedFd;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode};
@@ -190,12 +191,9 @@ fn run(
     let mut child = cmd
         .spawn()
         .with_context(|| format!("spawning {}", cmd.get_program().to_string_lossy()))?;
-    if let Some(gpu) = &mut gpu {
-        gpu.game_started();
-    }
-
+    let gpu_control = gpu.as_ref().map(GpuSession::control_for_lib);
     let result = if use_tui {
-        let tui_result = tui::run(sock_path, Some(log_path.as_path()), config);
+        let tui_result = tui::run(sock_path, Some(log_path.as_path()), config, gpu_control);
         // The alternate screen is gone; report where this session's files landed
         eprintln!(
             "[valo-client] session ended: target pid {}, home {}",
@@ -212,7 +210,7 @@ fn run(
         }
         tui_result.map(|_| SessionEnd::Done)
     } else {
-        run_ipc_loop(sock_path, &mut child, gdb, config)
+        run_ipc_loop(sock_path, &mut child, gdb, config, gpu_control)
     };
     if let Err(e) = &result {
         eprintln!("ipc loop ended: {e:#}");
@@ -355,7 +353,13 @@ pub(crate) fn report_kumquat_exit(session: &mut GpuSession) -> Result<bool> {
     Ok(true)
 }
 
-fn run_ipc_loop(sock: &Path, child: &mut Child, gdb: bool, config: Config) -> Result<SessionEnd> {
+fn run_ipc_loop(
+    sock: &Path,
+    child: &mut Child,
+    gdb: bool,
+    config: Config,
+    gpu_control: Option<BorrowedFd<'_>>,
+) -> Result<SessionEnd> {
     // Bound to the first attached game; a gdb rerun keeps it.
     let mut game_ui = None;
     let game_window = input::GameWindow::default();
@@ -366,7 +370,7 @@ fn run_ipc_loop(sock: &Path, child: &mut Child, gdb: bool, config: Config) -> Re
         };
         eprintln!("[valo-client] ipc connected on {}", sock.display());
 
-        let pid = init_game(&mut conn, &config)?;
+        let pid = init_game(&mut conn, &config, gpu_control)?;
         conn.set_read_timeout(FIRST_HANG_TIMEOUT)
             .context("set hang watchdog timeout")?;
         let (hotkeys, hud) = game_ui.get_or_insert_with(|| spawn_game_ui(game_window.clone()));
@@ -441,14 +445,18 @@ fn run_ipc_loop(sock: &Path, child: &mut Child, gdb: bool, config: Config) -> Re
 
 /// Init exchange with the game behind `conn`, which can sit below wrapper
 /// processes; the socket peer is the process libvalo attached to.
-pub(crate) fn init_game(conn: &mut ClientIPC, config: &Config) -> Result<u32> {
+pub(crate) fn init_game(
+    conn: &mut ClientIPC,
+    config: &Config,
+    gpu_control: Option<BorrowedFd<'_>>,
+) -> Result<u32> {
     let pid = conn.peer_pid().context("game pid from socket peer")?;
     let exe = std::fs::read_link(format!("/proc/{pid}/exe"))
         .with_context(|| format!("resolve exe of game pid {pid}"))?;
     eprintln!("[valo-client] attached to pid {pid}: {}", exe.display());
     let mut config = config.clone();
     config.resolved_modules = resolve_modules(&exe)?;
-    conn.init(&config)?;
+    conn.init(&config, gpu_control)?;
     Ok(pid)
 }
 

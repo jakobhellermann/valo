@@ -21,6 +21,7 @@
 //! ```
 
 use std::collections::BTreeMap;
+use std::os::fd::BorrowedFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -114,10 +115,11 @@ fn main() -> Result<()> {
         None
     };
     let mut child = spawn(&lib, &args.program, &args.args, gpu.as_mut())?;
-    if let Some(gpu) = &mut gpu {
-        gpu.game_started();
-    }
-    let result = drive(&mut child, &timeline, args.use_gpu);
+    let result = drive(
+        &mut child,
+        &timeline,
+        gpu.as_ref().map(GpuSession::control_for_lib),
+    );
     if let Err(e) = &result {
         let _ = child.kill();
         let _ = child.wait();
@@ -280,14 +282,18 @@ fn spawn(
         .with_context(|| format!("spawning {}", program.display()))
 }
 
-fn drive(child: &mut Child, timeline: &Timeline, use_gpu: bool) -> Result<()> {
+fn drive(
+    child: &mut Child,
+    timeline: &Timeline,
+    gpu_control: Option<BorrowedFd<'_>>,
+) -> Result<()> {
     let sock = paths::ipc_sock();
     let mut conn = connect_or_child_exit(sock, child)?;
     let config = Config {
-        use_gpu,
+        use_gpu: gpu_control.is_some(),
         ..Config::default()
     };
-    conn.init(&config)?;
+    conn.init(&config, gpu_control)?;
     eprintln!("[valo-replay] driving until frame {}", timeline.end_frame);
     let mut executed = Executed::default();
 
