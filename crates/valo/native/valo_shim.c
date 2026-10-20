@@ -376,6 +376,14 @@ int valo_x11_restore(Display *display, uint64_t last_request_read,
     xcb_connection_t *conn = XGetXCBConnection(display);
     if (!conn)
         return -1;
+    /* The quiesce flushed Xlib before the checkpoint. */
+    if (display->bufptr != display->buffer)
+        return -1;
+
+    /* Xlib holds the socket's write side (xcb_take_socket) with request
+     * counters from the checkpoint. Releasing it makes Xlib's next request
+     * take it again, which resets those counters to xcb's live ones. */
+    display->bufmax = display->buffer;
 
 #ifdef X_DPY_SET_LAST_REQUEST_READ
     X_DPY_SET_LAST_REQUEST_READ(display, last_request_read);
@@ -384,7 +392,16 @@ int valo_x11_restore(Display *display, uint64_t last_request_read,
     display->last_request_read = last_request_read;
     display->request = request;
 #endif
-    return xcb_apply_restored_io_state(conn, (const xcb_connection_t *)src);
+    if (xcb_apply_restored_io_state(conn, (const xcb_connection_t *)src) != 0)
+        return -1;
+    /* Release it on xcb's side too: xcb would otherwise ask the display to
+     * release the socket from inside the display's own next request, while
+     * that request holds the display lock. */
+    if (conn->out.socket_closure == display) {
+        conn->out.return_socket = NULL;
+        conn->out.socket_closure = NULL;
+    }
+    return 0;
 }
 
 #endif
