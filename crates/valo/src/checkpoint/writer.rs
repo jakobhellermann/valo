@@ -84,6 +84,7 @@ fn write_area_meta(
     writer: &mut SnapshotWriter,
     area: &MemoryMap,
     page_map: &mut ProcPagemap,
+    gpu_objects: &[super::gpu::GpuObject],
 ) -> Result<AreaMeta> {
     // TODO: mprotect read?
     // TODO: "fill deleted fd"
@@ -91,13 +92,16 @@ fn write_area_meta(
     let page_data_offset = writer.snapshot_pages.stream_position()?;
     let uncommitted = area_is_uncommmited(area, page_map)?;
 
+    // The GPU host saves the content of its objects.
+    let gpu = super::gpu::resource_of(gpu_objects, area.dev, area.inode).is_some();
     // TODO: more skip logic?
-    let skip = skip(area);
+    let skip = gpu || skip(area);
     writer.snapshot_meta.write_all(area.as_bytes())?;
     let meta = AreaMeta {
         skip,
         uncommitted,
         page_data_offset,
+        gpu,
     };
     writer.snapshot_meta.write_all(meta.as_bytes())?;
 
@@ -159,7 +163,8 @@ fn write_area(
     area: &MemoryMap,
     page_map: &mut ProcPagemap,
 ) -> Result<()> {
-    let meta = write_area_meta(writer, area, page_map)?;
+    super::gpu::check_area(area)?;
+    let meta = write_area_meta(writer, area, page_map, super::gpu_objects(exclusive))?;
     if meta.skip || meta.uncommitted {
         debug!(Checkpoint, "Skip   {}", area);
         structured::events::save_area(area, true);

@@ -118,7 +118,10 @@ pub fn read_all_areas(frozen: &Frozen, reader: &mut SnapshotReader) -> Result<()
         maps.reset()?;
     }
 
-    let mut saved_maps = (0..reader.header.area_count).map(|_| reader.read().unwrap());
+    // Mappings of GPU host objects are left to the GPU remap.
+    let mut saved_maps = (0..reader.header.area_count)
+        .map(|_| reader.read().unwrap())
+        .filter(|(_, meta)| !meta.gpu);
 
     let mut saved_area = saved_maps.next();
     let mut current_area = maps.next()?;
