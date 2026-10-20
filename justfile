@@ -127,8 +127,9 @@ repro XTRACE="": clean
     if [[ -n "{{ XTRACE }}" ]]; then
         pkill xtrace || true
         rm -f /tmp/xtrace.log
-        nix run nixpkgs#xtrace -d :1 -D :9 -n -k -o /tmp/xtrace.log > /tmp/xtrace-start.log 2>&1 &
-        sleep 0.5
+        nix run nixpkgs#xtrace -- -d "$display" -D :9 -n -k -o /tmp/xtrace.log > /tmp/xtrace-start.log 2>&1 &
+        for _ in $(seq 100); do [[ -S /tmp/.X11-unix/X9 ]] && break; sleep 0.1; done
+        [[ -S /tmp/.X11-unix/X9 ]] || { echo "xtrace did not come up, see /tmp/xtrace-start.log" >&2; exit 1; }
         display=":9"
     fi
-    just valo run --max-restores 1 --checkpoint-frame 60 --restore-frame 120 "$cmd"
+    DISPLAY="$display" just run-hollowknight-gpu --uncontrolled
