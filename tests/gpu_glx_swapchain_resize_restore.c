@@ -96,6 +96,8 @@ int main(void) {
         XCreateColormap(dpy, RootWindow(dpy, vi->screen), vi->visual, AllocNone);
     Window win = XCreateWindow(dpy, RootWindow(dpy, vi->screen), 0, 0, 640, 480, 0,
                                vi->depth, InputOutput, vi->visual, CWColormap, &swa);
+    // WM_CLASS for desktop window rules
+    XSetClassHint(dpy, win, &(XClassHint){.res_name = "valo-test", .res_class = "valo-test"});
     XMapWindow(dpy, win);
     XStoreName(dpy, win, "valo glx swapchain resize restore");
     assert(glXMakeCurrent(dpy, win, ctx) && "make current failed");
