@@ -3,7 +3,6 @@ fn main() {
     println!("cargo::rerun-if-changed=native/xcbint.h");
     cc::Build::new()
         .file("native/valo_shim.c")
-        .flag_if_supported("-fstack-clash-protection")
         .opt_level(2)
         .compile("valo_shim");
     // The shim calls xcb_* functions directly, required in test binaries
