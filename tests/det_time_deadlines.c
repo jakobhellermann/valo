@@ -120,6 +120,11 @@ static void *worker(void *arg) {
     start = real_ns();
     assert(clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &until, NULL) == 0);
     check("clock_nanosleep", start, ETIMEDOUT);
+
+    until = deadline(CLOCK_BOOTTIME);
+    start = real_ns();
+    assert(clock_nanosleep(CLOCK_BOOTTIME, TIMER_ABSTIME, &until, NULL) == 0);
+    check("clock_nanosleep boottime", start, ETIMEDOUT);
     return NULL;
 }
 
