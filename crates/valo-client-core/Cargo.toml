@@ -1,0 +1,13 @@
+# TODO(ai-review): generated, not yet audited
+[package]
+name = "valo-client-core"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow = "1"
+libc = "0.2"
+rustix = { version = "1.1", features = ["process"] }
+valo-ipc = { path = "../valo-ipc" }
+valo-launch = { path = "../valo-launch" }

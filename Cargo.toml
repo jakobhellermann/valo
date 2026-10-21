@@ -5,7 +5,7 @@ edition = "2024"
 
 [workspace]
 resolver = "3"
-members = ["crates/valo", "crates/harness", "crates/client", "crates/valo-ipc", "crates/valo-launch", "crates/valo-replay"]
+members = ["crates/valo", "crates/harness", "crates/client", "crates/valo-ipc", "crates/valo-launch", "crates/valo-replay", "crates/valo-client-core"]
 default-members = ["crates/valo", "crates/client"]
 
 [profile.release]
