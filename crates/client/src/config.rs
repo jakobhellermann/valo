@@ -20,9 +20,9 @@ pub(crate) struct ConfigArgs {
     #[arg(long, value_enum, help_heading = "Runtime")]
     pub(crate) log_level: Option<CliLogLevel>,
 
-    /// Enable GPU checkpoint orchestration (kumquat host)
+    /// Disable GPU checkpoints and render in software
     #[arg(long, help_heading = "Runtime")]
-    pub(crate) use_gpu: bool,
+    pub(crate) software_rendering: bool,
 
     /// Don't force deterministic time
     #[arg(long, help_heading = "Runtime")]
@@ -61,7 +61,7 @@ impl ConfigArgs {
             log: LogConfig {
                 level: self.log_level.map_or(LogLevel::Trace, Into::into),
             },
-            use_gpu: self.use_gpu,
+            use_gpu: !self.software_rendering,
             time: TimeConfig {
                 uncontrolled_time: self.uncontrolled_time,
                 ..TimeConfig::default()

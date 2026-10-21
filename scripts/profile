@@ -251,7 +251,7 @@ main() {
         launcher=(steam-run)
     fi
     VALO_LOG="$valo_log" VALO_STRUCTURED_LOG="$log_path" \
-        "${launcher[@]}" "$valo_bin" spawn --paused ${use_gpu:+--use-gpu} \
+        "${launcher[@]}" "$valo_bin" spawn --paused $( [[ -n "$use_gpu" ]] || echo --software-rendering ) \
         --sock "$sock" --lib "$PWD/out/libvalo.so" "$GAME" "${game_args[@]}" >out/perf-spawn.txt
     local spawned
     spawned=$(<out/perf-spawn.txt)

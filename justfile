@@ -69,10 +69,7 @@ run-hollowknight *args:
     {{ STEAM_WRAPPER }} just valo run {{ args }} "{{ HK }}"
 
 spawn-hollowknight *args:
-    {{ STEAM_WRAPPER }} just valo spawn --use-gpu {{ args }} "{{ HK }}"
-
-run-hollowknight-gpu *args:
-    {{ STEAM_WRAPPER }} just valo run --use-gpu {{ args }} "{{ HK }}"
+    {{ STEAM_WRAPPER }} just valo spawn {{ args }} "{{ HK }}"
 
 visualizer:
     @cd visualizer && pnpm run dev
