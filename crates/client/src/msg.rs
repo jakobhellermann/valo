@@ -57,7 +57,7 @@ pub fn spawn(
     config_args: &ConfigArgs,
     target: &[String],
 ) -> Result<()> {
-    let use_gpu = config_args.use_gpu;
+    let use_gpu = !config_args.software_rendering;
     let Some(program) = target.first() else {
         bail!("missing program");
     };

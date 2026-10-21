@@ -159,7 +159,7 @@ fn run(
     ensure_elf(&program)?;
 
     let mut cmd = build_command(gdb, &program, &args, &lib);
-    let use_gpu = config.use_gpu;
+    let use_gpu = !config.software_rendering;
     valo_launch::command::configure_target(&mut cmd, use_gpu)?;
 
     if use_tui {
