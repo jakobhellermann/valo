@@ -73,6 +73,10 @@ impl Framerate {
             denom: NonZeroU32::MIN,
         }
     }
+
+    pub fn frametime(&self) -> Duration {
+        Duration::from_nanos(self.denom.get() as u64 * 1_000_000_000 / self.num.get() as u64)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
