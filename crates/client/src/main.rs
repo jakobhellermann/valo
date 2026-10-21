@@ -122,16 +122,17 @@ fn main() -> Result<ExitCode> {
             target,
         } => msg::spawn(
             lib,
-            sock.as_deref().unwrap_or(paths::ipc_sock()),
+            sock.as_deref().unwrap_or_else(|| paths::ipc_sock()),
             paused,
             &config,
             &target,
         )
         .map(|_| ExitCode::SUCCESS),
-        Cmd::Msg { sock, command } => {
-            msg::msg(sock.as_deref().unwrap_or(paths::ipc_sock()), &command)
-                .map(|_| ExitCode::SUCCESS)
-        }
+        Cmd::Msg { sock, command } => msg::msg(
+            sock.as_deref().unwrap_or_else(|| paths::ipc_sock()),
+            &command,
+        )
+        .map(|_| ExitCode::SUCCESS),
     }
 }
 
