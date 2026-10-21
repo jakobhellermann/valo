@@ -10,7 +10,6 @@
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Seek, SeekFrom, Stdout};
-use std::os::fd::BorrowedFd;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
@@ -36,6 +35,7 @@ use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use valo_client_core::Session;
 use valo_ipc::ClientIPC;
 use valo_ipc::config::Config;
 use valo_ipc::messages::{ClientToLib, FrameBoundary, LibToClient, RestoreSucceeded};
@@ -175,18 +175,15 @@ impl App {
     }
 }
 
-pub fn run(
-    sock: &Path,
-    log_path: Option<&Path>,
-    config: Config,
-    gpu_control: Option<BorrowedFd<'_>>,
-) -> Result<()> {
+pub fn run(session: &mut Session, log_path: Option<&Path>, config: Config) -> Result<()> {
     if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
         bail!("--tui requires stdout to be a tty");
     }
 
-    let mut conn = ClientIPC::establish(sock).context("ipc establish")?;
-    let target_pid = valo_launch::init_game(&mut conn, &config, gpu_control)?;
+    let Some(target_pid) = session.connect(&config)? else {
+        bail!("target exited before the ipc connection");
+    };
+    let conn = session.conn();
 
     let (tx, rx) = mpsc::channel::<AppEvent>();
 
@@ -213,14 +210,14 @@ pub fn run(
     }
     spawn_ipc_reader_thread(tx.clone(), conn.try_clone_for_reader()?);
 
-    let mut writer = conn;
+    let writer = conn;
     let mut terminal = setup_terminal().context("setup terminal")?;
 
     // Make sure raw mode is restored even on panic.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         main_loop(
             &mut terminal,
-            &mut writer,
+            writer,
             rx,
             target_pid,
             &keyboard_input,

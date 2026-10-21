@@ -21,19 +21,15 @@
 //! ```
 
 use std::collections::BTreeMap;
-use std::os::fd::BorrowedFd;
-use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Parser;
-use valo_ipc::ClientIPC;
+use valo_client_core::Session;
 use valo_ipc::config::Config;
 use valo_ipc::messages::{ClientToLib, FrameBoundary, InputState, LibToClient, RestoreSucceeded};
-use valo_launch::gpu_session::GpuSession;
-use valo_launch::{paths, resolve_lib};
+use valo_launch::resolve_lib;
 
 #[derive(Parser)]
 #[command(
@@ -108,25 +104,12 @@ fn main() -> Result<()> {
     )?;
     let lib = resolve_lib(args.lib)?;
     eprintln!("[valo-replay] lib {}", lib.display());
-    let mut gpu = if args.use_gpu {
-        let session = GpuSession::start().context("start kumquat session")?;
-        Some(session)
-    } else {
-        None
-    };
-    let mut child = spawn(&lib, &args.program, &args.args, gpu.as_mut())?;
-    let result = drive(
-        &mut child,
-        &timeline,
-        gpu.as_ref().map(GpuSession::control_for_lib),
-    );
-    if let Err(e) = &result {
-        let _ = child.kill();
-        let _ = child.wait();
-        valo_launch::cleanup::remove_savestate_data();
-        return Err(anyhow!("{e:#}"));
+    let cmd = valo_client_core::target_command(&args.program, &args.args, &lib, &[]);
+    let mut session = Session::spawn(cmd, valo_launch::paths::ipc_sock(), args.use_gpu)?;
+    if session.connect(&Config::default())?.is_none() {
+        bail!("target exited before the ipc connection");
     }
-    Ok(())
+    drive(session, &timeline).map_err(|e| anyhow!("{e:#}"))
 }
 
 fn parse_script(source: &str) -> Result<Timeline> {
@@ -232,73 +215,12 @@ fn parse_keys(held: &str, no: usize) -> Result<InputState> {
     Ok(state)
 }
 
-/// Refuse to reuse a run home that a live session still owns; a socket
-/// file without a listener is a leftover and gets removed.
-fn claim_sock(sock: &Path) -> Result<()> {
-    if !sock.exists() {
-        return Ok(());
-    }
-    match ClientIPC::connect(sock, Duration::from_millis(200)) {
-        Ok(_) => bail!(
-            "a live session owns {}; stop it or point VALO_HOME elsewhere",
-            sock.display()
-        ),
-        Err(_) => {
-            let _ = std::fs::remove_file(sock);
-        }
-    }
-    Ok(())
-}
-
-fn spawn(
-    lib: &Path,
-    program: &Path,
-    args: &[String],
-    gpu: Option<&mut GpuSession>,
-) -> Result<Child> {
-    claim_sock(paths::ipc_sock())?;
-    let mut cmd = Command::new(program);
-    cmd.args(args);
-    cmd.env("LD_PRELOAD", lib);
-    // Kill the target if this driver dies, so a killed/timeouted run
-    // never leaves an orphaned game behind.
-    // SAFETY: single-threaded driver, no state to corrupt in the child.
-    unsafe {
-        cmd.pre_exec(|| {
-            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
-            Ok(())
-        });
-    }
-    if let Some(gpu) = gpu {
-        gpu.configure_game(&mut cmd);
-        valo_launch::command::configure_target(&mut cmd, true);
-    } else {
-        valo_launch::command::configure_target(&mut cmd, false);
-    }
-    cmd.env("VALO_SOCK", paths::ipc_sock());
-    cmd.stdout(Stdio::inherit());
-    cmd.stderr(Stdio::inherit());
-    cmd.spawn()
-        .with_context(|| format!("spawning {}", program.display()))
-}
-
-fn drive(
-    child: &mut Child,
-    timeline: &Timeline,
-    gpu_control: Option<BorrowedFd<'_>>,
-) -> Result<()> {
-    let sock = paths::ipc_sock();
-    let mut conn = connect_or_child_exit(sock, child)?;
-    let config = Config {
-        use_gpu: gpu_control.is_some(),
-        ..Config::default()
-    };
-    conn.init(&config, gpu_control)?;
+fn drive(mut session: Session, timeline: &Timeline) -> Result<()> {
     eprintln!("[valo-replay] driving until frame {}", timeline.end_frame);
     let mut executed = Executed::default();
 
     'boundary: loop {
-        match conn.recv()? {
+        match session.recv()? {
             Some(
                 LibToClient::FrameBoundary(FrameBoundary { frame, .. })
                 | LibToClient::RestoreSucceeded(RestoreSucceeded { frame }),
@@ -315,31 +237,33 @@ fn drive(
                         *done = idx + 1;
                         match cmd {
                             Cmd::Checkpoint(slot) => {
-                                conn.send(&ClientToLib::Checkpoint(*slot))?;
-                                expect(&mut conn, |m| matches!(m, LibToClient::CheckpointDone))?;
+                                if let Err(e) = session.checkpoint(*slot)? {
+                                    bail!("checkpoint {slot}: {}", e.0);
+                                }
                             }
                             Cmd::Restore(slot) => {
                                 // Last command of this turn: the rewind
                                 // resumes mid-turn, so anything sent now
                                 // would run into the rewound session.
-                                conn.send(&ClientToLib::Restore(*slot))?;
+                                session.send(&ClientToLib::Restore(*slot))?;
                                 continue 'boundary;
                             }
                             Cmd::Quit => {
-                                conn.send(&ClientToLib::Quit)?;
                                 eprintln!("[valo-replay] quit at frame {frame}");
-                                remove_savestates(child);
+                                session.quit()?;
+                                session.wait(Duration::from_secs(1))?;
                                 return Ok(());
                             }
                         }
                     }
                 }
                 if frame >= timeline.end_frame {
-                    conn.send(&ClientToLib::Detach)?;
                     eprintln!(
                         "[valo-replay] script done at frame {frame}, detached (pid {})",
-                        child.id()
+                        session.child_pid()
                     );
+                    session.detach()?;
+                    session.release();
                     return Ok(());
                 }
                 let state = timeline.keys.get(&frame).cloned().unwrap_or(InputState {
@@ -347,46 +271,12 @@ fn drive(
                     keys: [0; 32],
                 });
                 let next = timeline.next_event(frame);
-                conn.send(&ClientToLib::SetInputs(state))?;
-                conn.send(&ClientToLib::AdvanceFrames(next - frame))?;
+                session.send(&ClientToLib::SetInputs(state))?;
+                session.send(&ClientToLib::AdvanceFrames(next - frame))?;
             }
             Some(LibToClient::Error(e)) => bail!("lib error: {}", e.message),
             Some(other) => bail!("unexpected message: {other:?}"),
             None => bail!("lib hung up at the frame boundary"),
-        }
-    }
-}
-
-/// Remove the run's savestate bulk data once the target exited. A Quit
-/// target exits on its own at the next boundary; if it does not within a
-/// short window, the home stays and a later run sweeps it after the exit.
-fn remove_savestates(child: &mut Child) {
-    for _ in 0..100 {
-        if child.try_wait().is_ok_and(|status| status.is_some()) {
-            valo_launch::cleanup::remove_savestate_data();
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
-
-fn expect(conn: &mut ClientIPC, is: impl Fn(&LibToClient) -> bool) -> Result<()> {
-    match conn.recv()? {
-        Some(m) if is(&m) => Ok(()),
-        Some(other) => bail!("unexpected reply: {other:?}"),
-        None => bail!("lib hung up waiting for the command reply"),
-    }
-}
-
-fn connect_or_child_exit(sock: &Path, child: &mut Child) -> Result<ClientIPC> {
-    loop {
-        match ClientIPC::connect(sock, Duration::from_millis(100)) {
-            Ok(conn) => return Ok(conn),
-            Err(_) => {
-                if let Ok(Some(status)) = child.try_wait() {
-                    bail!("target exited (status {status}) before the ipc connection");
-                }
-            }
         }
     }
 }

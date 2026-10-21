@@ -6,17 +6,15 @@
 //! boundaries.
 
 use std::io::ErrorKind;
-use std::os::fd::BorrowedFd;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
 use rustix::pipe::PipeFlags;
+use valo_client_core::Session;
 use valo_ipc::ClientIPC;
-use valo_ipc::config::Config;
 use valo_ipc::messages::{ClientToLib, InputState, LibToClient};
-use valo_launch::gpu_session::GpuSession;
 
 use crate::config::ConfigArgs;
 
@@ -70,25 +68,13 @@ pub fn spawn(
         .with_context(|| format!("canonicalize libvalo.so path {}", lib.display()))?;
 
     let mut cmd = crate::build_command(false, &PathBuf::from(program), &target[1..], &lib);
-    valo_launch::command::configure_target(&mut cmd, use_gpu)?;
-    cmd.env("VALO_SOCK", sock);
-
     use std::os::unix::process::CommandExt;
     // closing the spawning terminal must not take the session down with it.
     cmd.process_group(0);
 
-    if !use_gpu {
-        cmd.spawn()
-            .with_context(|| format!("spawning {}", cmd.get_program().to_string_lossy()))?;
-        let pid = init_session(sock, &config, paused, None)?;
-        print_spawned(pid, None, sock, paused);
-        return Ok(());
-    }
-
-    // The GPU session needs an owner that outlives this process, and the
-    // owner must be the game's parent to reap it. Fork the session daemon
-    // before spawning the game; the daemon reports the game pid (or a
-    // startup error) back through a pipe.
+    // The session needs an owner that outlives this process to keep the GPU
+    // host alive and clean up after the game. The daemon reports the game
+    // pid (or a startup error) back through a pipe.
     let (status_read, status_write) =
         rustix::pipe::pipe_with(PipeFlags::CLOEXEC).map_err(std::io::Error::from)?;
     // SAFETY: single-threaded here, no locks held across the fork.
@@ -98,101 +84,66 @@ pub fn spawn(
     }
 
     if daemon > 0 {
-        // The parent keeps only the read end.
         drop(status_write);
         let mut status = String::new();
         {
             use std::io::Read;
             std::fs::File::from(status_read).read_to_string(&mut status)?;
         }
-        if let Some(pids) = status.strip_prefix("pid ") {
-            let (pid, kumquat_pid) = pids
-                .trim()
-                .split_once(" kumquat ")
-                .context("daemon status message")?;
-            let pid: u32 = pid.parse().context("daemon status message")?;
-            let kumquat_pid: u32 = kumquat_pid.parse().context("daemon status message")?;
-            print_spawned(pid, Some(kumquat_pid), sock, paused);
-            return Ok(());
-        }
-        bail!("session daemon: {}", status.trim());
+        let Some(spawned) = status.strip_prefix("spawned ") else {
+            bail!("session daemon: {}", status.trim());
+        };
+        println!(
+            "[valo] spawned {}{}",
+            spawned.trim(),
+            if paused {
+                " (paused before frame 0)"
+            } else {
+                ""
+            }
+        );
+        return Ok(());
     }
 
-    // Detached daemon with no controlling terminal.
     drop(status_read);
     rustix::process::setsid().map_err(std::io::Error::from)?;
     let report = |status: &str| {
         use std::io::Write;
-        let mut writer = std::fs::File::from(status_write);
-        let _ = writer.write_all(status.as_bytes());
+        let _ = std::fs::File::from(status_write).write_all(status.as_bytes());
     };
-    let mut gpu = match GpuSession::start() {
-        Ok(session) => session,
-        Err(e) => {
-            report(&format!("error {e:#}"));
-            std::process::exit(1);
-        }
-    };
-    gpu.configure_game(&mut cmd);
-    let mut child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(e) => {
-            report(&format!("error {:#}", anyhow::Error::new(e)));
-            drop(gpu);
-            std::process::exit(1);
-        }
-    };
-    let pid = match init_session(sock, &config, paused, Some(gpu.control_for_lib())) {
-        Ok(pid) => pid,
-        Err(e) => {
-            report(&format!("error {e:#}"));
-            drop(gpu);
-            std::process::exit(1);
-        }
-    };
-    report(&format!("pid {pid} kumquat {}\n", gpu.pid()));
-    let status = child.wait().context("wait for game")?;
-    let host_died = crate::report_kumquat_exit(&mut gpu)?;
-    // std::process::exit skips destructors; the drop kills kumquat.
-    drop(gpu);
-    if host_died && !status.success() {
-        std::process::exit(1);
-    }
-    std::process::exit(0);
-}
-
-fn print_spawned(pid: u32, kumquat_pid: Option<u32>, sock: &Path, paused: bool) {
-    println!(
-        "[valo] spawned pid={}{} sock={}{}",
-        pid,
-        kumquat_pid
-            .map(|pid| format!(" kumquat={pid}"))
-            .unwrap_or_default(),
-        sock.display(),
+    let started = (|| -> Result<(Session, u32)> {
+        let mut session = Session::spawn(cmd, sock, use_gpu)?;
+        let pid = session
+            .connect(&config)?
+            .context("target exited before the ipc connection")?;
+        // Paused: closing the connection leaves the game held at its first boundary.
         if paused {
-            " (paused before frame 0)"
+            session.disconnect();
         } else {
-            ""
+            session.detach()?;
         }
-    );
-}
-
-/// The spawn process is the session's init client: it delivers the config
-/// and either detaches (session runs) or closes (session starts paused).
-fn init_session(
-    sock: &Path,
-    config: &Config,
-    paused: bool,
-    gpu_control: Option<BorrowedFd<'_>>,
-) -> Result<u32> {
-    let mut conn =
-        ClientIPC::establish(sock).with_context(|| format!("connect {}", sock.display()))?;
-    let pid = valo_launch::init_game(&mut conn, config, gpu_control)
-        .with_context(|| format!("init {}", sock.display()))?;
-    if !paused {
-        conn.send(&ClientToLib::Detach)?;
-    }
-    Ok(pid)
+        Ok((session, pid))
+    })();
+    let (mut session, pid) = match started {
+        Ok(started) => started,
+        Err(e) => {
+            report(&format!("error {e:#}"));
+            std::process::exit(1);
+        }
+    };
+    let kumquat = session
+        .gpu()
+        .map(|gpu| format!(" kumquat={}", gpu.pid()))
+        .unwrap_or_default();
+    report(&format!(
+        "spawned pid={pid}{kumquat} sock={}\n",
+        sock.display()
+    ));
+    // Nobody waits for the daemon, so the target's exit code goes nowhere.
+    let _ = session.finish(Duration::MAX)?;
+    // Dropping the session stops the GPU host; exiting would skip that.
+    drop(session);
+    std::process::exit(0)
 }
 
 pub fn msg(sock: &Path, command: &MsgCmd) -> Result<()> {
@@ -205,7 +156,7 @@ pub fn msg(sock: &Path, command: &MsgCmd) -> Result<()> {
     match conn.hello() {
         Ok(config) => config,
         Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {
-            hang_report(pid)?;
+            valo_client_core::report_hang(pid)?;
             bail!("game did not answer the handshake");
         }
         Err(e) => return Err(e).context("hello"),
@@ -275,22 +226,11 @@ fn held(keycodes: &[u8]) -> InputState {
     InputState { mods: 0, keys }
 }
 
-/// A read timeout here usually means the game is hung: report the
-/// per-thread wchan state.
-fn hang_report(pid: u32) -> Result<()> {
-    if Path::new(&format!("/proc/{pid}")).exists() {
-        crate::report_hang(pid)
-    } else {
-        eprintln!("[valo] game pid {pid} is gone");
-        Ok(())
-    }
-}
-
 fn recv_reply(conn: &mut ClientIPC, pid: u32, timeout: Duration) -> Result<Option<LibToClient>> {
     match conn.recv() {
         Ok(reply) => Ok(reply),
         Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {
-            hang_report(pid)?;
+            valo_client_core::report_hang(pid)?;
             bail!("no reply within {timeout:?}");
         }
         Err(e) => Err(e.into()),
