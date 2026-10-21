@@ -90,6 +90,12 @@ Bisher in `gamespecific::unity`:
 
 - Async-Reads synchron (`AsyncReadManagerThreaded::Request` →
   `SyncReadRequest`): entfernt das I/O-Rennen, aber nicht das von `Perform`.
+- `preload.rs`: `UpdatePreloading` wartet, bis der Preload-Thread idle ist.
+  Eine Operation gilt erst als durch `Perform`, wenn `Run` ihren Status
+  (`op+0x40`) gesetzt hat: das passiert nach der Rückkehr von `Perform`
+  (Dauer messen, `GetAllowParallelExecution`, dann `movl $1,0x40(op)`), und
+  `UpdatePreloadingSingleStep` integriert vorher nichts. Ohne das Warten
+  rutschte die Integration in ~1 von 8 Läufen einen Frame später.
 
 Offen: in `AddToQueue` warten, bis `Perform` dieser Operation durch ist.
 Dafür reichen die eigenen `Perform`-Hooks, die Queue-Felder des Managers
