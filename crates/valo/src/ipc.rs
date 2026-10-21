@@ -24,7 +24,7 @@ use valo_ipc::{LibIPC, PROTOCOL_VERSION};
 
 use crate::checkpoint::SnapshotSlot;
 use crate::global_state::GlobalState;
-use crate::{Result, checkpoint, error, info, trace, warn};
+use crate::{Result, checkpoint, determinism, error, info, trace, warn};
 
 /// How long a free session waits for a command from a connected client
 /// before the frame runs.
@@ -404,6 +404,7 @@ pub fn effective_config() -> Config {
             level: crate::log::current_level().into(),
         },
         use_gpu: state.use_gpu.load(Ordering::Relaxed),
+        time: determinism::time::CLOCK.config(),
         skip_draw: state.skip_draw_mode(),
     }
 }

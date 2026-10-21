@@ -7,6 +7,9 @@
 //! handshake echo exposes the config the lib currently has, so clients can
 //! learn the state and patch and re-set it. `use_gpu` is fixed at init.
 
+use std::num::NonZeroU32;
+use std::time::{Duration, SystemTime};
+
 use serde::{Deserialize, Serialize};
 
 /// Ordered from least to most verbose.
@@ -48,6 +51,40 @@ pub enum SkipDrawMode {
     Interval { min_render_interval_ms: u32 },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Framerate {
+    pub num: NonZeroU32,
+    pub denom: NonZeroU32,
+}
+
+impl Framerate {
+    pub const fn integer(fps: u32) -> Framerate {
+        Framerate {
+            num: NonZeroU32::new(fps).unwrap(),
+            denom: NonZeroU32::MIN,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TimeConfig {
+    pub uncontrolled_time: bool,
+    pub framerate: Framerate,
+    /// `CLOCK_REALTIME` at process start.
+    pub realtime_start: SystemTime,
+}
+
+impl Default for TimeConfig {
+    fn default() -> Self {
+        Self {
+            uncontrolled_time: Default::default(),
+            framerate: Framerate::integer(60),
+            realtime_start: SystemTime::UNIX_EPOCH + Duration::from_secs(1),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -56,6 +93,7 @@ pub struct Config {
     /// GPU checkpoint orchestration. Must match what the client set up for
     /// the target (kumquat host, renderer selection).
     pub use_gpu: bool,
+    pub time: TimeConfig,
     /// Which frames to skip/draw
     pub skip_draw: SkipDrawMode,
 }

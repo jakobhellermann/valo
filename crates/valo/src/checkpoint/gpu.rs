@@ -9,7 +9,7 @@ use std::io;
 use std::os::fd::{BorrowedFd, OwnedFd};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use rustix::event::{PollFd, PollFlags};
 use rustix::io::Errno;
@@ -18,6 +18,7 @@ use rustix::time::Timespec;
 use crate::global_state::GlobalState;
 
 use crate::checkpoint::SnapshotSlot;
+use crate::determinism::time::real_monotonic;
 use crate::{Result, error, info};
 
 const GPU_WAIT_TIMEOUT: Duration = Duration::from_secs(6);
@@ -87,9 +88,9 @@ fn wait_result(expected: u8) -> Result<()> {
         return Ok(());
     };
 
-    let deadline = Instant::now() + GPU_WAIT_TIMEOUT;
+    let deadline = real_monotonic() + GPU_WAIT_TIMEOUT;
     loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let remaining = deadline.saturating_sub(real_monotonic());
         if remaining.is_zero() {
             return Err(io::Error::from_raw_os_error(libc::ETIMEDOUT));
         }

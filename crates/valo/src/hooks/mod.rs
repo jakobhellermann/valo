@@ -12,6 +12,7 @@ mod pthread;
 mod sdl;
 mod signal;
 mod steam;
+mod time;
 pub(crate) mod vulkan;
 pub(crate) mod xcb;
 pub(crate) mod xlib;

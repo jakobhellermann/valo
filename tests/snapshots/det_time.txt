@@ -1,0 +1,3 @@
+30 frames: 500ms on every clock
+10 frames after the checkpoint: 166666666ns
+10 frames after the checkpoint: 166666666ns

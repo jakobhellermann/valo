@@ -1,6 +1,6 @@
 // TODO(ai-review): generated, not yet audited
 use clap::{Args, ValueEnum};
-use valo_ipc::config::{Config, FrameConfig, LogConfig, LogLevel, SkipDrawMode};
+use valo_ipc::config::{Config, FrameConfig, LogConfig, LogLevel, SkipDrawMode, TimeConfig};
 
 #[derive(Args)]
 #[command(next_help_heading = "Auto checkpoints")]
@@ -23,6 +23,10 @@ pub(crate) struct ConfigArgs {
     /// Enable GPU checkpoint orchestration (kumquat host)
     #[arg(long, help_heading = "Runtime")]
     pub(crate) use_gpu: bool,
+
+    /// Don't force deterministic time
+    #[arg(long, help_heading = "Runtime")]
+    pub uncontrolled_time: bool,
 }
 
 #[derive(ValueEnum, Clone, Copy)]
@@ -58,6 +62,10 @@ impl ConfigArgs {
                 level: self.log_level.map_or(LogLevel::Trace, Into::into),
             },
             use_gpu: self.use_gpu,
+            time: TimeConfig {
+                uncontrolled_time: self.uncontrolled_time,
+                ..TimeConfig::default()
+            },
             skip_draw: SkipDrawMode::Off,
         }
     }

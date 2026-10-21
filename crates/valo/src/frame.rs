@@ -7,6 +7,7 @@ pub fn frame_boundary<T>(draw: impl FnOnce() -> T) -> T {
     let global = GlobalState::get();
     let frame = global.frame_count.fetch_add(1, Ordering::SeqCst);
     thread_tracker::claim_main();
+    determinism::time::CLOCK.advance_frame();
 
     trace!(Frame, "frame boundary {frame}");
 
