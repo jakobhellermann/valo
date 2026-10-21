@@ -40,9 +40,9 @@ pub fn setup_lib(exe: &Path, gpu: bool) -> Result<LibSetup> {
         (Some(_), false) => &["-force-gfx-direct", "-force-opengl"],
     };
 
-    // Unity 5.4 polls its preload queue with 10 ms sleeps on the frame thread; passing that time
-    // races the clock ahead of the loader thread (libTAS never advances time on Unity sleeps).
-    let frame_waits_pass_time = !matches!(engine, Some(Engine::UnityGl));
+    // Unity polls background work with frame-thread sleeps (5.4: its preload queue, 10 ms); passing
+    // that time races the clock ahead of the worker (libTAS never advances time on Unity sleeps).
+    let frame_waits_pass_time = engine.is_none();
 
     Ok(LibSetup {
         env,
