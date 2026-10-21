@@ -6,6 +6,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 use std::sync::atomic::Ordering;
 
+use crate::determinism::time::CLOCK;
 use crate::global_state::GlobalState;
 use crate::{Result, info};
 
@@ -26,10 +27,14 @@ pub(crate) fn init(exe: &Path) -> Result<()> {
             }
         }
     }
-    if !setup.env.is_empty() || !setup.args.is_empty() {
+    CLOCK.set_frame_waits_pass_time(setup.frame_waits_pass_time);
+    if !setup.env.is_empty() || !setup.args.is_empty() || !setup.frame_waits_pass_time {
         info!(
             Init,
-            "engine setup: env {:?}, args {:?}", setup.env, setup.args
+            "engine setup: env {:?}, args {:?}, frame waits pass time: {}",
+            setup.env,
+            setup.args,
+            setup.frame_waits_pass_time
         );
     }
     ARGS.set(setup.args)
