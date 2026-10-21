@@ -76,9 +76,9 @@ macro_rules! perform_hook {
         $detour
             .initialize(function($addr($symbol)), |op| {
                 log_call($name, format_args!("op={op:p} begin"));
-                preload::perform_begin();
+                preload::perform_begin(op);
                 let ret = $detour.call(op);
-                preload::perform_end($non_parallel);
+                preload::perform_end(op, $non_parallel);
                 log_call($name, format_args!("op={op:p} end"));
                 ret
             })?
@@ -93,9 +93,7 @@ macro_rules! integrate_hook {
             .initialize(function($addr($symbol)), |op| {
                 log_call($name, format_args!("op={op:p} begin"));
                 let ret = $detour.call(op);
-                if $non_parallel {
-                    preload::integrated_non_parallel();
-                }
+                preload::integrated(op, $non_parallel);
                 log_call($name, format_args!("op={op:p} end"));
                 ret
             })?
