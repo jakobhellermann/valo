@@ -87,10 +87,13 @@ nur für Determinismus auf Instruktionsebene nötig.
 
 ## Mechanismus: seccomp
 
-LD_PRELOAD-Hooks sehen nicht jedes Blockieren: rohe `syscall(SYS_futex)`
-(Unity 6000 in `AddToQueue`, siehe `unity-preload.md`), glibc-interne Locks
-(malloc, stdio, ld.so), libstdc++ `atomic::wait`, Rust-std, statisch gelinkte
-Bibliotheken. Das Modell braucht aber *jedes* Blockieren und *jeden* Wake.
+LD_PRELOAD-Hooks sehen nicht jedes Blockieren: glibc-interne Locks (malloc,
+stdio, ld.so), libstdc++ `atomic::wait`, Rust-std, statisch gelinkte
+Bibliotheken. Unity 6000 wartet und weckt per Futex über libcs `syscall()`
+(`syscall@plt` in `AddToQueue` und `PreloadManager::Run`, siehe
+`unity-preload.md`). Das ließe sich per LD_PRELOAD überschreiben, wäre aber
+ein variadischer Hook auf jeden Syscall-Aufrufer im Prozess, deshalb bewusst
+nicht. Das Modell braucht *jedes* Blockieren und *jeden* Wake.
 
 Ein seccomp-Filter meldet genau `futex`, `nanosleep`/`clock_nanosleep`,
 `poll`/`ppoll`/`select`/`pselect`/`epoll_*`, `sched_yield` und die
@@ -145,7 +148,7 @@ gestrippt) und andere Engines deckt das nicht ab, ungehookte Subsysteme
 
 Mit dem Scheduler entfallen sie größtenteils:
 
-- **Preload**: `AddToQueue` weckt per rohem Futex → Regel 1 → `Perform` läuft
+- **Preload**: `AddToQueue` weckt per `syscall(SYS_futex)` → Regel 1 → `Perform` läuft
   durch; eine nicht-parallele Operation, die auf den Main-Thread wartet,
   blockiert am Futex und ist idle.
 - **`TryTimedAcquire`**: alle idle → Zeit springt 1 ms → Erfolg oder
