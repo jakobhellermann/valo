@@ -1,0 +1,2 @@
+30 limited frames: 500ms virtual
+worker sleep: real, clock unchanged

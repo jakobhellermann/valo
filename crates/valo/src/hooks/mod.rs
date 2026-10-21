@@ -11,6 +11,7 @@ mod glx;
 mod pthread;
 mod sdl;
 mod signal;
+mod sleep;
 mod steam;
 mod time;
 pub(crate) mod vulkan;

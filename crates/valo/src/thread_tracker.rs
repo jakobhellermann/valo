@@ -376,6 +376,12 @@ pub(crate) fn init_main() {
     READY.store(true, Ordering::Release);
 }
 
+pub fn is_main() -> bool {
+    CURRENT_ID
+        .with(Cell::get)
+        .is_some_and(|id| id.0 == MAIN_ID.load(Ordering::Relaxed))
+}
+
 /// Makes the calling thread the main thread
 pub(crate) fn claim_main() {
     let Some(id) = CURRENT_ID.with(Cell::get) else {

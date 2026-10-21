@@ -13,6 +13,7 @@ pub static CLOCK: VirtualClock = VirtualClock {
 
     ticks_ns: AtomicU64::new(0),
     remainder: AtomicU64::new(0),
+    slept_ns: AtomicU64::new(0),
 };
 
 // 0 is rejected by systemd's now().
@@ -29,6 +30,8 @@ pub struct VirtualClock {
     ticks_ns: AtomicU64,
     /// Sub-nanosecond remainder of the boundaries so far, in units of `1 / framerate_num` ns.
     remainder: AtomicU64,
+    /// Time spent sleeping by the frame boundary thread
+    slept_ns: AtomicU64,
 }
 
 impl VirtualClock {
@@ -81,8 +84,23 @@ impl VirtualClock {
         let scaled = 1_000_000_000 * denom + self.remainder.load(Ordering::Relaxed);
 
         let frame_ns = scaled / num;
-        self.ticks_ns.fetch_add(frame_ns, Ordering::Relaxed);
         self.remainder.store(scaled % num, Ordering::Relaxed);
+
+        let slept_ns = self.slept_ns.load(Ordering::Relaxed);
+        let used_ns = slept_ns.min(frame_ns);
+
+        self.slept_ns.store(slept_ns - used_ns, Ordering::Relaxed);
+        self.ticks_ns
+            .fetch_add(frame_ns - used_ns, Ordering::Relaxed);
+    }
+
+    /// Passes `ns` of virtual time for a sleep of the frame thread.
+    pub fn sleep(&self, ns: u64) {
+        if self.uncontrolled.load(Ordering::Relaxed) {
+            return;
+        }
+        self.slept_ns.fetch_add(ns, Ordering::Relaxed);
+        self.ticks_ns.fetch_add(ns, Ordering::Relaxed);
     }
 
     /// The virtual reading of `clock`, or `None` when uncontrolled
