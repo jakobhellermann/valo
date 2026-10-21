@@ -114,30 +114,80 @@ gk_control() {
 }
 
 print_durations() {
-    jq -r 'select(.e | test("^(checkpoint|restore)(\\.memory)?\\.(begin|end)$")) | [.e, .ts_us] | @tsv' "$log_path" |
+    jq -r 'select(.e | test("^(checkpoint|restore)(\\.memory|\\.gpu\\.wait)?\\.(begin|end)$")) | [.e, .ts_us] | @tsv' "$log_path" |
         awk '
             { ts[$1] = $2 }
             END {
                 for (i = 1; i <= 2; i++) {
                     stage = i == 1 ? "checkpoint" : "restore"
-                    printf "%s: %.1f ms (memory: %.1f ms)\n", stage,
+                    printf "%s: %.1f ms (memory: %.1f ms", 
+                        stage,
                         (ts[stage ".end"] - ts[stage ".begin"]) / 1000,
                         (ts[stage ".memory.end"] - ts[stage ".memory.begin"]) / 1000
+                    gw = (stage ".gpu.wait.end") in ts ? (ts[stage ".gpu.wait.end"] - ts[stage ".gpu.wait.begin"]) / 1000 : 0
+                    printf ", gpu wait: %.1f ms)\n", gw
                 }
             }'
+}
+
+HISTORY_HEADER=$'utc\tjj_revision\tmode\tcheckpoint_ms\tcheckpoint_memory_ms\trestore_ms\trestore_memory_ms\tsaved_full_mib\tsaved_zero_mib\tsaved_file_mib\tstart_mem_available_mib\tstart_shmem_mib'
+
+# Same sweep as the launcher's clean_stale_homes, run before the memory state is sampled.
+clean_stale_homes() {
+    local home pid
+    for home in "${TMPDIR:-/tmp}"/valo-*; do
+        pid=${home##*/valo-}
+        [[ "$pid" =~ ^[0-9]+$ && -d "$home/slots" ]] || continue
+        [[ -e "/proc/$pid" ]] && continue
+        if [[ -e "$home/lock" ]] && ! flock -n "$home/lock" true; then
+            continue
+        fi
+        rm -rf "$home/slots"
+        echo "removed savestate data $home/slots"
+    done
+}
+
+# MemAvailable and Shmem in MiB, tab-separated.
+meminfo_mib() {
+    awk '$1 == "MemAvailable:" { a = $2 } $1 == "Shmem:" { s = $2 } END { printf "%.0f\t%.0f", a / 1024, s / 1024 }' /proc/meminfo
+}
+
+# Full, Zero and File page volume of the checkpoint in MiB, tab-separated.
+saved_page_mib() {
+    local stats
+    stats=$(jq -r 'select(.e == "save_pages") | "\(.flag) \(.count)"' "$log_path" |
+        awk '{ c[$1] += $2 } END { if (NR) printf "%.0f\t%.0f\t%.0f", c[2] * 4 / 1024, c[1] * 4 / 1024, c[3] * 4 / 1024 }')
+    [[ -n "$stats" ]] || {
+        echo "no save_pages events in $log_path (structured-log feature off?)" >&2
+        return 1
+    }
+    printf '%s' "$stats"
 }
 
 append_history() {
     local history=out/perf-history.tsv
     if [[ ! -s "$history" ]]; then
-        printf 'utc\tjj_revision\tmode\tcheckpoint_ms\tcheckpoint_memory_ms\trestore_ms\trestore_memory_ms\n' >"$history"
+        printf '%s\n' "$HISTORY_HEADER" >"$history"
+    elif [[ "$(head -1 "$history")" != "$HISTORY_HEADER" ]]; then
+        # Pad rows from before a column was added so every row has all columns.
+        local columns migrated
+        columns=$(awk -F'\t' '{ print NF }' <<<"$HISTORY_HEADER")
+        migrated=$(mktemp)
+        awk -F'\t' -v OFS='\t' -v n="$columns" -v header="$HISTORY_HEADER" '
+            NR == 1 { print header; next }
+            { for (i = NF + 1; i <= n; i++) $i = ""; print }
+        ' "$history" >"$migrated"
+        mv "$migrated" "$history"
+        echo "migrated $history to the current columns"
     fi
+    local pages
+    pages=$(saved_page_mib)
     awk -v utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         -v revision="$(jj log -r @ --no-graph -T 'commit_id.short()')" \
-        -v mode="${use_gpu:+gpu}" '
+        -v mode="${use_gpu:+gpu}" -v pages="$pages" -v meminfo="$start_meminfo" '
         $1 == "checkpoint:" { checkpoint = $2; checkpoint_memory = $5 }
         $1 == "restore:" { restore = $2; restore_memory = $5 }
-        END { printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", utc, revision, mode, checkpoint, checkpoint_memory, restore, restore_memory }
+        END { printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", utc, revision, mode, checkpoint, checkpoint_memory, restore, restore_memory, pages, meminfo }
     ' out/perf-timings.txt >>"$history"
 }
 
@@ -236,6 +286,9 @@ main() {
     if command -v steam-run >/dev/null 2>&1; then
         launcher=(steam-run)
     fi
+    clean_stale_homes
+    start_meminfo=$(meminfo_mib)
+    echo "start: MemAvailable/Shmem MiB ${start_meminfo/$'\t'/ / }"
     VALO_LOG="$valo_log" VALO_STRUCTURED_LOG="$log_path" \
         "${launcher[@]}" "$valo_bin" spawn --paused $( [[ -n "$use_gpu" ]] || echo --software-rendering ) \
         --sock "$sock" --lib "$PWD/out/libvalo.so" "$GAME" "${game_args[@]}" >out/perf-spawn.txt
@@ -296,6 +349,7 @@ EOF
 
     cp "$log_path" out/perf-struct.jsonl
     print_durations | tee out/perf-timings.txt
+    echo "saved MiB full/zero/file: $(saved_page_mib | tr '\t' '/')"
     append_history
     for stage in checkpoint restore; do
         [[ -s "out/perf-$stage.data" ]] || {
