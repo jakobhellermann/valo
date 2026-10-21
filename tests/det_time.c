@@ -16,7 +16,7 @@
 
 static const clockid_t CLOCKS[] = {
     CLOCK_MONOTONIC, CLOCK_MONOTONIC_RAW, CLOCK_MONOTONIC_COARSE,
-    CLOCK_REALTIME,  CLOCK_REALTIME_COARSE,
+    CLOCK_REALTIME,  CLOCK_REALTIME_COARSE,  CLOCK_BOOTTIME,
 };
 #define CLOCK_COUNT (sizeof(CLOCKS) / sizeof(CLOCKS[0]))
 
@@ -63,6 +63,7 @@ int main() {
     assert(checkpoint && restore);
 
     assert(clock_ns(CLOCK_MONOTONIC) == START);
+    assert(clock_ns(CLOCK_BOOTTIME) == START);
     assert(clock_ns(CLOCK_REALTIME) == START);
     struct timeval tv;
     gettimeofday(&tv, NULL);

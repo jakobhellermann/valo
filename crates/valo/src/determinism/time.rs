@@ -145,9 +145,10 @@ impl VirtualClock {
             return None;
         }
         let start = match clock {
-            libc::CLOCK_MONOTONIC | libc::CLOCK_MONOTONIC_RAW | libc::CLOCK_MONOTONIC_COARSE => {
-                MONOTONIC_START_NS
-            }
+            libc::CLOCK_MONOTONIC
+            | libc::CLOCK_MONOTONIC_RAW
+            | libc::CLOCK_MONOTONIC_COARSE
+            | libc::CLOCK_BOOTTIME => MONOTONIC_START_NS,
             libc::CLOCK_REALTIME | libc::CLOCK_REALTIME_COARSE => {
                 self.realtime_start_ns.load(Ordering::Relaxed)
             }
@@ -174,6 +175,7 @@ fn real_clock(clock: libc::clockid_t) -> Option<ClockId> {
             Some(ClockId::Monotonic)
         }
         libc::CLOCK_REALTIME | libc::CLOCK_REALTIME_COARSE => Some(ClockId::Realtime),
+        libc::CLOCK_BOOTTIME => Some(ClockId::Boottime),
         _ => None,
     }
 }
