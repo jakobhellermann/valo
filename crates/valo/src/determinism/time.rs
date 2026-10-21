@@ -3,6 +3,8 @@ use std::time::{Duration, SystemTime};
 
 use valo_ipc::config::{Framerate, TimeConfig};
 
+use crate::warn;
+
 pub static CLOCK: VirtualClock = VirtualClock {
     uncontrolled: AtomicBool::new(false),
 
@@ -79,12 +81,8 @@ impl VirtualClock {
             return;
         }
 
-        let num = u64::from(self.framerate_num.load(Ordering::Relaxed));
-        let denom = u64::from(self.framerate_denom.load(Ordering::Relaxed));
-        let scaled = 1_000_000_000 * denom + self.remainder.load(Ordering::Relaxed);
-
-        let frame_ns = scaled / num;
-        self.remainder.store(scaled % num, Ordering::Relaxed);
+        let (frame_ns, remainder) = self.next_frame();
+        self.remainder.store(remainder, Ordering::Relaxed);
 
         let slept_ns = self.slept_ns.load(Ordering::Relaxed);
         let used_ns = slept_ns.min(frame_ns);
@@ -99,8 +97,22 @@ impl VirtualClock {
         if self.uncontrolled.load(Ordering::Relaxed) {
             return;
         }
-        self.slept_ns.fetch_add(ns, Ordering::Relaxed);
+        let slept_ns = self.slept_ns.fetch_add(ns, Ordering::Relaxed) + ns;
         self.ticks_ns.fetch_add(ns, Ordering::Relaxed);
+        if slept_ns > self.next_frame().0 {
+            warn!(
+                Frame,
+                "frame thread slept {slept_ns} ns within one frame; the overhang shortens the frames after it"
+            );
+        }
+    }
+
+    /// The next frame's length in nanoseconds, and the `remainder` after it.
+    fn next_frame(&self) -> (u64, u64) {
+        let num = u64::from(self.framerate_num.load(Ordering::Relaxed));
+        let denom = u64::from(self.framerate_denom.load(Ordering::Relaxed));
+        let scaled = 1_000_000_000 * denom + self.remainder.load(Ordering::Relaxed);
+        (scaled / num, scaled % num)
     }
 
     /// The virtual reading of `clock`, or `None` when uncontrolled
