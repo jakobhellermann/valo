@@ -83,6 +83,16 @@ pub struct InputState {
 #[serde(transparent)]
 pub struct KeyBitset([u8; 32]);
 
+impl FromIterator<u8> for KeyBitset {
+    fn from_iter<I: IntoIterator<Item = u8>>(iter: I) -> Self {
+        let mut keys = KeyBitset::default();
+        for keycode in iter {
+            keys.set(keycode, true);
+        }
+        keys
+    }
+}
+
 impl KeyBitset {
     pub fn is_held(&self, keycode: u8) -> bool {
         self.0[keycode as usize / 8] & (1 << (keycode % 8)) != 0
