@@ -130,7 +130,7 @@ pub enum LibToClient {
     State(State),         // reply to GetState / AdvanceFrames(0)
     SetConfigDone,
     CheckpointDone,
-    RestoreSucceeded,
+    RestoreSucceeded(RestoreSucceeded), // the lib is held in the restored frame
     Error(Error),
 }
 ```
@@ -184,7 +184,7 @@ Command semantics inside a held boundary:
 - `Detach` → `Release::Free`, the held frame runs.
 - `Checkpoint(slot)` → `valo_checkpoint_slot(slot)`. It returns twice:
   on the save return the reply is `CheckpointDone`, when a later restore
-  jumps back into this call it is `RestoreSucceeded`. The session lock is held across the
+  jumps back into this call it is `RestoreSucceeded` with the restored frame, and the session stays held in it. The session lock is held across the
   call; that is consistent through a restore (the lock state rewinds
   with everything else).
 - `Restore(slot)` → a slot that cannot restore (missing snapshot, gpu-mode

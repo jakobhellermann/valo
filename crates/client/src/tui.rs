@@ -37,7 +37,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use valo_ipc::ClientIPC;
 use valo_ipc::config::Config;
-use valo_ipc::messages::{ClientToLib, FrameBoundary, LibToClient};
+use valo_ipc::messages::{ClientToLib, FrameBoundary, LibToClient, RestoreSucceeded};
 
 const MAX_EVENTS: usize = 1000;
 
@@ -314,14 +314,11 @@ fn handle_event(app: &mut App, conn: &mut ClientIPC, ev: AppEvent) -> Result<()>
             // Now release the frame.
             release_frame_if_pending(conn, app)?;
         }
-        AppEvent::Ipc(LibToClient::RestoreSucceeded) => {
+        AppEvent::Ipc(LibToClient::RestoreSucceeded(RestoreSucceeded { frame })) => {
+            // slots stay: a restore does not invalidate snapshots
             app.pending_op_slot = None;
-            // Lib's checkpoint call site got setcontext'd back here from
-            // a successful Restore. The frame counter is whatever was
-            // saved at checkpoint time; the next FrameBoundary will use
-            // that older number. Slot bookkeeping is unchanged: restores
-            // do not invalidate snapshots.
-            app.push_event(EventKind::Recv, "RestoreSucceeded");
+            app.last_frame = Some(frame);
+            app.push_event(EventKind::Recv, format!("RestoreSucceeded (frame {frame})"));
             release_frame_if_pending(conn, app)?;
         }
         AppEvent::Ipc(LibToClient::State(s)) => {

@@ -26,7 +26,7 @@ impl Hud {
     pub fn received(&mut self, msg: &LibToClient) {
         match msg {
             LibToClient::CheckpointDone => self.toast_op("saved"),
-            LibToClient::RestoreSucceeded => self.toast_op("loaded"),
+            LibToClient::RestoreSucceeded(_) => self.toast_op("loaded"),
             LibToClient::Error(e) => self.overlay.toast(ToastKind::Error, &e.message),
             _ => {}
         }
