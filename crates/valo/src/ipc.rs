@@ -19,7 +19,9 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use valo_ipc::config::{Config, DeterminismConfig, FrameConfig, LogConfig};
-use valo_ipc::messages::{ClientToLib, Error, FrameBoundary, LibHello, LibToClient, State};
+use valo_ipc::messages::{
+    ClientToLib, Error, FrameBoundary, LibHello, LibToClient, RestoreSucceeded, State,
+};
 use valo_ipc::{LibIPC, PROTOCOL_VERSION};
 
 use crate::checkpoint::SnapshotSlot;
@@ -336,7 +338,7 @@ fn handle_command(
             crate::valo_checkpoint_slot(slot);
             // valo_checkpoint returns a second time when a later restore jumps back into it
             let response = match GlobalState::get().restore_in_progress() {
-                true => LibToClient::RestoreSucceeded,
+                true => LibToClient::RestoreSucceeded(RestoreSucceeded { frame }),
                 false => LibToClient::CheckpointDone,
             };
             if let Err(e) = conn.send(&response) {

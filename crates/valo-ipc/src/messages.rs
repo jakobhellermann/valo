@@ -75,6 +75,11 @@ pub struct FrameBoundary {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestoreSucceeded {
+    pub frame: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Error {
     pub message: String,
 }
@@ -87,7 +92,8 @@ pub enum LibToClient {
     /// Sent after a successful `Checkpoint`. The lib then loops back to
     /// recv another command (typically `Advance`).
     CheckpointDone,
-    RestoreSucceeded,
+    /// The lib is held in the restored `frame` and waits for commands, as after a `FrameBoundary`.
+    RestoreSucceeded(RestoreSucceeded),
     SetConfigDone,
     Error(Error),
 }

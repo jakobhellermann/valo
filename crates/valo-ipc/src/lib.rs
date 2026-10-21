@@ -304,7 +304,7 @@ mod tests {
             LibToClient::FrameBoundary(FrameBoundary { frame: 42 }),
             LibToClient::State(State { frame: 100 }),
             LibToClient::CheckpointDone,
-            LibToClient::RestoreSucceeded,
+            LibToClient::RestoreSucceeded(RestoreSucceeded { frame: 7 }),
             LibToClient::Error(Error {
                 message: "nope".to_string(),
             }),
