@@ -117,6 +117,10 @@ impl VirtualClock {
         (scaled / num, scaled % num)
     }
 
+    pub fn is_controlled(&self) -> bool {
+        !self.uncontrolled.load(Ordering::Relaxed)
+    }
+
     /// `real now + (deadline - virtual now)` on `clock`, and `deadline - virtual now` in
     /// nanoseconds; `None` when `clock` is not virtual or `deadline` is invalid.
     pub fn real_deadline(
