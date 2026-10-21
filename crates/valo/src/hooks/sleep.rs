@@ -1,9 +1,8 @@
 use std::ffi::c_int;
 
-use crate::determinism::time::CLOCK;
+use crate::determinism::deadline;
+use crate::determinism::time::{CLOCK, timespec_ns};
 use crate::{override_sym, thread_tracker};
-
-const NS_PER_SEC: u64 = 1_000_000_000;
 
 /// How much virtual time a sleep passes, or `None` when it sleeps for real.
 fn virtual_sleep_ns(clock: libc::clockid_t, flags: c_int, request: &libc::timespec) -> Option<u64> {
@@ -11,11 +10,7 @@ fn virtual_sleep_ns(clock: libc::clockid_t, flags: c_int, request: &libc::timesp
         return None;
     }
 
-    let secs = u64::try_from(request.tv_sec).ok()?;
-    let nanos = u64::try_from(request.tv_nsec)
-        .ok()
-        .filter(|&nanos| nanos < NS_PER_SEC)?;
-    let ns = secs.checked_mul(NS_PER_SEC)?.checked_add(nanos)?;
+    let ns = timespec_ns(request)?;
     let now = CLOCK.now_ns(clock)?;
 
     Some(if flags & libc::TIMER_ABSTIME != 0 {
@@ -48,6 +43,10 @@ override_sym!(clock_nanosleep(
             CLOCK.sleep(ns);
             0
         }
+        // SAFETY: `request` is null or a timespec per the call contract.
+        None if flags & libc::TIMER_ABSTIME != 0 => unsafe {
+            deadline::wait(clock, request, |request| real(clock, flags, request, remaining), |ret| ret == 0)
+        },
         None => real(clock, flags, request, remaining),
     }
 });

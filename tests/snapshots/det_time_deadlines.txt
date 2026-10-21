@@ -1,0 +1,10 @@
+cond realtime: timed out after the deadline
+cond monotonic: timed out after the deadline
+sem: timed out after the deadline
+sem clockwait: timed out after the deadline
+cond clockwait: timed out after the deadline
+clock_nanosleep: timed out after the deadline
+frame cond: timed out after the deadline
+frame cond clockwait: timed out after the deadline
+frame sem: timed out after the deadline
+frame sem clockwait: timed out after the deadline
