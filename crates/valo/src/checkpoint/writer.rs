@@ -282,11 +282,17 @@ fn write_area(
                 save_page_flags(&mut writer.snapshot_meta, PageFlag::File)?;
                 return Ok(());
             }
-            if is_zero_page() {
-                stats.zero_or_file += 1;
-                save_page_flags(&mut writer.snapshot_meta, PageFlag::Zero)?;
-                return Ok(());
-            }
+        }
+
+        if page_present
+            && area.perms.contains(MemoryMapPermissions::READ)
+            // SAFETY: `addr` is page-aligned, page is present and readable, `frozen`
+            // rules out concurrent writes
+            && unsafe { is_zero_page(addr) }
+        {
+            stats.zero_or_file += 1;
+            save_page_flags(&mut writer.snapshot_meta, PageFlag::Zero)?;
+            return Ok(());
         }
 
         if page_softdirty {
@@ -481,6 +487,17 @@ fn covers_coverage_counters(_area: &MemoryMap) -> bool {
     false
 }
 
-fn is_zero_page() -> bool {
-    false // TODO
+/// # Safety
+/// `addr` must be valid for reads of `PAGE_SIZE` bytes, aligned for `u64`, and
+/// not written concurrently.
+unsafe fn is_zero_page(addr: *const u8) -> bool {
+    // SAFETY: the caller guarantees `addr` is valid for reads of PAGE_SIZE bytes,
+    // u64-aligned and free of concurrent writes.
+    let words = unsafe { std::slice::from_raw_parts(addr.cast::<u64>(), PAGE_SIZE / 8) };
+
+    words
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .all(|line| line.iter().fold(0, |acc, &w| acc | w) == 0)
 }
