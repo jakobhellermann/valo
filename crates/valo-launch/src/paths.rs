@@ -26,6 +26,9 @@ pub fn lock_fd() -> Option<i32> {
     LOCK_FD.get().copied()
 }
 
+/// Pages file prepared for the next checkpoint into a new slot: `<home>/slots/<SPARE_PAGES>`.
+pub const SPARE_PAGES: &str = "spare-pages";
+
 /// Socket path for IPC with the target: `<home>/ipc.sock`.
 pub fn ipc_sock() -> &'static PathBuf {
     static SOCK: OnceLock<PathBuf> = OnceLock::new();
