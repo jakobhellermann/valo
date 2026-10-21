@@ -1840,9 +1840,21 @@ dependencies = [
  "libc",
  "ratatui",
  "rustix",
+ "valo-client-core",
  "valo-ipc",
  "valo-launch",
  "x11rb",
+]
+
+[[package]]
+name = "valo-client-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "rustix",
+ "valo-ipc",
+ "valo-launch",
 ]
 
 [[package]]
@@ -1885,7 +1897,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "libc",
+ "valo-client-core",
  "valo-ipc",
  "valo-launch",
 ]

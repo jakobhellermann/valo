@@ -12,5 +12,5 @@ path = "src/main.rs"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 valo-ipc = { path = "../valo-ipc" }
+valo-client-core = { path = "../valo-client-core" }
 valo-launch = { path = "../valo-launch" }
-libc = "0.2"
