@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 
 use libc::c_char;
 
+mod deadline;
 mod dlhook;
 mod glx;
 mod pthread;
