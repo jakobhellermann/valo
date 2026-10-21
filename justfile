@@ -6,7 +6,7 @@ _default:
     just --list
 
 valo *args:
-    @cargo run -- "$@"
+    @cargo run --release -- "$@"
 
 test *FILTER:
     @cargo valo test "$@"
