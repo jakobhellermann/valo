@@ -19,6 +19,7 @@ use config::ConfigArgs;
 use valo_client_core::Session;
 use valo_ipc::config::Config;
 use valo_ipc::messages::{ClientToLib, FrameBoundary, LibToClient};
+use valo_launch::bind::bind_mounts;
 use valo_launch::{paths, resolve_lib};
 
 /// How long to wait for the next FrameBoundary after sending Advance before assuming the target hung.
@@ -161,6 +162,7 @@ fn run(
     }
 
     let mut cmd = build_command(gdb, &program, &args, &lib);
+    bind_mounts(&mut cmd, &config.bind)?;
     let use_gpu = !config.software_rendering;
     let config = config.config();
 
