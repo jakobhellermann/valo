@@ -1,0 +1,12 @@
+poll: virtual sleep
+ppoll: virtual sleep
+poll pipe: real wait, timeout in virtual time
+ppoll pipe: real wait, timeout in virtual time
+select: virtual sleep
+pselect: virtual sleep
+select pipe: real wait, timeout in virtual time
+pselect pipe: real wait, timeout in virtual time
+epoll_wait: real wait, timeout in virtual time
+epoll_pwait: real wait, timeout in virtual time
+ready pipe: returns at once
+worker: waits for real

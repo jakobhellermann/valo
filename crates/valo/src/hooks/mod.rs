@@ -9,6 +9,7 @@ use libc::c_char;
 mod deadline;
 mod dlhook;
 mod glx;
+mod poll;
 mod pthread;
 mod sdl;
 mod signal;
