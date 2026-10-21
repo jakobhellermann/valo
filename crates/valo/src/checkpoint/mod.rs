@@ -68,6 +68,22 @@ pub(crate) fn ensure_slot_dir(slot: SnapshotSlot) -> Result<()> {
     std::fs::create_dir_all(slot_dir(slot))
 }
 
+/// A new slot takes the prepared pages file, so the save does not allocate
+/// page cache while the game is frozen.
+fn adopt_spare_pages(slot: SnapshotSlot) -> Result<()> {
+    let pages = slot_dir(slot).join("pages");
+    if pages.exists() {
+        return Ok(());
+    }
+    let spare = home::get()
+        .join("slots")
+        .join(valo_launch::paths::SPARE_PAGES);
+    match std::fs::rename(spare, pages) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
 fn slot_dir(slot: SnapshotSlot) -> PathBuf {
     home::get().join("slots").join(slot.0.to_string())
 }
@@ -341,6 +357,7 @@ pub fn checkpoint(slot: SnapshotSlot) -> Result<()> {
     structured::events::checkpoint_begin(slot);
 
     ensure_slot_dir(slot)?;
+    adopt_spare_pages(slot)?;
 
     alt_stack::save_stack(exclusive)?;
 

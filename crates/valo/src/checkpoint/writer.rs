@@ -64,6 +64,9 @@ pub fn write_all_areas(
 
     writer.snapshot_meta.seek(SeekFrom::Start(header_pos))?;
     writer.snapshot_meta.write_all(header.as_bytes())?;
+    // A reused or prepared pages file can be longer than this save.
+    let pages_len = writer.snapshot_pages.stream_position()?;
+    writer.snapshot_pages.set_len(pages_len)?;
     procfs::clear_soft_dirty()?;
 
     Ok(())

@@ -5,7 +5,9 @@ use std::ffi::OsString;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, ExitStatus};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -53,6 +55,7 @@ pub struct Session {
     game_pid: Option<u32>,
     exited: Option<ExitStatus>,
     released: bool,
+    spare: SparePages,
 }
 
 /// The lib refused a command; the session goes on.
@@ -89,6 +92,7 @@ impl Session {
             game_pid: None,
             exited: None,
             released: false,
+            spare: SparePages::start(paths::valo_home().join("slots")),
         })
     }
 
@@ -227,7 +231,8 @@ impl Session {
 }
 
 impl Session {
-    fn remove_files(&self) {
+    fn remove_files(&mut self) {
+        self.spare.stop();
         let _ = std::fs::remove_file(&self.sock);
         valo_launch::cleanup::remove_savestate_data();
     }
@@ -328,4 +333,78 @@ fn wait_or_kill(child: &mut Child, grace: Duration) -> Result<ExitStatus> {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// Keeps a pages file of the largest savestate's size ready, so a checkpoint
+/// into a new slot finds its page cache allocated.
+struct SparePages {
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl SparePages {
+    fn start(slots: PathBuf) -> SparePages {
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = std::thread::spawn({
+            let stop = Arc::clone(&stop);
+            move || {
+                while !stop.load(Ordering::Relaxed) {
+                    if let Err(e) = refill_spare_pages(&slots) {
+                        eprintln!("[valo] stopped preparing spare savestate pages: {e:#}");
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+            }
+        });
+        SparePages {
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    fn stop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn refill_spare_pages(slots: &Path) -> Result<()> {
+    let entries = match std::fs::read_dir(slots) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e).with_context(|| format!("list {}", slots.display())),
+    };
+    let mut largest = 0;
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        match std::fs::metadata(entry.path().join("pages")) {
+            Ok(meta) => largest = largest.max(meta.len()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    if largest == 0 {
+        return Ok(());
+    }
+    // headroom for a savestate that grew since
+    let size = (largest + largest / 10).next_multiple_of(2 << 20);
+    let spare = slots.join(paths::SPARE_PAGES);
+    match std::fs::metadata(&spare) {
+        Ok(meta) if meta.len() >= size => return Ok(()),
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    // replaced rather than grown: the lib may take the spare at any moment
+    let tmp = slots.join(format!("{}.tmp", paths::SPARE_PAGES));
+    let file = std::fs::File::create(&tmp).with_context(|| format!("create {}", tmp.display()))?;
+    rustix::fs::fallocate(&file, rustix::fs::FallocateFlags::empty(), 0, size)
+        .with_context(|| format!("allocate {size} bytes for {}", tmp.display()))?;
+    std::fs::rename(&tmp, &spare).with_context(|| format!("rename to {}", spare.display()))
 }
