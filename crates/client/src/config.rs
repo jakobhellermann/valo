@@ -4,6 +4,7 @@ use valo_ipc::config::{
     Config, DeterminismConfig, FrameConfig, InputConfig, LogConfig, LogLevel, RandomnessConfig,
     SkipDrawMode, TimeConfig,
 };
+use valo_launch::bind::Bind;
 
 #[derive(Args)]
 #[command(next_help_heading = "Auto checkpoints")]
@@ -26,6 +27,10 @@ pub(crate) struct ConfigArgs {
     /// Disable GPU checkpoints and render in software
     #[arg(long, help_heading = "Runtime")]
     pub(crate) software_rendering: bool,
+
+    /// Show the target the contents of SRC at DEST, e.g. to keep its saves away from the real ones
+    #[arg(long, value_name = "SRC:DEST", help_heading = "Runtime")]
+    pub(crate) bind: Vec<Bind>,
 
     /// Don't force any determinism
     #[arg(long, help_heading = "Runtime")]
