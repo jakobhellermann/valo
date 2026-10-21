@@ -15,7 +15,7 @@ use clap::Subcommand;
 use rustix::pipe::PipeFlags;
 use valo_ipc::ClientIPC;
 use valo_ipc::config::Config;
-use valo_ipc::messages::{ClientToLib, LibToClient};
+use valo_ipc::messages::{ClientToLib, InputState, LibToClient};
 use valo_launch::gpu_session::GpuSession;
 
 use crate::config::ConfigArgs;
@@ -45,6 +45,8 @@ pub enum MsgCmd {
         #[arg(long, default_value_t = 0)]
         slot: u32,
     },
+    /// Hold these X keycodes from the next frame on; none releases all.
+    Input { keycodes: Vec<u8> },
     /// Stop pausing at frame boundaries
     Detach,
     /// Tell the game to quit.
@@ -216,6 +218,7 @@ pub fn msg(sock: &Path, command: &MsgCmd) -> Result<()> {
         MsgCmd::Advance { frames } => ClientToLib::AdvanceFrames(*frames),
         MsgCmd::Checkpoint { slot } => ClientToLib::Checkpoint(*slot),
         MsgCmd::Restore { slot } => ClientToLib::Restore(*slot),
+        MsgCmd::Input { keycodes } => ClientToLib::SetInputs(held(keycodes)),
         MsgCmd::Detach => ClientToLib::Detach,
         MsgCmd::Quit => ClientToLib::Quit,
     };
@@ -242,6 +245,10 @@ pub fn msg(sock: &Path, command: &MsgCmd) -> Result<()> {
         println!("[valo] detached, session runs free");
         return Ok(());
     }
+    if matches!(request, ClientToLib::SetInputs(_)) {
+        println!("[valo] inputs set");
+        return Ok(());
+    }
 
     match recv_reply(&mut conn, pid, HANG_READ_TIMEOUT).context("recv reply")? {
         Some(LibToClient::State(state)) => println!("[valo] frame {}", state.frame),
@@ -258,6 +265,14 @@ pub fn msg(sock: &Path, command: &MsgCmd) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn held(keycodes: &[u8]) -> InputState {
+    let mut keys = [0u8; 32];
+    for &keycode in keycodes {
+        keys[usize::from(keycode / 8)] |= 1 << (keycode % 8);
+    }
+    InputState { mods: 0, keys }
 }
 
 /// A read timeout here usually means the game is hung: report the
