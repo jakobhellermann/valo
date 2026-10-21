@@ -18,6 +18,7 @@ pub static CLOCK: VirtualClock = VirtualClock {
     ticks_ns: AtomicU64::new(0),
     remainder: AtomicU64::new(0),
     slept_ns: AtomicU64::new(0),
+    frame_waits_pass_time: AtomicBool::new(true),
 };
 
 // 0 is rejected by systemd's now().
@@ -36,6 +37,7 @@ pub struct VirtualClock {
     remainder: AtomicU64,
     /// Time spent sleeping by the frame boundary thread
     slept_ns: AtomicU64,
+    frame_waits_pass_time: AtomicBool,
 }
 
 impl VirtualClock {
@@ -94,9 +96,15 @@ impl VirtualClock {
             .fetch_add(frame_ns - used_ns, Ordering::Relaxed);
     }
 
+    pub fn set_frame_waits_pass_time(&self, pass: bool) {
+        self.frame_waits_pass_time.store(pass, Ordering::Relaxed);
+    }
+
     /// Passes `ns` of virtual time for a sleep of the frame thread.
     pub fn sleep(&self, ns: u64) {
-        if self.uncontrolled.load(Ordering::Relaxed) {
+        if self.uncontrolled.load(Ordering::Relaxed)
+            || !self.frame_waits_pass_time.load(Ordering::Relaxed)
+        {
             return;
         }
         let slept_ns = self.slept_ns.fetch_add(ns, Ordering::Relaxed) + ns;

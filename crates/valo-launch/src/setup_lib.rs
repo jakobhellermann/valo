@@ -12,6 +12,8 @@ pub struct LibSetup {
     pub env: &'static [(&'static str, Option<&'static str>)],
     /// Appended to the target's argv unless already present.
     pub args: &'static [&'static str],
+    /// Whether the frame thread's sleeps and timed-out waits pass virtual time.
+    pub frame_waits_pass_time: bool,
 }
 
 pub fn setup_lib(exe: &Path, gpu: bool) -> Result<LibSetup> {
@@ -38,10 +40,18 @@ pub fn setup_lib(exe: &Path, gpu: bool) -> Result<LibSetup> {
         (Some(_), false) => &["-force-gfx-direct", "-force-opengl"],
     };
 
-    Ok(LibSetup { env, args })
+    // Unity polls background work with frame-thread sleeps (5.4: its preload queue, 10 ms); passing
+    // that time races the clock ahead of the worker (libTAS never advances time on Unity sleeps).
+    let frame_waits_pass_time = engine.is_none();
+
+    Ok(LibSetup {
+        env,
+        args,
+        frame_waits_pass_time,
+    })
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 enum Engine {
     /// Unity with native Vulkan support
     UnityVulkan,
