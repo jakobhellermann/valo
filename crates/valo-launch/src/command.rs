@@ -12,6 +12,9 @@ pub fn configure_target(cmd: &mut Command, gpu: bool) -> Result<()> {
 
     // Disable vsync
     cmd.env("vblank_mode", "0");
+    // Mesa's X11 swapchain adds images for the non-blocking present mode the lib substitutes;
+    // games may index per-image state with the count they asked for.
+    cmd.env("vk_x11_strict_image_count", "true");
     // Force Mesa
     cmd.env("__GLX_VENDOR_LIBRARY_NAME", "mesa");
 
