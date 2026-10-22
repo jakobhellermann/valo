@@ -339,9 +339,6 @@ fn handle_event(app: &mut App, conn: &mut ClientIPC, ev: AppEvent) -> Result<()>
             app.last_error = Some(e.message.clone());
             app.push_event(EventKind::Error, format!("Error: {}", e.message));
         }
-        AppEvent::Ipc(LibToClient::SetConfigDone) => {
-            app.push_event(EventKind::Recv, "SetConfigDone");
-        }
         AppEvent::Ipc(LibToClient::Hello(_)) => {
             app.push_event(EventKind::Recv, "Hello (unexpected mid-session)");
         }

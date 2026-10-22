@@ -58,22 +58,22 @@ impl ClientIPC {
     }
 
     /// The init exchange every session starts with: hello, then exactly one
-    /// SetConfig — fire-and-forget, the lib applies it before anything
-    /// runs — and with `use_gpu` the GPU host's control socket. The session
-    /// starts held; a Detach sent here drains at the first frame boundary
-    /// and frees the session.
+    /// Init — fire-and-forget, the lib applies it before anything runs — and
+    /// with a GPU host its control socket, which turns GPU checkpoints on.
+    /// The session starts held; a Detach sent here drains at the first frame
+    /// boundary and frees the session.
     pub fn init(
         &mut self,
         config: &crate::config::Config,
+        resolved_modules: Vec<crate::config::ResolvedModule>,
         gpu_control: Option<BorrowedFd<'_>>,
     ) -> Result<()> {
-        if config.use_gpu != gpu_control.is_some() {
-            return Err(std::io::Error::other(
-                "use_gpu requires the GPU control socket and vice versa",
-            ));
-        }
         self.hello()?;
-        self.send(&ClientToLib::SetConfig(config.clone()))?;
+        self.send(&ClientToLib::Init(crate::messages::Init {
+            use_gpu: gpu_control.is_some(),
+            resolved_modules,
+            config: config.clone(),
+        }))?;
         if let Some(control) = gpu_control {
             self.send_gpu_control(control)?;
         }
@@ -232,13 +232,13 @@ mod tests {
         let mut lib = LibIPC::from_accepted(lib_end);
         let (mut a, b) = UnixStream::pair().unwrap();
 
-        let config = Config {
-            use_gpu: true,
-            ..Config::default()
-        };
         let t_client = thread::spawn(move || {
             client
-                .init(&config, Some(std::os::fd::AsFd::as_fd(&b)))
+                .init(
+                    &Config::default(),
+                    Vec::new(),
+                    Some(std::os::fd::AsFd::as_fd(&b)),
+                )
                 .unwrap();
             client.send(&ClientToLib::GetState).unwrap();
         });
@@ -247,7 +247,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             lib.recv().unwrap(),
-            Some(ClientToLib::SetConfig(_))
+            Some(ClientToLib::Init(Init { use_gpu: true, .. }))
         ));
         let mut received = UnixStream::from(lib.recv_gpu_control().unwrap());
         assert_eq!(lib.recv().unwrap(), Some(ClientToLib::GetState));

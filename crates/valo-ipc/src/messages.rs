@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::config::Config;
+use crate::config::{Config, ResolvedModule};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Role {
@@ -47,12 +47,24 @@ impl LibHello {
     }
 }
 
+/// The session's start, sent once after `Hello`: settings fixed for the session and the first
+/// runtime config.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Init {
+    /// GPU checkpoint orchestration: the GPU host's control socket follows as `GpuControl`.
+    pub use_gpu: bool,
+    /// Symbols the client resolved from modules the game loads.
+    pub resolved_modules: Vec<ResolvedModule>,
+    pub config: Config,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClientToLib {
     Hello(ClientHello),
+    Init(Init),
     /// Run N frames, then stop at the next boundary.
     AdvanceFrames(u64),
-    /// Replace the runtime config.
+    /// Replace the runtime config. Unanswered: it cannot fail.
     SetConfig(Config),
     /// held → free: frames run by default.
     Detach,
@@ -143,7 +155,6 @@ pub enum LibToClient {
     CheckpointDone,
     /// The lib is held in the restored `frame` and waits for commands, as after a `FrameBoundary`.
     RestoreSucceeded(RestoreSucceeded),
-    SetConfigDone,
     Error(Error),
     /// The agent's opaque reply to `ClientToLib::Agent`.
     Agent(Vec<u8>),

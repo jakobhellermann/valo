@@ -1,11 +1,11 @@
 // TODO(ai-review): generated, not yet audited
 //! The lib's runtime config.
 //!
-//! Sent as a full replacement via `ClientToLib::SetConfig` — at init
-//! (applied before anything runs) and as a runtime command at frame
-//! boundaries (acked with `LibToClient::SetConfigDone`). The `LibHello`
-//! handshake echo exposes the config the lib currently has, so clients can
-//! learn the state and patch and re-set it. `use_gpu` is fixed at init.
+//! Sent as a full replacement — with `ClientToLib::Init` before anything
+//! runs, then via `ClientToLib::SetConfig` at frame boundaries. The
+//! `LibHello` handshake echo exposes the config the lib currently has, so
+//! clients can learn the state and patch and re-set it. Settings fixed for
+//! the session travel in `Init` only.
 
 use std::num::NonZeroU32;
 use std::time::{Duration, SystemTime};
@@ -124,18 +124,12 @@ pub struct DeterminismConfig {
 pub struct Config {
     pub frames: FrameConfig,
     pub log: LogConfig,
-    /// GPU checkpoint orchestration. Must match what the client set up for
-    /// the target (kumquat host, renderer selection).
-    pub use_gpu: bool,
     pub determinism: DeterminismConfig,
     /// Which frames to skip/draw
     pub skip_draw: SkipDrawMode,
     /// When a restore paints back the window pixels stored with the checkpoint.
     pub restore_redraw: RestoreRedraw,
     pub input: InputConfig,
-    /// Symbols the client resolved from modules the game loads; read once at
-    /// the init handshake.
-    pub resolved_modules: Vec<ResolvedModule>,
 }
 
 /// Symbols of a loaded module, resolved by the client from its symbol table

@@ -88,21 +88,24 @@ pub fn init() -> Result<()> {
 
     let msg = conn
         .recv()?
-        .ok_or_else(|| std::io::Error::other("client closed before SetConfig"))?;
-    let ClientToLib::SetConfig(config) = msg else {
+        .ok_or_else(|| std::io::Error::other("client closed before Init"))?;
+    let ClientToLib::Init(init) = msg else {
         return Err(std::io::Error::other(format!(
-            "expected SetConfig after Hello, got {msg:?}"
+            "expected Init after Hello, got {msg:?}"
         )));
     };
-    GlobalState::get().apply_config(&config);
-    if config.use_gpu {
+    GlobalState::get()
+        .use_gpu
+        .store(init.use_gpu, Ordering::Relaxed);
+    GlobalState::get().apply_config(&init.config);
+    if init.use_gpu {
         checkpoint::gpu::set_control(conn.recv_gpu_control()?)?;
     }
     // Bind the msg listener before the (possibly slow) hook installation:
     // the rendezvous socket dies with the init client, and a `msg` connect
     // in between would hit an unbound path.
     let listener = bind_listener(&path)?;
-    crate::gamespecific::unity::install(&config.resolved_modules)?;
+    crate::gamespecific::unity::install(&init.resolved_modules)?;
 
     // The init client's next message (or closing) decides the session: a
     // command keeps the connection and enters held (gated session),
@@ -310,17 +313,15 @@ fn handle_command(
         }
         ClientToLib::SetConfig(config) => {
             info!(Ipc, "received SetConfig");
-            if config.use_gpu != GlobalState::get().use_gpu.load(Ordering::Relaxed) {
-                if let Err(e) = conn.send(&LibToClient::Error(Error {
-                    message: "use_gpu is fixed at init".into(),
-                })) {
-                    warn!(Ipc, "send SetConfig error: {e}");
-                }
-                return Action::Hold;
-            }
             GlobalState::get().apply_config(&config);
-            if let Err(e) = conn.send(&LibToClient::SetConfigDone) {
-                warn!(Ipc, "send SetConfigDone: {e}");
+            Action::Hold
+        }
+        ClientToLib::Init(_) => {
+            error!(Ipc, "unexpected Init mid-session");
+            if let Err(e) = conn.send(&LibToClient::Error(Error {
+                message: "Init is part of the init exchange".into(),
+            })) {
+                warn!(Ipc, "send Init error: {e}");
             }
             Action::Hold
         }
@@ -488,7 +489,6 @@ pub fn effective_config() -> Config {
         log: LogConfig {
             level: crate::log::current_level().into(),
         },
-        use_gpu: state.use_gpu.load(Ordering::Relaxed),
         determinism: DeterminismConfig {
             time: determinism::time::CLOCK.config(),
             randomness: determinism::randomness::RANDOM.config(),
@@ -496,8 +496,6 @@ pub fn effective_config() -> Config {
         skip_draw: state.skip_draw_mode(),
         restore_redraw: state.restore_redraw(),
         input: crate::input_feed::config(),
-        // consumed by the hooks at init, not kept
-        resolved_modules: Vec::new(),
     }
 }
 

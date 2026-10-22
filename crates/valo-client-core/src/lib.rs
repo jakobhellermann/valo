@@ -107,12 +107,8 @@ impl Session {
         let Some(mut conn) = establish_or_child_exit(&self.sock, &mut self.child)? else {
             return Ok(None);
         };
-        let config = Config {
-            use_gpu: self.gpu.is_some(),
-            ..config.clone()
-        };
         let control = self.gpu.as_ref().map(GpuSession::control_for_lib);
-        let pid = valo_launch::init_game(&mut conn, &config, control)?;
+        let pid = valo_launch::init_game(&mut conn, config, control)?;
         self.conn = Some(conn);
         self.game_pid = Some(pid);
         Ok(Some(pid))
