@@ -22,45 +22,13 @@ pub(crate) fn send<W: Write, M: Serialize>(w: &mut W, msg: &M) -> Result<()> {
             format!("payload {len} exceeds MAX_MESSAGE_SIZE {MAX_MESSAGE_SIZE}"),
         ));
     }
-    w.write_all(&(len as u32).to_le_bytes())?;
-    // Prevent to_io from mapping errors to SerializeBufferFull
-    let mut catching = ErrorCatching {
-        inner: &mut *w,
-        err: None,
-    };
-    if let Err(e) = postcard::to_io(msg, &mut catching) {
-        if let Some(io_err) = catching.err.take() {
-            return Err(io_err);
-        }
-        return Err(std::io::Error::new(
-            ErrorKind::InvalidData,
-            format!("postcard encode: {e}"),
-        ));
-    }
-    Ok(())
-}
-
-/// Records the first I/O error the writer produces
-struct ErrorCatching<'a, W: Write> {
-    inner: &'a mut W,
-    err: Option<std::io::Error>,
-}
-
-impl<W: Write> Write for ErrorCatching<'_, W> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.inner.write(buf).inspect_err(|e| self.record(e))
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.inner.flush().inspect_err(|e| self.record(e))
-    }
-}
-
-impl<W: Write> ErrorCatching<'_, W> {
-    fn record(&mut self, e: &std::io::Error) {
-        self.err
-            .get_or_insert_with(|| std::io::Error::new(e.kind(), e.to_string()));
-    }
+    // one write per frame: postcard writes element by element, a syscall each on a socket
+    let mut frame = Vec::with_capacity(4 + len);
+    frame.extend_from_slice(&(len as u32).to_le_bytes());
+    let frame = postcard::to_extend(msg, frame).map_err(|e| {
+        std::io::Error::new(ErrorKind::InvalidData, format!("postcard encode: {e}"))
+    })?;
+    w.write_all(&frame)
 }
 
 pub(crate) fn recv<R: Read, M: for<'de> Deserialize<'de>>(r: &mut R) -> Result<Option<M>> {
@@ -276,6 +244,31 @@ impl Backoff {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    /// Records each write, as a socket would see its syscalls.
+    #[derive(Default)]
+    struct Writes(Vec<Vec<u8>>);
+
+    impl Write for Writes {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.push(buf.to_vec());
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn sends_a_frame_in_one_write() {
+        let msg = crate::messages::ClientToLib::Agent(vec![7; 100]);
+        let mut writes = Writes::default();
+        send(&mut writes, &msg).unwrap();
+        let mut frame = vec![102, 0, 0, 0];
+        frame.extend(postcard::to_allocvec(&msg).unwrap());
+        assert_eq!(writes.0, vec![frame]);
+    }
 
     #[test]
     fn read_frame_clean_eof_returns_none() {
