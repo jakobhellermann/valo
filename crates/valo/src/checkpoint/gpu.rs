@@ -30,6 +30,19 @@ use crate::{Result, error, home, info};
 const GPU_WAIT_TIMEOUT: Duration = Duration::from_secs(6);
 const MAX_MESSAGE_SIZE: usize = 4 + 4096;
 
+const ERR_KUMQUAT_EXITED: io::Error = io::const_error!(
+    io::ErrorKind::BrokenPipe,
+    "kumquat (the GPU process) exited, see kumquat.log in the run directory"
+);
+const ERR_KUMQUAT_FAILED: io::Error = io::const_error!(
+    io::ErrorKind::Other,
+    "kumquat (the GPU process) reported an error, see valo.log"
+);
+const ERR_KUMQUAT_TIMEOUT: io::Error = io::const_error!(
+    io::ErrorKind::TimedOut,
+    "kumquat (the GPU process) did not answer in time"
+);
+
 /// A GPU host object the guest holds; a restore replaces it with a new one.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct GpuObject {
@@ -132,7 +145,7 @@ fn send_request(kind: u32, slot: SnapshotSlot) -> Result<()> {
     push(b"/")?;
     push(slot.0.format_into(&mut NumBuffer::new()).as_bytes())?;
     push(b"/gpu")?;
-    let sent = rustix::net::send(control, &message[..len], SendFlags::NOSIGNAL)?;
+    let sent = send(control, &message[..len])?;
     if sent != len {
         return Err(io::Error::from_raw_os_error(libc::EMSGSIZE));
     }
@@ -157,7 +170,7 @@ fn check_response(kind: u32, payload: &[u8], operation: &str) -> Result<()> {
         kumquat::RESP_ERR => {
             let text = std::str::from_utf8(payload).unwrap_or("<not UTF-8>");
             error!("kumquat {operation} failed: {text}");
-            Err(io::Error::from_raw_os_error(libc::EIO))
+            Err(ERR_KUMQUAT_FAILED)
         }
         _ => Err(io::Error::from_raw_os_error(libc::EPROTO)),
     }
@@ -174,7 +187,7 @@ fn receive(
     loop {
         let remaining = deadline.saturating_sub(real_monotonic());
         if remaining.is_zero() {
-            return Err(io::Error::from_raw_os_error(libc::ETIMEDOUT));
+            return Err(ERR_KUMQUAT_TIMEOUT);
         }
 
         let mut poll_fds = [PollFd::new(control, PollFlags::IN | PollFlags::HUP)];
@@ -187,7 +200,7 @@ fn receive(
             ready => ready?,
         };
         if ready == 0 {
-            return Err(io::Error::from_raw_os_error(libc::ETIMEDOUT));
+            return Err(ERR_KUMQUAT_TIMEOUT);
         }
 
         let mut message = [0u8; MAX_MESSAGE_SIZE];
@@ -221,7 +234,7 @@ fn receive(
         let len = received.bytes;
         if len == 0 {
             error!("kumquat exited during the {operation}");
-            return Err(io::Error::from_raw_os_error(libc::EPIPE));
+            return Err(ERR_KUMQUAT_EXITED);
         }
         if len < 4 {
             return Err(io::Error::from_raw_os_error(libc::EPROTO));
@@ -243,7 +256,7 @@ pub(crate) fn capture_objects(
         return Ok(());
     };
     let request = kumquat::LIST.to_le_bytes();
-    if rustix::net::send(control, &request, SendFlags::NOSIGNAL)? != request.len() {
+    if send(control, &request)? != request.len() {
         return Err(io::Error::from_raw_os_error(libc::EMSGSIZE));
     }
     let mut payload = [0u8; MAX_MESSAGE_SIZE];
@@ -390,4 +403,11 @@ pub(crate) fn check_area(area: &MemoryMap) -> Result<()> {
 /// renderer selection).
 fn use_gpu() -> bool {
     GlobalState::get().use_gpu.load(Ordering::Relaxed)
+}
+
+fn send(control: &OwnedFd, bytes: &[u8]) -> Result<usize> {
+    match rustix::net::send(control, bytes, SendFlags::NOSIGNAL) {
+        Err(Errno::PIPE | Errno::CONNRESET) => Err(ERR_KUMQUAT_EXITED),
+        sent => Ok(sent?),
+    }
 }
