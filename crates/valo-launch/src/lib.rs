@@ -27,9 +27,7 @@ pub fn init_game(
     let exe = std::fs::read_link(format!("/proc/{pid}/exe"))
         .with_context(|| format!("resolve exe of game pid {pid}"))?;
     eprintln!("[valo-launch] attached to pid {pid}: {}", exe.display());
-    let mut config = config.clone();
-    config.resolved_modules = unity::resolve_modules(&exe)?;
-    conn.init(&config, gpu_control)?;
+    conn.init(config, unity::resolve_modules(&exe)?, gpu_control)?;
     Ok(pid)
 }
 

@@ -55,10 +55,11 @@ still in its constructor — no frame runs before it completes:
 1. `Hello` handshake: `ClientHello { version }` →
    `LibHello { version, config }`. The lib echoes the config it currently
    has, so any client can learn the session state on connect.
-2. Exactly one `SetConfig(config)`, fire-and-forget: the lib applies it
-   before anything runs, no ack. The init client is the source of truth
-   for runtime config; there is no config env (`VALO_SOCK` /
-   `VALO_LOG` are bootstrap-only).
+2. Exactly one `Init { use_gpu, resolved_modules, config }`,
+   fire-and-forget: the lib applies it before anything runs, no ack. It
+   carries what is fixed for the session besides the first runtime config.
+   The init client is the source of truth for runtime config; there is no
+   config env (`VALO_SOCK` / `VALO_LOG` are bootstrap-only).
 3. With `use_gpu`, `GpuControl`, followed by one byte that carries the
    GPU host's control socket (`SCM_RIGHTS`). The client starts the GPU
    host outside the target's launcher chain; inherited descriptors do not
@@ -119,7 +120,8 @@ the socket.
 pub enum ClientToLib {
     Hello(ClientHello),
     AdvanceFrames(u64),   // 0 = query, n = run n frames, then hold
-    SetConfig(Config),    // full replacement of the runtime config
+    Init(Init),           // once, after Hello: session-fixed settings + first config
+    SetConfig(Config),    // full replacement of the runtime config, unanswered
     Detach,               // held → free
     Checkpoint(u32),      // snapshot into savestate slot N
     Restore(u32),         // rewind to the snapshot in slot N
@@ -134,7 +136,6 @@ pub enum LibToClient {
     Hello(LibHello),      // version + echo of the lib's current config
     FrameBoundary(FrameBoundary), // a boundary is held; give a command
     State(State),         // reply to GetState / AdvanceFrames(0)
-    SetConfigDone,
     CheckpointDone,
     RestoreSucceeded(RestoreSucceeded), // the lib is held in the restored frame
     Error(Error),
@@ -147,11 +148,12 @@ window as tracked by the lib's window hooks; the client's overlay and hotkeys
 attach to that window.
 
 `Config` (`crates/valo-ipc/src/config.rs`): log level,
-auto-checkpoint/restore frames, restore cap, GPU orchestration flag,
+auto-checkpoint/restore frames, restore cap, determinism, skip_draw,
 input mode (`input.uncontrolled_input`).
-`SetConfig` replaces it wholesale (the GPU flag is fixed at init —
-runtime attempts to change it are refused); the current value is always
-readable from the `LibHello` echo.
+`SetConfig` replaces it wholesale and is not answered: what is fixed for
+the session (GPU orchestration, resolved modules) is only in `Init`, so a
+runtime config cannot be refused. The current value is always readable
+from the `LibHello` echo.
 
 `SetInputs` carries the full keyboard state. Unless input is uncontrolled,
 the lib turns each frame boundary's change into xcb key events on the game's
@@ -265,7 +267,7 @@ writes position-independently.
   game's normal thread (not in a signal handler), so async-signal-safety
   is not required.
 - Client: `crates/client/src/{main,msg,tui}.rs` connect via `ClientIPC`.
-- Harness: acts as the init client for every test (`SetConfig` +
+- Harness: acts as the init client for every test (`Init` +
   `Detach`), so tests need no config env.
 
 ## Open questions / future work

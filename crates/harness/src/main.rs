@@ -276,7 +276,6 @@ fn run(
             max_restores: config.max_restores as u64,
             ..Default::default()
         },
-        use_gpu: config.gpu,
         ..Default::default()
     };
     // The test can die before its init (load error, crash in the
@@ -303,6 +302,7 @@ fn run(
     };
     conn.init(
         &valo_config,
+        Vec::new(),
         gpu.as_ref()
             .map(valo_launch::gpu_session::GpuSession::control_for_lib),
     )

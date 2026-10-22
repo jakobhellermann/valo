@@ -75,7 +75,6 @@ impl ConfigArgs {
             log: LogConfig {
                 level: self.log_level.map_or(LogLevel::Trace, Into::into),
             },
-            use_gpu: !self.software_rendering,
             restore_redraw: Default::default(),
             determinism: DeterminismConfig {
                 time: TimeConfig {
@@ -90,7 +89,6 @@ impl ConfigArgs {
             input: InputConfig {
                 uncontrolled_input: self.uncontrolled_input || self.uncontrolled,
             },
-            resolved_modules: Vec::new(),
         }
     }
 }
