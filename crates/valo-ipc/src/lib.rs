@@ -22,7 +22,7 @@ use std::time::Duration;
 use crate::messages::{ClientHello, ClientToLib, LibToClient};
 
 /// Bumped on any breaking change to the message enums or framing.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Hard cap on a single message's payload
 pub const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
@@ -375,7 +375,10 @@ mod tests {
                 frame: 42,
                 game_window: Some(0x400001),
             }),
-            LibToClient::State(State { frame: 100 }),
+            LibToClient::State(State {
+                frame: 100,
+                game_window: Some(0x400001),
+            }),
             LibToClient::CheckpointDone,
             LibToClient::RestoreSucceeded(RestoreSucceeded { frame: 7 }),
             LibToClient::Error(Error {

@@ -3,6 +3,7 @@ mod hud;
 mod input;
 mod msg;
 mod overlay;
+mod screenshot;
 mod tui;
 
 use std::fs::File;

@@ -26,6 +26,11 @@ const HELLO_TIMEOUT: Duration = Duration::from_secs(4);
 pub enum MsgCmd {
     /// Get the current state
     State,
+    /// Save the game window's contents as a PNG; exact to the frame while held.
+    Screenshot {
+        #[arg(short, long)]
+        output: PathBuf,
+    },
     /// Draw frames, then pause at the next frame boundary (default: 1).
     Advance {
         #[arg(default_value_t = 1)]
@@ -168,7 +173,7 @@ pub fn msg(sock: &Path, command: &MsgCmd) -> Result<()> {
         .context("set command timeout")?;
 
     let request = match command {
-        MsgCmd::State => ClientToLib::GetState,
+        MsgCmd::State | MsgCmd::Screenshot { .. } => ClientToLib::GetState,
         MsgCmd::Advance { frames } => ClientToLib::AdvanceFrames(*frames),
         MsgCmd::Checkpoint { slot } => ClientToLib::Checkpoint(*slot),
         MsgCmd::Restore { slot } => ClientToLib::Restore(*slot),
@@ -205,7 +210,15 @@ pub fn msg(sock: &Path, command: &MsgCmd) -> Result<()> {
     }
 
     match recv_reply(&mut conn, pid, HANG_READ_TIMEOUT).context("recv reply")? {
-        Some(LibToClient::State(state)) => println!("[valo] frame {}", state.frame),
+        Some(LibToClient::State(state)) => match command {
+            // A held session stays at this boundary until the connection closes; a free one runs on.
+            MsgCmd::Screenshot { output } => {
+                let window = state.game_window.context("the game has no window")?;
+                crate::screenshot::capture(window, output)?;
+                println!("[valo] frame {}: wrote {}", state.frame, output.display());
+            }
+            _ => println!("[valo] frame {}", state.frame),
+        },
         Some(LibToClient::FrameBoundary(b)) => println!("[valo] frame {}", b.frame),
         Some(LibToClient::Error(error)) => bail!("{}", error.message),
         Some(LibToClient::CheckpointDone) => println!("[valo] checkpoint done"),
