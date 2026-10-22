@@ -40,11 +40,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1792690846,
-        "narHash": "sha256-lMu41qY5NLeDy6ueW4Kdss++La+3mFZ20tdkCI/skSs=",
+        "lastModified": 1792703899,
+        "narHash": "sha256-fIsNyr6ayD5lc4UMvNk8cg8MJxnHYSguxk+VLZsXg78=",
         "owner": "jakobhellermann",
         "repo": "gfxstream",
-        "rev": "ae323959b3d132fef2bf1cd1767f8a28974e335e",
+        "rev": "8625958c00b549a059aecde539ec88076161cbb7",
         "type": "github"
       },
       "original": {
@@ -85,16 +85,38 @@
         ]
       },
       "locked": {
-        "lastModified": 1792690885,
-        "narHash": "sha256-bfr1dSJq0Br4alld5lQBz2OWG6D0OuCgelvwWxXFOrk=",
+        "lastModified": 1792703235,
+        "narHash": "sha256-pNgxJv+VdIq9YltDpW9n41sTySqaGcP9tZkrzhYVg1g=",
         "ref": "dev",
-        "rev": "ad3d8f4e5cd4dc622e8cfe79a607059e79617cf7",
+        "rev": "50c3765e2a532244069cf9a4389f8d6ff8956710",
         "shallow": true,
         "type": "git",
         "url": "https://gitlab.freedesktop.org/jakobhellermann/mesa"
       },
       "original": {
         "ref": "dev",
+        "shallow": true,
+        "type": "git",
+        "url": "https://gitlab.freedesktop.org/jakobhellermann/mesa"
+      }
+    },
+    "mesaWsl": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1792703303,
+        "narHash": "sha256-2ko6gSIqebSZPjme9aLPpQOIFybohLuQfrZFNUbxU18=",
+        "ref": "wsl",
+        "rev": "6184db984be1b30202ae335e71a41e68bc94d8ed",
+        "shallow": true,
+        "type": "git",
+        "url": "https://gitlab.freedesktop.org/jakobhellermann/mesa"
+      },
+      "original": {
+        "ref": "wsl",
         "shallow": true,
         "type": "git",
         "url": "https://gitlab.freedesktop.org/jakobhellermann/mesa"
@@ -123,6 +145,7 @@
         "gfxstream": "gfxstream",
         "kumquat": "kumquat",
         "mesaGpu": "mesaGpu",
+        "mesaWsl": "mesaWsl",
         "nixpkgs": "nixpkgs",
         "rust-overlay": "rust-overlay"
       }
