@@ -64,6 +64,11 @@ static INIT: extern "C" fn() = _init;
 
 extern "C" fn _init() {
     if let Err(e) = init() {
+        // Init can fail before the log file is open.
+        eprintln!(
+            "[valo] pid {}: failed to initialize: {e}",
+            std::process::id()
+        );
         abort!("Failed to initialize valo: {e}");
     }
 }
@@ -83,6 +88,7 @@ fn init() -> Result<()> {
 
     remove_ld_preload();
     home::init()?;
+    ipc::check_sock_dir()?;
     log::init();
     install_panic_hook();
     // SAFETY: the only call of `set`, from the once-run, single-threaded initializer.
