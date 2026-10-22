@@ -71,6 +71,7 @@ pub enum Category {
     Ipc,
     Steam,
     Unity,
+    Overlay,
     /// Default category for debug prints without a category (`debug!("foo")).
     Adhoc,
 }
@@ -86,6 +87,7 @@ impl Category {
             Category::Ipc => "ipc",
             Category::Steam => "steam",
             Category::Unity => "unity",
+            Category::Overlay => "overlay",
             Category::Adhoc => "adhoc",
         }
     }

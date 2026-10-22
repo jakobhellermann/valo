@@ -97,6 +97,7 @@ override_sym!(glXSwapBuffers(dpy: Display, drawable: GLXDrawable), lib: LIB, |re
         if skip_draw::skips_this_frame() {
             flush();
         } else {
+            crate::overlay::queue_frame();
             real(dpy, drawable);
         }
     });

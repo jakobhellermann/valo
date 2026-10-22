@@ -105,6 +105,7 @@ impl GlobalState {
         self.restore_redraw
             .store(config.restore_redraw as u8, Ordering::Relaxed);
         crate::input_feed::set_config(&config.input);
+        crate::overlay::set_config(&config.overlay);
         crate::log::set_level(config.log.level.into());
     }
 

@@ -23,6 +23,7 @@ mod hooks;
 mod input_feed;
 mod ipc;
 pub mod log;
+mod overlay;
 mod present;
 mod procfs;
 mod sigsegv;
