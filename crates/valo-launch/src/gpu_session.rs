@@ -66,6 +66,9 @@ impl GpuSession {
         if std::env::var_os("GFXSTREAM_LOG_LEVEL").is_none() {
             cmd.env("GFXSTREAM_LOG_LEVEL", "info");
         }
+        if let Some(icd) = crate::resolve_dozen_icd()? {
+            cmd.env("VK_DRIVER_FILES", icd);
+        }
 
         // SAFETY: this closure runs after fork and uses only prctl/getppid/close/fcntl;
         // the host's end of the control socket belongs to the Kumquat child after exec.

@@ -91,7 +91,28 @@ pub fn host_visible_memory_sharing() -> Result<(), &'static str> {
 }
 
 pub fn resolve_gfxstream_icd() -> Result<Option<PathBuf>> {
-    if let Some(p) = non_empty_env("VALO_GFXSTREAM_ICD") {
+    resolve_icd("VALO_GFXSTREAM_ICD", "gfxstream_vk_icd")
+}
+
+/// The dozen ICD, bundled next to the gfxstream ICD.
+pub fn resolve_dozen_icd() -> Result<Option<PathBuf>> {
+    resolve_icd("VALO_DOZEN_ICD", "dzn_icd")
+}
+
+/// Library path with zink's libGLX_mesa and libgallium, bundled in lib/zink.
+pub fn resolve_zink_library_path() -> Result<Option<OsString>> {
+    if let Some(p) = non_empty_env("VALO_ZINK_LIBRARY_PATH") {
+        return Ok(Some(p));
+    }
+    let dir = exe_dir()?.join("../lib/zink");
+    let bundled = dir
+        .try_exists()
+        .with_context(|| format!("stat {}", dir.display()))?;
+    Ok(bundled.then(|| dir.into_os_string()))
+}
+
+fn resolve_icd(var: &str, prefix: &str) -> Result<Option<PathBuf>> {
+    if let Some(p) = non_empty_env(var) {
         return Ok(Some(PathBuf::from(p)));
     }
     let dir = exe_dir()?.join("../share/vulkan/icd.d");
@@ -107,7 +128,7 @@ pub fn resolve_gfxstream_icd() -> Result<Option<PathBuf>> {
             .path();
         let is_icd = path.file_name().is_some_and(|n| {
             let n = n.as_encoded_bytes();
-            n.starts_with(b"gfxstream_vk_icd") && n.ends_with(b".json")
+            n.starts_with(prefix.as_bytes()) && n.ends_with(b".json")
         });
         if is_icd {
             hits.push(path);
@@ -116,6 +137,6 @@ pub fn resolve_gfxstream_icd() -> Result<Option<PathBuf>> {
     match <[PathBuf; 1]>::try_from(hits) {
         Ok([icd]) => Ok(Some(icd)),
         Err(hits) if hits.is_empty() => Ok(None),
-        Err(hits) => bail!("multiple gfxstream ICDs in {}: {hits:?}", dir.display()),
+        Err(hits) => bail!("multiple {prefix} ICDs in {}: {hits:?}", dir.display()),
     }
 }
