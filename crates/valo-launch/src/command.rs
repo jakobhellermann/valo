@@ -15,8 +15,8 @@ pub fn configure_target(cmd: &mut Command, gpu: bool) -> Result<()> {
     // Mesa's X11 swapchain adds images for the non-blocking present mode the lib substitutes;
     // games may index per-image state with the count they asked for.
     cmd.env("vk_x11_strict_image_count", "true");
-    // Force Mesa
-    cmd.env("__GLX_VENDOR_LIBRARY_NAME", "mesa");
+    // The lib forces the Mesa GLX vendor once its libraries are loaded.
+    cmd.env_remove("__GLX_VENDOR_LIBRARY_NAME");
 
     // Force llvmpipe for savestate compatibility
     cmd.env("LIBGL_ALWAYS_SOFTWARE", "1");
@@ -61,6 +61,10 @@ pub fn configure_target(cmd: &mut Command, gpu: bool) -> Result<()> {
                 wsi_debug.push_str("sw");
             }
             cmd.env("MESA_VK_WSI_DEBUG", wsi_debug);
+
+            if let Some(zink) = crate::resolve_zink_library_path()? {
+                cmd.env("VALO_ZINK_LIBRARY_PATH", zink);
+            }
         }
         if let Some(icd) = crate::resolve_gfxstream_icd()? {
             cmd.env("VK_DRIVER_FILES", icd);
