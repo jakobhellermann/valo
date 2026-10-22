@@ -19,12 +19,8 @@ pub fn init() -> Result<()> {
         None => std::env::temp_dir().join(format!("valo-{}", std::process::id())),
     };
 
-    std::fs::create_dir_all(&home).map_err(|e| {
-        std::io::Error::other(format!(
-            "failed to create VALO_HOME {}: {e}",
-            home.display()
-        ))
-    })?;
+    let from_client = valo_home().is_some() && std::env::var_os("VALO_SOCK").is_some();
+    prepare(&home, from_client)?;
 
     if valo_home().is_none() {
         lock(&home)?;
@@ -35,6 +31,26 @@ pub fn init() -> Result<()> {
     HOME.set(home).expect("home initialized twice");
 
     Ok(())
+}
+
+/// A client creates the home before spawning the target and shares files in it with the target.
+fn prepare(home: &Path, from_client: bool) -> Result<()> {
+    if from_client {
+        if home.is_dir() {
+            return Ok(());
+        }
+        return Err(std::io::Error::other(format!(
+            "VALO_HOME {} does not exist for this process, although a client is attached \
+             (VALO_SOCK is set)",
+            home.display()
+        )));
+    }
+    std::fs::create_dir_all(home).map_err(|e| {
+        std::io::Error::other(format!(
+            "failed to create VALO_HOME {}: {e}",
+            home.display()
+        ))
+    })
 }
 
 pub fn get() -> &'static Path {
@@ -72,4 +88,27 @@ fn lock(home: &Path) -> Result<()> {
     file.try_lock()?;
     std::mem::forget(file);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn client_home_must_exist() {
+        let home =
+            std::env::temp_dir().join(format!("valo-home-test-missing-{}", std::process::id()));
+        let err = prepare(&home, true).unwrap_err();
+        assert!(err.to_string().contains("valo-home-test-missing"), "{err}");
+        assert!(!home.exists());
+    }
+
+    #[test]
+    fn own_home_is_created() {
+        let home = std::env::temp_dir().join(format!("valo-home-test-own-{}", std::process::id()));
+        prepare(&home, false).unwrap();
+        assert!(home.is_dir());
+        prepare(&home, true).unwrap();
+        std::fs::remove_dir(&home).unwrap();
+    }
 }

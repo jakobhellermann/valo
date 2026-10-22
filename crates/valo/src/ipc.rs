@@ -53,6 +53,29 @@ struct Session {
 
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 
+pub fn check_sock_dir() -> Result<()> {
+    match std::env::var_os("VALO_SOCK") {
+        Some(path) => sock_dir_visible(Path::new(&path)),
+        None => Ok(()),
+    }
+}
+
+/// If this process does not see the client's socket directory, both sides would bind their own
+/// socket under the same path and wait forever.
+fn sock_dir_visible(sock: &Path) -> Result<()> {
+    let dir = sock
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    if dir.is_dir() {
+        return Ok(());
+    }
+    Err(std::io::Error::other(format!(
+        "VALO_SOCK directory {} does not exist for this process",
+        dir.display()
+    )))
+}
+
 pub fn init() -> Result<()> {
     let Some(path) = std::env::var_os("VALO_SOCK").map(PathBuf::from) else {
         info!(Ipc, "VALO_SOCK not set, IPC disabled");
@@ -462,4 +485,23 @@ fn lock_session() -> MutexGuard<'static, Option<Session>> {
         SESSION.clear_poison();
         p.into_inner()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sock_in_existing_dir_is_visible() {
+        let sock = std::env::temp_dir().join("valo-ipc-test.sock");
+        assert!(sock_dir_visible(&sock).is_ok());
+        assert!(sock_dir_visible(Path::new("relative.sock")).is_ok());
+    }
+
+    #[test]
+    fn sock_in_missing_dir_is_rejected() {
+        let sock = std::env::temp_dir().join("valo-missing-home-dir/ipc.sock");
+        let err = sock_dir_visible(&sock).unwrap_err();
+        assert!(err.to_string().contains("valo-missing-home-dir"), "{err}");
+    }
 }
