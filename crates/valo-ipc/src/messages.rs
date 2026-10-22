@@ -86,6 +86,8 @@ pub enum ClientToLib {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct State {
     pub frame: u64,
+    /// The game's current top-level X window, most recently mapped first.
+    pub game_window: Option<u32>,
 }
 
 /// The full keyboard state and pointer position.

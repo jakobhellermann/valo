@@ -327,7 +327,11 @@ fn handle_command(
         }
         ClientToLib::GetState => {
             info!(Ipc, "received GetState");
-            if let Err(e) = conn.send(&LibToClient::State(State { frame })) {
+            let state = State {
+                frame,
+                game_window: crate::input_feed::current_window(),
+            };
+            if let Err(e) = conn.send(&LibToClient::State(state)) {
                 warn!(Ipc, "send State: {e}");
             }
             Action::Hold
@@ -358,7 +362,11 @@ fn handle_command(
                 return Action::Hold;
             }
             if count == 0 {
-                if let Err(e) = conn.send(&LibToClient::State(State { frame })) {
+                let state = State {
+                    frame,
+                    game_window: crate::input_feed::current_window(),
+                };
+                if let Err(e) = conn.send(&LibToClient::State(state)) {
                     warn!(Ipc, "send State: {e}");
                 }
                 return Action::Hold;
