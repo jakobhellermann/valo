@@ -8,6 +8,6 @@ edition.workspace = true
 [dependencies]
 anyhow = "1"
 libc = "0.2"
-rustix = { version = "1.1", features = ["fs", "process"] }
+rustix = { version = "1.1", features = ["fs", "param", "process"] }
 valo-ipc = { path = "../valo-ipc" }
 valo-launch = { path = "../valo-launch" }
