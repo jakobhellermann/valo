@@ -3,6 +3,7 @@
 
 // Inspired by libTAS: <https://github.com/clementgallet/libTAS/blob/master/src/library/rendering/glxwrappers.cpp>
 
+use crate::determinism::skip_draw;
 use crate::{debug, override_sym};
 use std::ffi::{CStr, c_char, c_int, c_uint};
 use std::os::raw::c_void;
@@ -24,6 +25,7 @@ type GLubyte = u8;
 /// exist that a checkpoint must drain.
 static GL_CONTEXT_EVER_CURRENT: AtomicBool = AtomicBool::new(false);
 static GL_FINISH: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+static GL_FLUSH: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 type FinishFn = unsafe extern "C" fn();
 
@@ -88,8 +90,16 @@ override_sym!(glXMakeContextCurrent(dpy: Display, draw: GLXDrawable, read: GLXDr
     made
 });
 
+// A skipped frame does not swap at all: GL drivers on Vulkan (zink) acquire the next swapchain
+// image inside the swap, and the presentation engine hands images back at display rate.
 override_sym!(glXSwapBuffers(dpy: Display, drawable: GLXDrawable), lib: LIB, |real| {
-    crate::frame::frame_boundary(|| real(dpy, drawable));
+    crate::frame::frame_boundary(|| {
+        if skip_draw::skips_this_frame() {
+            flush();
+        } else {
+            real(dpy, drawable);
+        }
+    });
 });
 
 override_sym!(glXSwapIntervalEXT(dpy: Display, drawable: GLXDrawable, interval: c_int), lib: LIB, |real| {
@@ -160,4 +170,14 @@ fn intercept_proc_addr(name: *const GLubyte, real: *const ()) -> *const () {
         debug!(Hooks, "glXGetProcAddress({name_str}) -> real");
         real
     }
+}
+
+/// Submits the frame's GL work without presenting it.
+fn flush() {
+    let flush = link_function(&GL_FLUSH, c"glFlush".as_ptr(), LIB)
+        .expect("glXSwapBuffers called without a loaded libGL");
+    // SAFETY: the linked symbol is the real glFlush, which takes no arguments and returns nothing.
+    let flush: FinishFn = unsafe { std::mem::transmute(flush) };
+    // SAFETY: glFlush has no preconditions; without a current context libGL's dispatch is a no-op.
+    unsafe { flush() };
 }

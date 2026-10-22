@@ -45,6 +45,11 @@ pub(crate) fn on_frame_boundary() {
     SKIP_THIS_FRAME.store(!due, Ordering::Relaxed);
 }
 
+/// Whether the frame running since the last boundary skips its presentation.
+pub(crate) fn skips_this_frame() -> bool {
+    SKIP_THIS_FRAME.load(Ordering::Relaxed)
+}
+
 /// Capture the real `vkQueueSubmit`
 pub(crate) fn capture_submit(proc: *const c_void) {
     if !proc.is_null() {
