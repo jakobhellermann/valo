@@ -40,11 +40,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1792622751,
-        "narHash": "sha256-MIUMzwemaqPjhVFZHX68CUk6UzqMHIyvI69PPCiAwhM=",
+        "lastModified": 1792690846,
+        "narHash": "sha256-lMu41qY5NLeDy6ueW4Kdss++La+3mFZ20tdkCI/skSs=",
         "owner": "jakobhellermann",
         "repo": "gfxstream",
-        "rev": "d8c266ad5561be0e97bfdb2f3cd01ccb7b0410c2",
+        "rev": "ae323959b3d132fef2bf1cd1767f8a28974e335e",
         "type": "github"
       },
       "original": {
@@ -85,10 +85,10 @@
         ]
       },
       "locked": {
-        "lastModified": 1792621318,
-        "narHash": "sha256-FYHzxhNYALPNLYlNtW8eQ2L0j0nD6M3VKIkWLpCNFxw=",
+        "lastModified": 1792690885,
+        "narHash": "sha256-bfr1dSJq0Br4alld5lQBz2OWG6D0OuCgelvwWxXFOrk=",
         "ref": "dev",
-        "rev": "f399d121aebc292dfcbd6c7135b63ae48cafaf78",
+        "rev": "ad3d8f4e5cd4dc622e8cfe79a607059e79617cf7",
         "shallow": true,
         "type": "git",
         "url": "https://gitlab.freedesktop.org/jakobhellermann/mesa"
