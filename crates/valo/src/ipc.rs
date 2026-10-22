@@ -417,6 +417,28 @@ fn handle_command(
             crate::valo_restore_slot(slot);
             unreachable!("valo_restore never returns")
         }
+        ClientToLib::Agent(request) => {
+            // the agent reads the target's state: only a held frame thread keeps it still
+            if !matches!(session.release, Release::Held) {
+                if let Err(e) = conn.send(&LibToClient::Error(Error {
+                    message: "session is not held".into(),
+                })) {
+                    warn!(Ipc, "send agent error: {e}");
+                }
+                return Action::Hold;
+            }
+            let response = match crate::agent::request(request) {
+                Ok(reply) => LibToClient::Agent(reply),
+                Err(message) => {
+                    error!(Ipc, "agent request at frame {frame}: {message}");
+                    LibToClient::Error(Error { message })
+                }
+            };
+            if let Err(e) = conn.send(&response) {
+                warn!(Ipc, "send agent reply: {e}");
+            }
+            Action::Hold
+        }
         ClientToLib::SetInputs(state) => {
             trace!(Ipc, "received SetInputs mods={:#x}", state.mods);
             crate::input_feed::set_state(state);

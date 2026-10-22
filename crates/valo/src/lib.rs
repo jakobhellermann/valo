@@ -8,6 +8,7 @@
     dirfd
 )]
 
+pub mod agent;
 mod alt_stack;
 mod checkpoint;
 mod debug;

@@ -127,6 +127,7 @@ pub enum ClientToLib {
     GetState,
     Quit,
     GpuControl,           // init only: the control socket follows on the next byte
+    Agent(Vec<u8>),       // opaque request for the in-target agent (held only)
 }
 
 pub enum LibToClient {
@@ -137,6 +138,7 @@ pub enum LibToClient {
     CheckpointDone,
     RestoreSucceeded(RestoreSucceeded), // the lib is held in the restored frame
     Error(Error),
+    Agent(Vec<u8>),       // the agent's opaque reply
 }
 ```
 
@@ -202,6 +204,37 @@ Command semantics inside a held boundary:
   (it aborts on error); the client observes EOF.
 
 Slots persist under `$VALO_HOME/slots/<n>/`.
+
+## Agent channel
+
+A client can talk to code running inside the target — an *agent*, e.g. a
+mod injected next to libvalo — without valo knowing what they say. The lib
+only moves opaque bytes:
+
+- The agent runs its own thread and serves requests through the C ABI
+  exported by libvalo (`crates/valo/src/agent.rs`):
+  - `void valo_agent_register(void)` announces the agent. Called before the
+    first frame boundary, so the client's first request already waits for
+    the agent instead of failing.
+  - `ssize_t valo_agent_recv(uint8_t *buf, size_t cap)` blocks until a
+    request arrives and returns its length. A request longer than `cap`
+    stays queued and only its length is returned, so the agent retries with
+    a larger buffer. Returns -1 on the frame thread, which would deadlock
+    the boundary it waits for.
+  - `int valo_agent_send(const uint8_t *buf, size_t len)` replies to the
+    request last received; -1 when no request awaits a reply.
+- `ClientToLib::Agent(bytes)` is answered by exactly one
+  `LibToClient::Agent(reply)` or `Error`, and only inside a held boundary:
+  the frame thread stands still, so the agent sees one consistent frame.
+  Outside a held boundary, before an agent registered, or
+  without a reply within 10 s of real time, the answer is an `Error`; a late
+  reply is refused with -1.
+- The channel is plain static memory: a restore rewinds it together with
+  the agent thread. Between turns no request is in flight, so a checkpoint
+  always captures an idle channel.
+- Agent threads wait in real time, but the target's clocks are virtual and
+  stand still while a boundary is held: a wait whose timeout is measured
+  with them never ends during the hold (Mono's `Thread.Sleep` hangs there).
 
 ## Stale socket files
 
