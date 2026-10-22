@@ -262,17 +262,56 @@ pub fn report_hang(pid: u32) -> Result<()> {
         return Ok(());
     }
     eprintln!("[valo] hang: game pid {pid} stopped answering");
-    for entry in std::fs::read_dir(format!("/proc/{pid}/task"))? {
-        let tid: u32 = entry?.file_name().to_string_lossy().parse()?;
-        let wchan = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/wchan"))?;
-        let comm = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/comm"))?;
+    // CPU time spent across the window tells a slow frame from a deadlock.
+    let before = thread_cpu_ticks(pid)?;
+    std::thread::sleep(HANG_CPU_WINDOW);
+    let after = thread_cpu_ticks(pid)?;
+    let tick_ms = 1000 / rustix::param::clock_ticks_per_second();
+    for (tid, ticks) in after {
+        let busy_ms = before
+            .iter()
+            .find(|(before_tid, _)| *before_tid == tid)
+            .map(|(_, before_ticks)| (ticks - before_ticks) * tick_ms);
+        let read = |file: &str| {
+            std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/{file}")).unwrap_or_default()
+        };
         eprintln!(
-            "[valo]   tid {tid} ({}) wchan={}",
-            comm.trim(),
-            wchan.trim()
+            "[valo]   tid {tid} ({}) wchan={} cpu={}",
+            read("comm").trim(),
+            read("wchan").trim(),
+            busy_ms.map_or("new".to_string(), |ms| format!(
+                "{ms}ms/{}ms",
+                HANG_CPU_WINDOW.as_millis()
+            )),
         );
     }
     Ok(())
+}
+
+const HANG_CPU_WINDOW: Duration = Duration::from_secs(1);
+
+/// User plus system clock ticks of each thread of `pid`; threads that exit while reading are skipped.
+fn thread_cpu_ticks(pid: u32) -> Result<Vec<(u32, u64)>> {
+    let mut threads = Vec::new();
+    for entry in std::fs::read_dir(format!("/proc/{pid}/task"))? {
+        let tid: u32 = entry?.file_name().to_string_lossy().parse()?;
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/stat")) else {
+            continue;
+        };
+        if let Some(ticks) = cpu_ticks(&stat) {
+            threads.push((tid, ticks));
+        }
+    }
+    Ok(threads)
+}
+
+/// utime + stime of a `/proc/.../stat` line; comm may contain spaces and parentheses.
+fn cpu_ticks(stat: &str) -> Option<u64> {
+    let (_, rest) = stat.rsplit_once(')')?;
+    let mut fields = rest.split_whitespace().skip(11);
+    let utime: u64 = fields.next()?.parse().ok()?;
+    let stime: u64 = fields.next()?.parse().ok()?;
+    Some(utime + stime)
 }
 
 /// Returns whether the GPU host has exited, reporting how.
@@ -422,4 +461,15 @@ fn refill_spare_pages(slots: &Path) -> Result<()> {
     rustix::fs::fallocate(&file, rustix::fs::FallocateFlags::empty(), 0, size)
         .with_context(|| format!("allocate {size} bytes for {}", tmp.display()))?;
     std::fs::rename(&tmp, &spare).with_context(|| format!("rename to {}", spare.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpu_ticks_follow_a_comm_with_parentheses() {
+        let stat = "42 (a) b (c)) S 1 42 42 0 -1 4194304 10 0 0 0 7 5 0 0 20 0 1 0";
+        assert_eq!(cpu_ticks(stat), Some(12));
+    }
 }
