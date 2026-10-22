@@ -12,6 +12,11 @@
       url = "git+https://gitlab.freedesktop.org/jakobhellermann/mesa?ref=dev&shallow=1";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # dev plus the zink and dozen patches
+    mesaWsl = {
+      url = "git+https://gitlab.freedesktop.org/jakobhellermann/mesa?ref=wsl&shallow=1";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     gfxstream = {
       url = "github:jakobhellermann/gfxstream/dev";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -35,6 +40,7 @@
       crane,
       flake-utils,
       mesaGpu,
+      mesaWsl,
       kumquat,
       rust-overlay,
       ...
@@ -84,7 +90,7 @@
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
         kumquatPackage = kumquat.packages.${system}.default;
         gfxstreamIcd = "${
-          mesaGpu.packages.${system}.default
+          mesaGpu.packages.${system}.gfxstream
         }/share/vulkan/icd.d/gfxstream_vk_icd.x86_64.json";
 
         valo-client = craneLib.buildPackage (
@@ -119,13 +125,20 @@
           sha256 = "0396xi3km1yd0z4329lbjxmv82ddc40gd0x8hca0ylcj7i28pjig";
         };
 
-        appimage =
+        mkAppimage =
+          {
+            pname,
+            # bundles dozen and zink
+            wsl ? false,
+          }:
           let
-            mesaGpuPackage = mesaGpu.packages.${system}.default;
+            mesaGpuPackage = mesaGpu.packages.${system}.gfxstream;
+            dozenPackage = mesaWsl.packages.${system}.dozen;
+            zinkPackage = mesaWsl.packages.${system}.zink;
             glibcFloor = "2.43";
           in
           pkgs.stdenv.mkDerivation {
-            pname = "valo-appimage";
+            inherit pname;
             inherit (valo-client) version;
 
             dontUnpack = true;
@@ -151,6 +164,15 @@
               # kumquat's gfxstream backend dlopens libvulkan.so.1
               install -m755 ${mesaGpuPackage}/lib/libvulkan_gfxstream.so $libdir/libvulkan_gfxstream.so
               install -m755 ${pkgs.vulkan-loader}/lib/libvulkan.so.1 $libdir/libvulkan.so.1
+            ''
+            + pkgs.lib.optionalString wsl ''
+              install -m755 ${dozenPackage}/lib/libvulkan_dzn.so $libdir/libvulkan_dzn.so
+              # glvnd loads the vendor library by soname, so it gets a directory of its own
+              mkdir -p $libdir/zink
+              install -m755 ${zinkPackage}/lib/libGLX_mesa.so.0 $libdir/zink/libGLX_mesa.so.0
+              install -m755 ${zinkPackage}/lib/libgallium-*.so $libdir/zink/
+            ''
+            + ''
 
               elfs() { find $appdir/usr/bin $libdir -type f; }
 
@@ -187,7 +209,7 @@
               # keep RUNPATH and defer to its environment.
               set_rpath() {
                 case "$1" in
-                  $appdir/usr/bin/libvalo.so | $libdir/libvulkan_gfxstream.so)
+                  $appdir/usr/bin/libvalo.so | $libdir/libvulkan_gfxstream.so | $libdir/zink/*)
                     patchelf --set-rpath "$2" "$1" ;;
                   *) patchelf --force-rpath --set-rpath "$2" "$1" ;;
                 esac
@@ -195,9 +217,14 @@
               for elf in $appdir/usr/bin/*; do
                 set_rpath "$elf" '$ORIGIN/../lib'
               done
-              for elf in $libdir/*; do
+              for elf in $(find $libdir -maxdepth 1 -type f); do
                 set_rpath "$elf" '$ORIGIN'
               done
+              if [ -d $libdir/zink ]; then
+                for elf in $libdir/zink/*; do
+                  set_rpath "$elf" '$ORIGIN:$ORIGIN/..'
+                done
+              fi
 
               # glibc compatibility check
               for elf in $(elfs); do
@@ -225,6 +252,20 @@
                 }
               }
               JSON
+            ''
+            + pkgs.lib.optionalString wsl ''
+              dozen_api_version=$(jq -r .ICD.api_version ${dozenPackage}/share/vulkan/icd.d/dzn_icd.x86_64.json)
+              cat > $appdir/usr/share/vulkan/icd.d/dzn_icd.x86_64.json <<JSON
+              {
+                "file_format_version": "1.0.1",
+                "ICD": {
+                  "api_version": "$dozen_api_version",
+                  "library_path": "../../../lib/libvulkan_dzn.so"
+                }
+              }
+              JSON
+            ''
+            + ''
 
               ln -s usr/bin/valo $appdir/AppRun
               cp ${./packaging/icon.png} $appdir/valo.png
@@ -256,7 +297,12 @@
 
         packages = {
           default = valo-client;
-          inherit valo valo-client appimage;
+          inherit valo valo-client;
+          appimage = mkAppimage { pname = "valo-appimage"; };
+          appimage-wsl = mkAppimage {
+            pname = "valo-appimage-wsl";
+            wsl = true;
+          };
         };
 
         apps.default = flake-utils.lib.mkApp {
@@ -276,7 +322,7 @@
             vulkan-headers
             vulkan-loader
             libGL.dev
-            mesaGpu.packages.${system}.default
+            mesaGpu.packages.${system}.gfxstream
             kumquatPackage
           ];
           shellHook = ''
