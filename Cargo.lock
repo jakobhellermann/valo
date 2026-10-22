@@ -1863,6 +1863,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "rustix",
  "valo-ipc",
  "valo-launch",
  "wait-timeout",
