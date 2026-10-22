@@ -119,6 +119,13 @@ pub struct DeterminismConfig {
     pub randomness: RandomnessConfig,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OverlayConfig {
+    /// Draw the shapes the game submits through `valo_overlay_shapes` over its frames.
+    pub enabled: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -130,6 +137,7 @@ pub struct Config {
     /// When a restore paints back the window pixels stored with the checkpoint.
     pub restore_redraw: RestoreRedraw,
     pub input: InputConfig,
+    pub overlay: OverlayConfig,
 }
 
 /// Symbols of a loaded module, resolved by the client from its symbol table

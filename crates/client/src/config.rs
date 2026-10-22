@@ -81,6 +81,7 @@ impl ConfigArgs {
                 level: self.log_level.map_or(LogLevel::Trace, Into::into),
             },
             restore_redraw: Default::default(),
+            overlay: Default::default(),
             determinism: DeterminismConfig {
                 time: TimeConfig {
                     uncontrolled_time: self.uncontrolled_time || self.uncontrolled,

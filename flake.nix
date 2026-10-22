@@ -57,12 +57,14 @@
           }
         );
 
-        # cleanCargoSource strips .c/.h, but the valo build.rs compiles native/valo_shim.c
+        # cleanCargoSource strips .c/.h, but the valo build.rs compiles native/valo_shim.c,
+        # and the overlay includes its compiled shaders
         src = pkgs.lib.fileset.toSource {
           root = ./.;
           fileset = pkgs.lib.fileset.unions [
             (craneLib.fileset.commonCargoSources ./.)
             ./crates/valo/native
+            ./crates/valo/src/overlay/shaders
           ];
         };
 

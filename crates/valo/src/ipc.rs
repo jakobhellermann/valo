@@ -496,6 +496,7 @@ pub fn effective_config() -> Config {
         skip_draw: state.skip_draw_mode(),
         restore_redraw: state.restore_redraw(),
         input: crate::input_feed::config(),
+        overlay: crate::overlay::config(),
     }
 }
 

@@ -13,9 +13,11 @@ assert-no-alloc = ["dep:assert_no_alloc"]
 structured-log = []
 
 [dependencies]
+ash = { version = "0.38.0", default-features = false }
 assert_no_alloc = { version = "1.1", default-features = false, optional = true }
 bitflags = "2.10"
 detour = "0.10"
+epaint = { version = "0.37.0", default-features = false }
 heapless = "0.9"
 libc = "0.2"
 linkme = "0.3.37"
