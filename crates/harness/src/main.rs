@@ -251,7 +251,7 @@ fn run(
     let sock = PathBuf::from(format!("/tmp/valo-harness-{}.sock", std::process::id()));
     cmd.env("VALO_SOCK", &sock);
     cmd.env("VALO_LOG", log_path);
-    let gpu = if config.gpu {
+    let mut gpu = if config.gpu {
         let session = valo_launch::gpu_session::GpuSession::start()?;
         session.configure_game(&mut cmd);
         Some(session)
@@ -333,18 +333,28 @@ fn run(
     } else {
         SAFETY_TIMEOUT
     };
-    let status = child.wait_timeout(timeout)?;
+    let status = wait_test(&mut child, gpu.as_mut(), timeout)?;
     let _ = fs::remove_file(&sock);
 
     let status = match status {
-        Some(s) => s,
-        None => {
+        TestEnd::Exited(s) => s,
+        TestEnd::TimedOut | TestEnd::GpuHostDied(_) => {
             let _ = child.kill();
             let _ = child.wait();
             let stderr = stderr_thread
                 .and_then(|t| t.join().ok())
                 .unwrap_or_default();
-            bail!("timed out\nlog: {}\nstderr:\n{stderr}", log_path.display());
+            let reason = match status {
+                TestEnd::GpuHostDied(host) => format!(
+                    "kumquat exited: {host}\nkumquat log: {}",
+                    gpu.as_ref()
+                        .map(|g| g.log_path())
+                        .unwrap_or_default()
+                        .display()
+                ),
+                _ => "timed out".to_string(),
+            };
+            bail!("{reason}\nlog: {}\nstderr:\n{stderr}", log_path.display());
         }
     };
 
@@ -363,6 +373,44 @@ fn run(
     }
 
     Ok(Output { stdout, stderr })
+}
+
+enum TestEnd {
+    Exited(std::process::ExitStatus),
+    TimedOut,
+    /// A guest whose GPU host died blocks forever on its command ring.
+    GpuHostDied(std::process::ExitStatus),
+}
+
+fn wait_test(
+    child: &mut std::process::Child,
+    gpu: Option<&mut valo_launch::gpu_session::GpuSession>,
+    timeout: Duration,
+) -> Result<TestEnd> {
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    use rustix::process::{Pid, PidfdFlags, pidfd_open};
+
+    let test_fd = pidfd_open(Pid::from_child(child), PidfdFlags::empty())?;
+    let host_fd = gpu
+        .as_ref()
+        .map(|gpu| {
+            let pid = Pid::from_raw(gpu.pid().cast_signed()).context("kumquat pid")?;
+            Ok::<_, anyhow::Error>(pidfd_open(pid, PidfdFlags::empty())?)
+        })
+        .transpose()?;
+    let mut fds = vec![PollFd::new(&test_fd, PollFlags::IN)];
+    fds.extend(host_fd.as_ref().map(|fd| PollFd::new(fd, PollFlags::IN)));
+    poll(&mut fds, Some(&Timespec::try_from(timeout)?))?;
+
+    if let Some(status) = child.try_wait()? {
+        return Ok(TestEnd::Exited(status));
+    }
+    if let Some(gpu) = gpu
+        && let Some(host) = gpu.exit_status()?
+    {
+        return Ok(TestEnd::GpuHostDied(host));
+    }
+    Ok(TestEnd::TimedOut)
 }
 
 /// Returns Ok(stderr) on success.
