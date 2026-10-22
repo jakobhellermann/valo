@@ -10,7 +10,7 @@ use valo_ipc::config::InputConfig;
 use valo_ipc::messages::InputState;
 use x11rb_protocol::protocol::xproto::{
     FOCUS_IN_EVENT, FocusInEvent, KEY_PRESS_EVENT, KEY_RELEASE_EVENT, KeyButMask, KeyPressEvent,
-    NotifyDetail, NotifyMode,
+    MOTION_NOTIFY_EVENT, Motion, MotionNotifyEvent, NotifyDetail, NotifyMode,
 };
 
 use crate::abort;
@@ -80,6 +80,20 @@ pub fn current_window() -> Option<u32> {
     FEED.lock().unwrap().windows.front().copied()
 }
 
+/// The pointer position the game has been fed, in window coordinates; `None` while input is
+/// uncontrolled.
+pub fn pointer() -> Option<[i32; 2]> {
+    if !is_controlled() {
+        return None;
+    }
+    Some(
+        FEED.lock()
+            .unwrap()
+            .fed
+            .map_or([0, 0], |state| state.pointer),
+    )
+}
+
 /// Queues the events for the client's latest state; waits for a game window to address them to.
 pub fn feed_frame() {
     if !is_controlled() {
@@ -90,6 +104,8 @@ pub fn feed_frame() {
         return;
     };
     let first = feed.fed.is_none();
+    // a game sees no pointer events before the first move away from the origin
+    let moved = feed.fed.map_or([0, 0], |fed| fed.pointer) != state.pointer;
     let changes = diff_events(feed.fed.as_ref(), &state);
     feed.fed = Some(state);
     drop(feed);
@@ -106,6 +122,12 @@ pub fn feed_frame() {
             queue::push_back(conn, malloc_event(focus_in_event(window)));
         }
         // the game frees every event it receives, so each connection gets its own copy
+        if moved {
+            queue::push_back(
+                conn,
+                malloc_event(motion_event(state.pointer, window, state.mods, time)),
+            );
+        }
         for change in &changes {
             queue::push_back(
                 conn,
@@ -170,6 +192,32 @@ fn key_event(change: KeyChange, window: u32, mods: u16, time: u32) -> [u8; 32] {
         root_y: 0,
         event_x: 0,
         event_y: 0,
+        state: KeyButMask::from(mods),
+        same_screen: true,
+    })
+}
+
+fn motion_event(pointer: [i32; 2], window: u32, mods: u16, time: u32) -> [u8; 32] {
+    let [x, y] = pointer.map(|coord| {
+        i16::try_from(coord).unwrap_or_else(|_| {
+            abort!(
+                Hooks,
+                "input feed: pointer coordinate {coord} exceeds X's i16"
+            );
+        })
+    });
+    <[u8; 32]>::from(MotionNotifyEvent {
+        response_type: MOTION_NOTIFY_EVENT,
+        detail: Motion::NORMAL,
+        sequence: 0,
+        time,
+        root: 0,
+        event: window,
+        child: 0,
+        root_x: x,
+        root_y: y,
+        event_x: x,
+        event_y: y,
         state: KeyButMask::from(mods),
         same_screen: true,
     })

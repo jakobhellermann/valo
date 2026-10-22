@@ -258,6 +258,7 @@ fn held(keycodes: &[u8]) -> InputState {
     InputState {
         mods: 0,
         keys: keycodes.iter().copied().collect(),
+        pointer: [0, 0],
     }
 }
 
