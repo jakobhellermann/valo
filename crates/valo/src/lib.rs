@@ -90,6 +90,7 @@ fn init() -> Result<()> {
     home::init()?;
     ipc::check_sock_dir()?;
     log::init();
+    hooks::link_all();
     install_panic_hook();
     // SAFETY: the only call of `set`, from the once-run, single-threaded initializer.
     unsafe { GlobalState::set(GlobalState::new()?) };

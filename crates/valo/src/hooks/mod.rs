@@ -37,6 +37,27 @@ pub(crate) fn run_native<T>(f: impl FnOnce() -> T) -> T {
     ret
 }
 
+/// A hook's slot for its real function, resolvable before the hook's first call.
+pub struct Hook {
+    pub slot: &'static AtomicPtr<c_void>,
+    pub name: *const c_char,
+    pub library: *const c_char,
+}
+
+// SAFETY: both pointers point to nul-terminated literals that live for the whole program.
+unsafe impl Sync for Hook {}
+
+#[linkme::distributed_slice]
+pub static HOOKS: [Hook];
+
+/// Resolves every hook whose real function is loaded. Linking takes the dynamic loader's lock,
+/// which a hook called later can meet held by a thread that waits for the caller.
+pub(crate) fn link_all() {
+    for hook in HOOKS {
+        link_function(hook.slot, hook.name, hook.library);
+    }
+}
+
 pub(crate) fn link_function(
     orig: &AtomicPtr<c_void>,
     source: *const c_char,
@@ -96,8 +117,8 @@ fn in_libvalo(addr: *const c_void) -> bool {
 }
 
 /// Defines an `extern "C"` function that overrides a symbol via `LD_PRELOAD`.
-/// The original is resolved lazily (cached) and bound to the `|real|`
-/// identifier for use inside the body.
+/// The original is resolved by [`link_all`] at init, or on the first call when its library
+/// loads later, and bound to the `|real|` identifier for use inside the body.
 /// `lib:` optionally searches an already loaded library if `RTLD_NEXT` fails.
 ///
 /// # Example
@@ -142,6 +163,12 @@ macro_rules! override_sym {
             const NAME: &[u8] = concat!(stringify!($fn), "\0").as_bytes();
             static SYM: std::sync::atomic::AtomicPtr<std::ffi::c_void> =
                 std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+            #[linkme::distributed_slice($crate::hooks::HOOKS)]
+            static HOOK: $crate::hooks::Hook = $crate::hooks::Hook {
+                slot: &SYM,
+                name: NAME.as_ptr().cast(),
+                library: std::ptr::null(),
+            };
 
             let fn_ptr = $crate::hooks::link_function(&SYM, NAME.as_ptr().cast(), std::ptr::null());
             // SAFETY: the symbol resolved under this name is the variadic libc function declared by this hook.
@@ -160,6 +187,12 @@ macro_rules! override_sym {
             const NAME: &[u8] = concat!(stringify!($fn), "\0").as_bytes();
             static SYM: std::sync::atomic::AtomicPtr<std::ffi::c_void> =
                 std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+            #[linkme::distributed_slice($crate::hooks::HOOKS)]
+            static HOOK: $crate::hooks::Hook = $crate::hooks::Hook {
+                slot: &SYM,
+                name: NAME.as_ptr().cast(),
+                library: $lib,
+            };
 
             let fn_ptr = $crate::hooks::link_function(&SYM, NAME.as_ptr().cast(), $lib);
             let fn_ptr = unsafe {
