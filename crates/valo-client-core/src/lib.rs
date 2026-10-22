@@ -17,6 +17,10 @@ use valo_ipc::messages::{ClientToLib, LibToClient};
 use valo_launch::gpu_session::GpuSession;
 use valo_launch::paths;
 
+mod stray_target;
+
+const EXPLAIN_MISSING_TARGET_AFTER: Duration = Duration::from_secs(5);
+
 /// `program` with libvalo and `extra_preloads` in front of the caller's `LD_PRELOAD`.
 pub fn target_command(
     program: &Path,
@@ -305,12 +309,23 @@ fn establish_or_child_exit(sock: &Path, child: &mut Child) -> Result<Option<Clie
     std::thread::spawn(move || {
         let _ = tx.send(ClientIPC::establish(&sock));
     });
+    let start = Instant::now();
+    let mut explained = false;
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(conn) => return Ok(Some(conn.context("ipc establish")?)),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if child.try_wait().context("try_wait target")?.is_some() {
                     return Ok(None);
+                }
+                if !explained && start.elapsed() >= EXPLAIN_MISSING_TARGET_AFTER {
+                    explained = true;
+                    let target = std::env::var_os("VALO_TARGET");
+                    let processes = stray_target::scan();
+                    eprintln!(
+                        "[valo-client] {}",
+                        stray_target::explain(child.id(), target.as_deref(), &processes)
+                    );
                 }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
