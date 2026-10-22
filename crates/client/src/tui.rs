@@ -345,6 +345,9 @@ fn handle_event(app: &mut App, conn: &mut ClientIPC, ev: AppEvent) -> Result<()>
         AppEvent::Ipc(LibToClient::Hello(_)) => {
             app.push_event(EventKind::Recv, "Hello (unexpected mid-session)");
         }
+        AppEvent::Ipc(LibToClient::Agent(reply)) => {
+            app.push_event(EventKind::Recv, format!("Agent ({} bytes)", reply.len()));
+        }
         AppEvent::IpcEof => {
             app.push_event(EventKind::User, "lib hung up");
             app.quitting = true;

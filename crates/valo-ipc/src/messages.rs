@@ -66,6 +66,9 @@ pub enum ClientToLib {
     Quit,
     /// The descriptor of the GPU host's control socket follows on the next byte.
     GpuControl,
+    /// An opaque request for the agent inside the target, answered by `LibToClient::Agent`.
+    /// Only while held.
+    Agent(Vec<u8>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,6 +145,8 @@ pub enum LibToClient {
     RestoreSucceeded(RestoreSucceeded),
     SetConfigDone,
     Error(Error),
+    /// The agent's opaque reply to `ClientToLib::Agent`.
+    Agent(Vec<u8>),
 }
 
 #[cfg(test)]
