@@ -71,12 +71,14 @@ pub struct State {
     pub frame: u64,
 }
 
-/// The full keyboard state.
+/// The full keyboard state and pointer position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InputState {
     /// X modifier mask (KeyButMask) of the key events.
     pub mods: u16,
     pub keys: KeyBitset,
+    /// Pointer position in the game window's coordinates.
+    pub pointer: [i32; 2],
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -209,6 +209,7 @@ fn parse_keys(held: &str, no: usize) -> Result<InputState> {
     let mut state = InputState {
         mods: 0,
         keys: KeyBitset::default(),
+        pointer: [0, 0],
     };
     for key in held.split(',').filter(|k| !k.trim().is_empty()) {
         let key = key.trim();
@@ -338,6 +339,7 @@ fn drive(child: &mut Child, timeline: &Timeline, use_gpu: bool) -> Result<()> {
                 let state = timeline.keys.get(&frame).cloned().unwrap_or(InputState {
                     mods: 0,
                     keys: KeyBitset::default(),
+                    pointer: [0, 0],
                 });
                 let next = timeline.next_event(frame);
                 conn.send(&ClientToLib::SetInputs(state))?;
