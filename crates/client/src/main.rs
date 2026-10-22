@@ -23,9 +23,9 @@ use valo_launch::bind::bind_mounts;
 use valo_launch::{paths, resolve_lib};
 
 /// How long to wait for the next FrameBoundary after sending Advance before assuming the target hung.
-const HANG_TIMEOUT: Duration = Duration::from_secs(2);
+const HANG_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long to wait for the first frame boundary
-const FIRST_HANG_TIMEOUT: Duration = Duration::from_secs(5);
+const FIRST_HANG_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Parser)]
 #[command(
