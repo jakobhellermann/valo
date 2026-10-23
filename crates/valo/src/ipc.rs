@@ -26,6 +26,7 @@ use valo_ipc::{LibIPC, PROTOCOL_VERSION};
 
 use crate::checkpoint::SnapshotSlot;
 use crate::global_state::GlobalState;
+use crate::overlay::{self, ToastKind};
 use crate::{Result, checkpoint, determinism, error, info, trace, warn};
 
 /// How long a free session waits for a command from a connected client
@@ -394,17 +395,23 @@ fn handle_command(
             // stay held instead of killing the session
             if let Err(e) = crate::checkpoint_slot(slot) {
                 error!(Ipc, "checkpoint slot {slot} failed: {e}");
-                if let Err(send_err) = conn.send(&LibToClient::Error(Error {
-                    message: format!("checkpoint slot {slot} failed: {e}"),
-                })) {
+                let message = format!("checkpoint slot {slot} failed: {e}");
+                overlay::toast(ToastKind::Error, message.clone());
+                if let Err(send_err) = conn.send(&LibToClient::Error(Error { message })) {
                     warn!(Ipc, "send checkpoint error: {send_err}");
                 }
                 return Action::Hold;
             }
             // valo_checkpoint returns a second time when a later restore jumps back into it
             let response = match GlobalState::get().restore_in_progress() {
-                true => LibToClient::RestoreSucceeded(RestoreSucceeded { frame }),
-                false => LibToClient::CheckpointDone,
+                true => {
+                    overlay::toast(ToastKind::Info, format!("loaded {slot}"));
+                    LibToClient::RestoreSucceeded(RestoreSucceeded { frame })
+                }
+                false => {
+                    overlay::toast(ToastKind::Info, format!("saved {slot}"));
+                    LibToClient::CheckpointDone
+                }
             };
             if let Err(e) = conn.send(&response) {
                 warn!(Ipc, "send {response:?}: {e}");
@@ -416,6 +423,7 @@ fn handle_command(
             // a failed restore past the preflight aborts the target
             if let Err(message) = checkpoint::preflight_restore(SnapshotSlot(slot)) {
                 error!(Ipc, "restore preflight failed: {message}");
+                overlay::toast(ToastKind::Error, message.clone());
                 if let Err(e) = conn.send(&LibToClient::Error(Error { message })) {
                     warn!(Ipc, "send restore error: {e}");
                 }
