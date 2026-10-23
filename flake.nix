@@ -319,6 +319,7 @@
             perfetto
             SDL2.dev
             sdl3.dev
+            shaderc
             vulkan-headers
             vulkan-loader
             libGL.dev

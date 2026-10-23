@@ -1,3 +1,4 @@
+// TODO(ai-review): generated, not yet audited
 //! The Vulkan side: a pipeline per device and swapchain format, and per swapchain image a
 //! framebuffer, buffers and a submit that draws between the game's rendering and its present.
 //! Everything runs on the game's own device and queue through the loader's real entry points.
@@ -8,8 +9,9 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicPtr;
 
 use ash::vk;
-use epaint::{ClippedPrimitive, Primitive, TessellationOptions, Tessellator, Vertex};
+use epaint::{Primitive, Vertex};
 
+use super::paint::{Atlas, Paint};
 use crate::{error, hooks, info, warn};
 
 const LIBVULKAN: *const c_char = c"libvulkan.so.1".as_ptr();
@@ -38,7 +40,8 @@ struct Device {
     get_swapchain_images: vk::PFN_vkGetSwapchainImagesKHR,
     pipelines: HashMap<vk::Format, Pipeline>,
     pools: HashMap<u32, vk::CommandPool>,
-    tessellator: Tessellator,
+    sampler: vk::Sampler,
+    set_layout: vk::DescriptorSetLayout,
 }
 
 struct Pipeline {
@@ -67,6 +70,19 @@ struct Target {
     drawn: vk::Semaphore,
     vertices: Buffer,
     indices: Buffer,
+    descriptors: vk::DescriptorPool,
+    descriptor_set: vk::DescriptorSet,
+    atlas: Option<AtlasTexture>,
+    staging: Buffer,
+}
+
+struct AtlasTexture {
+    image: vk::Image,
+    memory: vk::DeviceMemory,
+    view: vk::ImageView,
+    size: [usize; 2],
+    /// The atlas version the texture holds once every submitted draw ran.
+    version: Option<u64>,
 }
 
 struct Buffer {
@@ -118,10 +134,23 @@ pub(crate) fn on_create_device(physical: vk::PhysicalDevice, device: vk::Device)
         );
         return;
     }
+    // SAFETY: plain object creation on the live `device`.
+    let (sampler, set_layout) = match unsafe { create_sampler_and_set_layout(&raw) } {
+        Ok(created) => created,
+        Err(e) => {
+            error!(
+                Overlay,
+                "creating the atlas sampler on device {device:?} failed ({e:?}), no overlay on it"
+            );
+            return;
+        }
+    };
     let device_state = Device {
         raw,
         physical,
         memory,
+        sampler,
+        set_layout,
         // SAFETY: the loader answered for exactly this name.
         get_swapchain_images: unsafe {
             std::mem::transmute::<*const c_void, vk::PFN_vkGetSwapchainImagesKHR>(
@@ -130,7 +159,6 @@ pub(crate) fn on_create_device(physical: vk::PhysicalDevice, device: vk::Device)
         },
         pipelines: HashMap::new(),
         pools: HashMap::new(),
-        tessellator: Tessellator::new(1.0, TessellationOptions::default(), [1, 1], vec![]),
     };
     STATE
         .lock()
@@ -276,40 +304,48 @@ pub(crate) fn on_destroy_device(device: vk::Device) {
         for (_, pool) in removed.pools {
             raw.destroy_command_pool(pool, None);
         }
+        raw.destroy_descriptor_set_layout(removed.set_layout, None);
+        raw.destroy_sampler(removed.sampler, None);
     }
 }
 
-/// Draws the frame's shapes into the image `present` shows on `queue`, after the semaphores the
-/// present would wait on. Returns the semaphore the present has to wait on instead, or None when
-/// nothing was drawn and the present stays as it is.
-pub(crate) fn before_present(
+/// The size of `swapchain`'s images, when the overlay can draw into them through `queue`.
+pub(super) fn extent(queue: vk::Queue, swapchain: vk::SwapchainKHR) -> Option<vk::Extent2D> {
+    let guard = STATE.lock().unwrap();
+    let state = guard.as_ref()?;
+    let &(device, _) = state.queues.get(&queue)?;
+    let swapchain = state.swapchains.get(&swapchain)?;
+    state
+        .devices
+        .contains_key(&device)
+        .then_some(swapchain.extent)
+}
+
+/// Draws `paint` into image `image_index` of `swapchain` after `wait`. Returns the semaphore the
+/// present has to wait on instead, or None when the draw failed.
+pub(super) fn draw(
     queue: vk::Queue,
     swapchain: vk::SwapchainKHR,
     image_index: u32,
     wait: &[vk::Semaphore],
+    paint: &Paint,
 ) -> Option<vk::Semaphore> {
     let mut guard = STATE.lock().unwrap();
     let state = guard.as_mut()?;
     let &(device_handle, family) = state.queues.get(&queue)?;
     let swapchain_state = state.swapchains.get_mut(&swapchain)?;
     let device = state.devices.get_mut(&device_handle)?;
-    let extent = swapchain_state.extent;
-    let shapes = super::take_shapes(extent.width, extent.height);
-    if shapes.is_empty() {
-        return None;
-    }
-    let primitives = device.tessellator.tessellate_shapes(shapes);
 
     // SAFETY: every handle below was created on `device`, which is live while it presents.
     match unsafe {
-        draw(
+        record_and_submit(
             device,
             swapchain_state,
             family,
             queue,
             image_index,
             wait,
-            &primitives,
+            paint,
         )
     } {
         Ok(drawn) => Some(drawn),
@@ -323,22 +359,23 @@ pub(crate) fn before_present(
     }
 }
 
-unsafe fn draw(
+unsafe fn record_and_submit(
     device: &mut Device,
     swapchain: &mut Swapchain,
     family: u32,
     queue: vk::Queue,
     image_index: u32,
     wait: &[vk::Semaphore],
-    primitives: &[ClippedPrimitive],
+    paint: &Paint,
 ) -> Result<vk::Semaphore, vk::Result> {
+    let primitives = &paint.primitives;
     let format = swapchain.format;
     let extent = swapchain.extent;
     let image = swapchain.images[image_index as usize];
     // SAFETY: the caller's contract: all handles belong to `device`, `image_index` was acquired.
     unsafe {
         if !device.pipelines.contains_key(&format) {
-            let pipeline = create_pipeline(&device.raw, format)?;
+            let pipeline = create_pipeline(&device.raw, format, device.set_layout)?;
             device.pipelines.insert(format, pipeline);
         }
         if !device.pools.contains_key(&family) {
@@ -357,6 +394,7 @@ unsafe fn draw(
                 &device.raw,
                 device.pools[&family],
                 pipeline.render_pass,
+                device.set_layout,
                 image,
                 format,
                 extent,
@@ -397,6 +435,7 @@ unsafe fn draw(
             &vk::CommandBufferBeginInfo::default()
                 .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
         )?;
+        let uploaded = upload_atlas(raw, &device.memory, device.sampler, target, &paint.atlas)?;
         raw.cmd_begin_render_pass(
             target.commands,
             &vk::RenderPassBeginInfo::default()
@@ -412,6 +451,14 @@ unsafe fn draw(
             target.commands,
             vk::PipelineBindPoint::GRAPHICS,
             pipeline.raw,
+        );
+        raw.cmd_bind_descriptor_sets(
+            target.commands,
+            vk::PipelineBindPoint::GRAPHICS,
+            pipeline.layout,
+            0,
+            &[target.descriptor_set],
+            &[],
         );
         raw.cmd_set_viewport(
             target.commands,
@@ -432,7 +479,7 @@ unsafe fn draw(
         raw.cmd_push_constants(
             target.commands,
             pipeline.layout,
-            vk::ShaderStageFlags::VERTEX,
+            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
             0,
             std::slice::from_raw_parts((&raw const push).cast::<u8>(), size_of::<Push>()),
         );
@@ -486,6 +533,9 @@ unsafe fn draw(
                 .signal_semaphores(&[target.drawn])],
             target.fence,
         )?;
+        if let Some(version) = uploaded {
+            target.atlas.as_mut().unwrap().version = Some(version);
+        }
         Ok(target.drawn)
     }
 }
@@ -518,7 +568,44 @@ fn is_srgb(format: vk::Format) -> bool {
     )
 }
 
-unsafe fn create_pipeline(raw: &ash::Device, format: vk::Format) -> Result<Pipeline, vk::Result> {
+unsafe fn create_sampler_and_set_layout(
+    raw: &ash::Device,
+) -> Result<(vk::Sampler, vk::DescriptorSetLayout), vk::Result> {
+    // SAFETY: plain object creation on a live device; every create info outlives its call.
+    unsafe {
+        let sampler = raw.create_sampler(
+            &vk::SamplerCreateInfo::default()
+                .mag_filter(vk::Filter::LINEAR)
+                .min_filter(vk::Filter::LINEAR)
+                .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
+            None,
+        )?;
+        let binding = vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+        let set_layout = match raw.create_descriptor_set_layout(
+            &vk::DescriptorSetLayoutCreateInfo::default().bindings(std::slice::from_ref(&binding)),
+            None,
+        ) {
+            Ok(layout) => layout,
+            Err(e) => {
+                raw.destroy_sampler(sampler, None);
+                return Err(e);
+            }
+        };
+        Ok((sampler, set_layout))
+    }
+}
+
+unsafe fn create_pipeline(
+    raw: &ash::Device,
+    format: vk::Format,
+    set_layout: vk::DescriptorSetLayout,
+) -> Result<Pipeline, vk::Result> {
     // SAFETY: plain object creation on a live device; every create info outlives its call.
     unsafe {
         // The image arrives holding the game's frame for presentation and leaves the same way.
@@ -554,10 +641,11 @@ unsafe fn create_pipeline(raw: &ash::Device, format: vk::Format) -> Result<Pipel
         )?;
 
         let push_range = vk::PushConstantRange::default()
-            .stage_flags(vk::ShaderStageFlags::VERTEX)
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
             .size(size_of::<Push>() as u32);
         let layout = raw.create_pipeline_layout(
             &vk::PipelineLayoutCreateInfo::default()
+                .set_layouts(std::slice::from_ref(&set_layout))
                 .push_constant_ranges(std::slice::from_ref(&push_range)),
             None,
         )?;
@@ -658,6 +746,7 @@ unsafe fn create_target(
     raw: &ash::Device,
     pool: vk::CommandPool,
     render_pass: vk::RenderPass,
+    set_layout: vk::DescriptorSetLayout,
     image: vk::Image,
     format: vk::Format,
     extent: vk::Extent2D,
@@ -698,6 +787,20 @@ unsafe fn create_target(
             None,
         )?;
         let drawn = raw.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)?;
+        let pool_size = vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1);
+        let descriptors = raw.create_descriptor_pool(
+            &vk::DescriptorPoolCreateInfo::default()
+                .max_sets(1)
+                .pool_sizes(std::slice::from_ref(&pool_size)),
+            None,
+        )?;
+        let descriptor_set = raw.allocate_descriptor_sets(
+            &vk::DescriptorSetAllocateInfo::default()
+                .descriptor_pool(descriptors)
+                .set_layouts(std::slice::from_ref(&set_layout)),
+        )?[0];
         Ok(Target {
             view,
             framebuffer,
@@ -707,6 +810,10 @@ unsafe fn create_target(
             drawn,
             vertices: Buffer::empty(),
             indices: Buffer::empty(),
+            descriptors,
+            descriptor_set,
+            atlas: None,
+            staging: Buffer::empty(),
         })
     }
 }
@@ -719,6 +826,11 @@ unsafe fn destroy_target(raw: &ash::Device, target: Target) {
         }
         target.vertices.destroy(raw);
         target.indices.destroy(raw);
+        target.staging.destroy(raw);
+        if let Some(atlas) = target.atlas {
+            atlas.destroy(raw);
+        }
+        raw.destroy_descriptor_pool(target.descriptors, None);
         raw.destroy_semaphore(target.drawn, None);
         raw.destroy_fence(target.fence, None);
         raw.free_command_buffers(target.pool, &[target.commands]);
@@ -767,13 +879,11 @@ unsafe fn ensure_capacity(
             None,
         )?;
         let requirements = raw.get_buffer_memory_requirements(new_raw);
-        let wanted = vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
-        let Some(type_index) = (0..memory.memory_type_count).find(|&i| {
-            requirements.memory_type_bits & (1 << i) != 0
-                && memory.memory_types[i as usize]
-                    .property_flags
-                    .contains(wanted)
-        }) else {
+        let Some(type_index) = memory_type(
+            memory,
+            requirements.memory_type_bits,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        ) else {
             raw.destroy_buffer(new_raw, None);
             return Err(vk::Result::ERROR_FEATURE_NOT_PRESENT);
         };
@@ -797,4 +907,238 @@ unsafe fn ensure_capacity(
         .destroy(raw);
     }
     Ok(())
+}
+
+fn memory_type(
+    memory: &vk::PhysicalDeviceMemoryProperties,
+    allowed: u32,
+    wanted: vk::MemoryPropertyFlags,
+) -> Option<u32> {
+    (0..memory.memory_type_count).find(|&i| {
+        allowed & (1 << i) != 0
+            && memory.memory_types[i as usize]
+                .property_flags
+                .contains(wanted)
+    })
+}
+
+/// Records copying `atlas` into the target's texture when it holds another version. Returns the
+/// version that is current once the recorded commands ran.
+unsafe fn upload_atlas(
+    raw: &ash::Device,
+    memory: &vk::PhysicalDeviceMemoryProperties,
+    sampler: vk::Sampler,
+    target: &mut Target,
+    atlas: &Atlas,
+) -> Result<Option<u64>, vk::Result> {
+    if target
+        .atlas
+        .as_ref()
+        .is_some_and(|t| t.version == Some(atlas.version))
+    {
+        return Ok(None);
+    }
+    let size = atlas.image.size;
+    // SAFETY: the caller waited for the target's previous draw and is recording `target.commands`.
+    unsafe {
+        let old_layout = match target.atlas.take_if(|t| t.size != size) {
+            Some(stale) => {
+                stale.destroy(raw);
+                vk::ImageLayout::UNDEFINED
+            }
+            None if target.atlas.is_some() => vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            None => vk::ImageLayout::UNDEFINED,
+        };
+        if target.atlas.is_none() {
+            let texture = AtlasTexture::create(raw, memory, size)?;
+            let image_info = vk::DescriptorImageInfo::default()
+                .sampler(sampler)
+                .image_view(texture.view)
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+            raw.update_descriptor_sets(
+                &[vk::WriteDescriptorSet::default()
+                    .dst_set(target.descriptor_set)
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(std::slice::from_ref(&image_info))],
+                &[],
+            );
+            target.atlas = Some(texture);
+        }
+        let texture = target.atlas.as_ref().unwrap();
+
+        let bytes = (atlas.image.pixels.len() * 4) as u64;
+        ensure_capacity(
+            raw,
+            memory,
+            &mut target.staging,
+            bytes,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+        )?;
+        let staging = std::slice::from_raw_parts_mut(
+            target.staging.mapped as *mut [u8; 4],
+            atlas.image.pixels.len(),
+        );
+        for (dst, src) in staging.iter_mut().zip(&atlas.image.pixels) {
+            *dst = src.to_array();
+        }
+
+        let range = vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        };
+        raw.cmd_pipeline_barrier(
+            target.commands,
+            vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[vk::ImageMemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::SHADER_READ)
+                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                .old_layout(old_layout)
+                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .image(texture.image)
+                .subresource_range(range)],
+        );
+        raw.cmd_copy_buffer_to_image(
+            target.commands,
+            target.staging.raw,
+            texture.image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &[vk::BufferImageCopy::default()
+                .image_subresource(vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .image_extent(vk::Extent3D {
+                    width: size[0] as u32,
+                    height: size[1] as u32,
+                    depth: 1,
+                })],
+        );
+        raw.cmd_pipeline_barrier(
+            target.commands,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[vk::ImageMemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .image(texture.image)
+                .subresource_range(range)],
+        );
+    }
+    Ok(Some(atlas.version))
+}
+
+impl AtlasTexture {
+    unsafe fn create(
+        raw: &ash::Device,
+        memory: &vk::PhysicalDeviceMemoryProperties,
+        size: [usize; 2],
+    ) -> Result<Self, vk::Result> {
+        // UNORM: the shader multiplies the texels as the sRGB bytes epaint wrote.
+        let format = vk::Format::R8G8B8A8_UNORM;
+        // SAFETY: plain object creation on a live device; every create info outlives its call.
+        unsafe {
+            let image = raw.create_image(
+                &vk::ImageCreateInfo::default()
+                    .image_type(vk::ImageType::TYPE_2D)
+                    .format(format)
+                    .extent(vk::Extent3D {
+                        width: size[0] as u32,
+                        height: size[1] as u32,
+                        depth: 1,
+                    })
+                    .mip_levels(1)
+                    .array_layers(1)
+                    .samples(vk::SampleCountFlags::TYPE_1)
+                    .tiling(vk::ImageTiling::OPTIMAL)
+                    .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED)
+                    .initial_layout(vk::ImageLayout::UNDEFINED),
+                None,
+            )?;
+            let requirements = raw.get_image_memory_requirements(image);
+            let type_index = memory_type(
+                memory,
+                requirements.memory_type_bits,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            )
+            .or_else(|| {
+                memory_type(
+                    memory,
+                    requirements.memory_type_bits,
+                    vk::MemoryPropertyFlags::empty(),
+                )
+            })
+            .expect("an image's memory requirements allow at least one type");
+            let memory = match raw.allocate_memory(
+                &vk::MemoryAllocateInfo::default()
+                    .allocation_size(requirements.size)
+                    .memory_type_index(type_index),
+                None,
+            ) {
+                Ok(memory) => memory,
+                Err(e) => {
+                    raw.destroy_image(image, None);
+                    return Err(e);
+                }
+            };
+            let view = raw.bind_image_memory(image, memory, 0).and_then(|()| {
+                raw.create_image_view(
+                    &vk::ImageViewCreateInfo::default()
+                        .image(image)
+                        .view_type(vk::ImageViewType::TYPE_2D)
+                        .format(format)
+                        .subresource_range(vk::ImageSubresourceRange {
+                            aspect_mask: vk::ImageAspectFlags::COLOR,
+                            base_mip_level: 0,
+                            level_count: 1,
+                            base_array_layer: 0,
+                            layer_count: 1,
+                        }),
+                    None,
+                )
+            });
+            let view = match view {
+                Ok(view) => view,
+                Err(e) => {
+                    raw.destroy_image(image, None);
+                    raw.free_memory(memory, None);
+                    return Err(e);
+                }
+            };
+            Ok(AtlasTexture {
+                image,
+                memory,
+                view,
+                size,
+                version: None,
+            })
+        }
+    }
+
+    unsafe fn destroy(self, raw: &ash::Device) {
+        // SAFETY: the caller's contract: no submitted draw samples the texture any more.
+        unsafe {
+            raw.destroy_image_view(self.view, None);
+            raw.destroy_image(self.image, None);
+            raw.free_memory(self.memory, None);
+        }
+    }
 }
