@@ -10,9 +10,10 @@
 //! six integer and eight float argument registers, calls the counter, restores them and tail-jumps
 //! to the original.
 
-use std::ffi::{CStr, c_char, c_void};
+use std::collections::HashMap;
+use std::ffi::{CStr, c_char, c_int, c_void};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 
 use rustix::mm::{MapFlags, ProtFlags};
 
@@ -31,13 +32,46 @@ static REAL_ADD_INTERNAL_CALL: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null
 
 type AddInternalCallFn = unsafe extern "C" fn(*const c_char, *const c_void);
 
+/// How many managed frames above the draw identify its origin. Deeper is rarely more telling and
+/// multiplies the distinct stacks to aggregate.
+const STACK_DEPTH: usize = 4;
+
+/// Walking the managed stack costs far more than the draw itself, so it is off unless asked for:
+/// `VALO_RNG_STACKS=1`. A run that wants attribution accepts being slow.
+static WALK_STACKS: AtomicBool = AtomicBool::new(false);
+static STACKS: Mutex<Option<HashMap<String, u64>>> = Mutex::new(None);
+static MONO_STACK_WALK: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+static MONO_METHOD_FULL_NAME: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+static MONO_FREE: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+type StackFrameFn = unsafe extern "C" fn(*mut c_void, c_int, c_int, c_int, *mut c_void) -> c_int;
+type StackWalkFn = unsafe extern "C" fn(StackFrameFn, *mut c_void);
+type MethodFullNameFn = unsafe extern "C" fn(*mut c_void, c_int) -> *mut c_char;
+type FreeFn = unsafe extern "C" fn(*mut c_void);
+
+/// Remembers the symbols a stack walk needs, as the target resolves them.
+pub(crate) fn note_dlsym(name: &[u8], resolved: *mut c_void) {
+    let slot = match name {
+        b"mono_stack_walk" => &MONO_STACK_WALK,
+        b"mono_method_full_name" => &MONO_METHOD_FULL_NAME,
+        b"mono_free" => &MONO_FREE,
+        _ => return,
+    };
+    slot.store(resolved, Ordering::SeqCst);
+}
+
 /// Replacement for a `dlsym` of `mono_add_internal_call`. `None` leaves the lookup alone.
 pub(crate) fn dlsym_add_internal_call(resolved: *mut c_void) -> Option<*mut c_void> {
     let previous = REAL_ADD_INTERNAL_CALL.swap(resolved, Ordering::SeqCst);
     if previous.is_null() {
+        let stacks = std::env::var_os("VALO_RNG_STACKS").is_some_and(|v| v != "0");
+        WALK_STACKS.store(stacks, Ordering::SeqCst);
+        if stacks {
+            *STACKS.lock().unwrap_or_else(|e| e.into_inner()) = Some(HashMap::new());
+        }
         info!(
             Hooks,
-            "counting UnityEngine.Random draws through mono_add_internal_call"
+            "counting UnityEngine.Random draws through mono_add_internal_call (stacks: {stacks})"
         );
     }
     Some(mono_add_internal_call as *mut c_void)
@@ -95,6 +129,109 @@ extern "C" fn count(slot: u64) {
     if let Some(counter) = COUNTS.get(slot as usize) {
         counter.fetch_add(1, Ordering::Relaxed);
     }
+    if WALK_STACKS.load(Ordering::Relaxed) {
+        record_stack(slot);
+    }
+}
+
+// The frames collected for the draw being counted. The walk callback runs to completion before
+// the next draw on this thread, so one buffer per thread holds it.
+thread_local! {
+    static FRAMES: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Attributes one draw to the managed methods above it.
+fn record_stack(slot: u64) {
+    let walk = MONO_STACK_WALK.load(Ordering::Relaxed);
+    if walk.is_null() {
+        return;
+    }
+    // SAFETY: the pointer is `mono_stack_walk` as the target resolved it.
+    let walk = unsafe { std::mem::transmute::<*mut c_void, StackWalkFn>(walk) };
+    // SAFETY: `frame` has the callback signature and ignores its user data.
+    unsafe { walk(frame, std::ptr::null_mut()) };
+
+    let caller = FRAMES.with_borrow_mut(|frames| {
+        let joined = frames.join(" <- ");
+        frames.clear();
+        joined
+    });
+    let name = NAMES
+        .lock()
+        .ok()
+        .and_then(|names| names.get(slot as usize).cloned())
+        .unwrap_or_default();
+    let mut stacks = STACKS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(stacks) = stacks.as_mut() {
+        *stacks.entry(format!("{name} <- {caller}")).or_insert(0) += 1;
+    }
+}
+
+/// `mono_stack_walk`'s per-frame callback. Returns non-zero to stop the walk.
+unsafe extern "C" fn frame(
+    method: *mut c_void,
+    _native_offset: c_int,
+    _il_offset: c_int,
+    managed: c_int,
+    _data: *mut c_void,
+) -> c_int {
+    if managed == 0 || method.is_null() {
+        return 0;
+    }
+    let full_name = MONO_METHOD_FULL_NAME.load(Ordering::Relaxed);
+    if full_name.is_null() {
+        return 1;
+    }
+    // SAFETY: the pointer is `mono_method_full_name` as the target resolved it, called with the
+    // method the walk handed us.
+    let name = unsafe {
+        let full_name = std::mem::transmute::<*mut c_void, MethodFullNameFn>(full_name);
+        let raw = full_name(method, 0);
+        if raw.is_null() {
+            return 1;
+        }
+        let owned = CStr::from_ptr(raw).to_string_lossy().into_owned();
+        let free = MONO_FREE.load(Ordering::Relaxed);
+        if !free.is_null() {
+            std::mem::transmute::<*mut c_void, FreeFn>(free)(raw.cast());
+        }
+        owned
+    };
+    FRAMES.with_borrow_mut(|frames| {
+        frames.push(name);
+        c_int::from(frames.len() >= STACK_DEPTH)
+    })
+}
+
+/// The draws attributed since the last read, as `count stack` entries separated by `;`, most
+/// drawn first. Read and cleared like `valo_rng_draws`, so an agent reporting per frame sees
+/// which call sites drew in that frame — the comparison that locates a divergence.
+///
+/// # Safety
+/// `buf` is valid for writes of `cap` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn valo_rng_draw_stacks(buf: *mut u8, cap: usize) -> isize {
+    let mut stacks = STACKS.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(stacks) = stacks.as_mut() else {
+        return 0;
+    };
+    let mut sorted: Vec<_> = stacks.drain().collect();
+    sorted.sort_by(|(left_stack, left), (right_stack, right)| {
+        right.cmp(left).then_with(|| left_stack.cmp(right_stack))
+    });
+    let mut text = String::new();
+    for (stack, count) in sorted {
+        if !text.is_empty() {
+            text.push(';');
+        }
+        text.push_str(&format!("{count} {stack}"));
+    }
+    if text.len() > cap || buf.is_null() {
+        return text.len() as isize;
+    }
+    // SAFETY: `buf` is valid for `cap` bytes and `text` is no longer than that.
+    unsafe { std::ptr::copy_nonoverlapping(text.as_ptr(), buf, text.len()) };
+    text.len() as isize
 }
 
 /// The draws counted so far as `name=count` pairs, and resets them. Returns the length written,

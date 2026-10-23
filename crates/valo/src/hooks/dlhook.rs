@@ -53,6 +53,7 @@ unsafe extern "C" fn dlsym_hook(handle: *mut c_void, symbol: *const c_char) -> *
         // SAFETY: symbol is a valid C string from the caller
         let name = unsafe { CStr::from_ptr(symbol) };
         trace!(Hooks, "dlsym({})", name.to_str().unwrap_or("<bad utf8>"));
+        crate::hooks::mono::note_dlsym(name.to_bytes(), resolved);
 
         if let Some(p) = match name.to_bytes() {
             b"SteamAPI_RestartAppIfNecessary" => {
