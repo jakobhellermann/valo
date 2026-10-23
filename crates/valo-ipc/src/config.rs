@@ -119,11 +119,22 @@ pub struct DeterminismConfig {
     pub randomness: RandomnessConfig,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OverlayConfig {
     /// Draw the shapes the game submits through `valo_overlay_shapes` over its frames.
     pub enabled: bool,
+    /// Toast `saved <slot>` and `loaded <slot>` on checkpoints and restores.
+    pub savestate_toasts: bool,
+}
+
+impl Default for OverlayConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            savestate_toasts: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]

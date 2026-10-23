@@ -3,18 +3,15 @@
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 
 use epaint::{Color32, Pos2, Shape, Stroke};
-use valo_ipc::config::OverlayConfig;
 
 use crate::warn;
 
 /// More frames queued for a present than any swap chain keeps in flight: presents stopped
 /// taking them, so the oldest are dropped.
 const MAX_PENDING: usize = 8;
-
-static ENABLED: AtomicBool = AtomicBool::new(false);
 
 static FRAMES: Mutex<Frames> = Mutex::new(Frames {
     submitted: None,
@@ -59,20 +56,10 @@ pub struct OverlayCircle {
     pub argb: u32,
 }
 
-pub fn set_config(config: &OverlayConfig) {
-    ENABLED.store(config.enabled, Ordering::Relaxed);
-}
-
-pub fn config() -> OverlayConfig {
-    OverlayConfig {
-        enabled: ENABLED.load(Ordering::Relaxed),
-    }
-}
-
 /// Whether submitted shapes get drawn.
 #[unsafe(no_mangle)]
 pub extern "C" fn valo_overlay_enabled() -> bool {
-    ENABLED.load(Ordering::Relaxed)
+    super::OVERLAY.enabled.load(Ordering::Relaxed)
 }
 
 /// Replaces the shapes drawn over the frame being rendered, on a `width` × `height` screen.
@@ -129,7 +116,7 @@ pub(super) fn take_shapes(width: u32, height: u32) -> Vec<Shape> {
     let Some(frame) = FRAMES.lock().unwrap().pending.pop_front().flatten() else {
         return Vec::new();
     };
-    if !ENABLED.load(Ordering::Relaxed) || frame.width == 0 || frame.height == 0 {
+    if !valo_overlay_enabled() || frame.width == 0 || frame.height == 0 {
         return Vec::new();
     }
     let sx = width as f32 / frame.width as f32;

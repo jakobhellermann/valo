@@ -9,15 +9,47 @@ mod paint;
 mod renderer;
 mod toast;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use ash::vk;
+use valo_ipc::config::OverlayConfig;
 
 pub(crate) use game::queue_frame;
-pub use game::{config, set_config};
 pub(crate) use renderer::{
     on_create_device, on_create_swapchain, on_destroy_device, on_destroy_swapchain,
     on_get_device_queue, swapchain_usage,
 };
 pub(crate) use toast::{ToastKind, toast};
+
+pub static OVERLAY: Overlay = Overlay {
+    enabled: AtomicBool::new(false),
+    savestate_toasts: AtomicBool::new(true),
+};
+
+/// The applied [`OverlayConfig`].
+pub struct Overlay {
+    enabled: AtomicBool,
+    savestate_toasts: AtomicBool,
+}
+
+impl Overlay {
+    pub fn set_config(&self, config: &OverlayConfig) {
+        self.enabled.store(config.enabled, Ordering::Relaxed);
+        self.savestate_toasts
+            .store(config.savestate_toasts, Ordering::Relaxed);
+    }
+
+    pub fn config(&self) -> OverlayConfig {
+        OverlayConfig {
+            enabled: self.enabled.load(Ordering::Relaxed),
+            savestate_toasts: self.savestate_toasts(),
+        }
+    }
+
+    pub(crate) fn savestate_toasts(&self) -> bool {
+        self.savestate_toasts.load(Ordering::Relaxed)
+    }
+}
 
 /// Draws over the image `present` shows on `queue`, after the semaphores the present would wait
 /// on. Returns the semaphore the present has to wait on instead, or None when nothing was drawn

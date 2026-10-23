@@ -405,11 +405,15 @@ fn handle_command(
             // valo_checkpoint returns a second time when a later restore jumps back into it
             let response = match GlobalState::get().restore_in_progress() {
                 true => {
-                    overlay::toast(ToastKind::Info, format!("loaded {slot}"));
+                    if overlay::OVERLAY.savestate_toasts() {
+                        overlay::toast(ToastKind::Info, format!("loaded {slot}"));
+                    }
                     LibToClient::RestoreSucceeded(RestoreSucceeded { frame })
                 }
                 false => {
-                    overlay::toast(ToastKind::Info, format!("saved {slot}"));
+                    if overlay::OVERLAY.savestate_toasts() {
+                        overlay::toast(ToastKind::Info, format!("saved {slot}"));
+                    }
                     LibToClient::CheckpointDone
                 }
             };
@@ -512,7 +516,7 @@ pub fn effective_config() -> Config {
         skip_draw: state.skip_draw_mode(),
         restore_redraw: state.restore_redraw(),
         input: crate::input_feed::config(),
-        overlay: crate::overlay::config(),
+        overlay: crate::overlay::OVERLAY.config(),
     }
 }
 
