@@ -18,7 +18,6 @@ use config::ConfigArgs;
 use valo_client_core::Session;
 use valo_ipc::config::Config;
 use valo_ipc::messages::{ClientToLib, FrameBoundary, LibToClient};
-use valo_launch::bind::bind_mounts;
 use valo_launch::{paths, resolve_lib};
 
 /// How long to wait for the next FrameBoundary after sending Advance before assuming the target hung.
@@ -152,12 +151,12 @@ fn run(
     let lib = std::fs::canonicalize(&lib)
         .with_context(|| format!("canonicalize libvalo.so path {}", lib.display()))?;
 
-    if std::env::var_os("VALO_TARGET").is_none() {
+    if config.attach_target.is_none() && std::env::var_os("VALO_TARGET").is_none() {
         ensure_elf(&program)?;
     }
 
     let mut cmd = build_command(gdb, &program, args, &lib);
-    bind_mounts(&mut cmd, &config.bind)?;
+    config.apply(&mut cmd)?;
     let use_gpu = !config.software_rendering;
     let config = config.config();
 

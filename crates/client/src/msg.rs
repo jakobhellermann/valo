@@ -73,7 +73,7 @@ pub fn spawn(
         .with_context(|| format!("canonicalize libvalo.so path {}", lib.display()))?;
 
     let mut cmd = crate::build_command(false, &PathBuf::from(program), &target[1..], &lib);
-    valo_launch::bind::bind_mounts(&mut cmd, &config_args.bind)?;
+    config_args.apply(&mut cmd)?;
     use std::os::unix::process::CommandExt;
     // closing the spawning terminal must not take the session down with it.
     cmd.process_group(0);
