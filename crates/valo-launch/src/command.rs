@@ -17,6 +17,8 @@ pub fn configure_target(cmd: &mut Command, gpu: bool) -> Result<()> {
     cmd.env("vk_x11_strict_image_count", "true");
     // The lib forces the Mesa GLX vendor once its libraries are loaded.
     cmd.env_remove("__GLX_VENDOR_LIBRARY_NAME");
+    // TODO: there's an upstream bug often triggered by swapchain reset after restore.
+    cmd.env("DISABLE_VK_LAYER_VALVE_steam_overlay_1", "1");
 
     // Force llvmpipe for savestate compatibility
     cmd.env("LIBGL_ALWAYS_SOFTWARE", "1");
