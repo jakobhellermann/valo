@@ -18,6 +18,5 @@ ratatui = "0.30.0"
 valo-ipc = { path = "../valo-ipc" }
 valo-client-core = { path = "../valo-client-core" }
 valo-launch = { path = "../valo-launch" }
-x11rb = { version = "0.14", features = ["shape"] }
-font8x8 = "0.3.1"
+x11rb = "0.14"
 png = "0.18"

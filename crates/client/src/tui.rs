@@ -19,9 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::hud::Hud;
 use crate::input::{GameWindow, HotkeyAction, HotkeyEvent};
-use crate::overlay::OverlayEvent;
 
 use anyhow::{Context, Result, bail};
 use crossterm::event::{self, Event as CtEvent, KeyCode, KeyEvent, KeyModifiers};
@@ -57,7 +55,6 @@ enum AppEvent {
     IpcError(String),
     Key(KeyEvent),
     Hotkey(HotkeyEvent),
-    Overlay(OverlayEvent),
     LogLine(String),
 }
 
@@ -73,8 +70,7 @@ struct App {
     /// Slot of the savestate command most recently queued or sent, used to
     /// match `CheckpointDone`/`RestoreSucceeded` replies.
     pending_op_slot: Option<u32>,
-    hud: Hud,
-    /// Shared with the hotkey and overlay threads.
+    /// Shared with the hotkey thread.
     game_window: GameWindow,
     /// Per-slot savestate bookkeeping for the status display.
     slots: Vec<SlotInfo>,
@@ -109,11 +105,10 @@ enum EventKind {
 }
 
 impl App {
-    fn new(target_pid: u32, hud: Hud, game_window: GameWindow) -> Self {
+    fn new(target_pid: u32, game_window: GameWindow) -> Self {
         let slots = Self::scan_disk_slots();
         Self {
             target_pid,
-            hud,
             game_window,
             paused: false,
             pending_advance: None,
@@ -199,12 +194,6 @@ pub fn run(session: &mut Session, log_path: Option<&Path>, config: Config) -> Re
             let _ = tx.send(AppEvent::Hotkey(ev));
         });
     }
-    let overlay = {
-        let tx = tx.clone();
-        crate::overlay::spawn_thread(game_window.clone(), move |ev| {
-            let _ = tx.send(AppEvent::Overlay(ev));
-        })
-    };
     if let Some(p) = log_path {
         spawn_log_tail_thread(tx.clone(), p.to_path_buf());
     }
@@ -221,7 +210,6 @@ pub fn run(session: &mut Session, log_path: Option<&Path>, config: Config) -> Re
             rx,
             target_pid,
             &keyboard_input,
-            Hud::new(overlay),
             game_window,
         )
     }));
@@ -238,10 +226,9 @@ fn main_loop(
     rx: Receiver<AppEvent>,
     target_pid: u32,
     keyboard_input: &KeyboardInput,
-    hud: Hud,
     game_window: GameWindow,
 ) -> Result<()> {
-    let mut app = App::new(target_pid, hud, game_window);
+    let mut app = App::new(target_pid, game_window);
     app.push_event(EventKind::User, "ipc connected; running");
 
     draw(terminal, &app)?;
@@ -278,9 +265,6 @@ fn main_loop(
 }
 
 fn handle_event(app: &mut App, conn: &mut ClientIPC, ev: AppEvent) -> Result<()> {
-    if let AppEvent::Ipc(msg) = &ev {
-        app.hud.received(msg);
-    }
     match ev {
         AppEvent::Ipc(LibToClient::FrameBoundary(FrameBoundary { frame, game_window })) => {
             app.game_window
@@ -371,12 +355,6 @@ fn handle_event(app: &mut App, conn: &mut ClientIPC, ev: AppEvent) -> Result<()>
                 app.push_event(EventKind::Error, format!("game hotkeys: {msg}"));
             }
         },
-        AppEvent::Overlay(OverlayEvent::Status(msg)) => {
-            app.push_event(EventKind::User, format!("overlay: {msg}"));
-        }
-        AppEvent::Overlay(OverlayEvent::Fatal(msg)) => {
-            app.push_event(EventKind::Error, format!("overlay: {msg}"));
-        }
         AppEvent::LogLine(s) => {
             app.push_event(EventKind::Log, s);
         }
@@ -479,7 +457,6 @@ fn send(conn: &mut ClientIPC, app: &mut App, msg: ClientToLib) -> Result<()> {
         app.push_event(EventKind::Send, format!("{msg:?}"));
     }
     conn.send(&msg).context("ipc send")?;
-    app.hud.sent(&msg);
     Ok(())
 }
 

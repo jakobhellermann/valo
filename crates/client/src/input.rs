@@ -142,10 +142,7 @@ pub type GameWindow = Arc<AtomicU32>;
 
 /// The reported game window once it is viewable. A dead connection or a window that vanished
 /// yields None.
-pub(crate) fn viewable_game_window(
-    conn: &RustConnection,
-    game_window: &AtomicU32,
-) -> Option<Window> {
+fn viewable_game_window(conn: &RustConnection, game_window: &AtomicU32) -> Option<Window> {
     let window = game_window.load(Ordering::Relaxed);
     if window == 0 {
         return None;

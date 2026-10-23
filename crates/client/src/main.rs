@@ -1,8 +1,6 @@
 mod config;
-mod hud;
 mod input;
 mod msg;
-mod overlay;
 mod screenshot;
 mod tui;
 
@@ -256,7 +254,7 @@ fn run_ipc_loop(session: &mut Session, gdb: bool, config: Config) -> Result<Sess
         let conn = session.conn();
         conn.set_read_timeout(FIRST_HANG_TIMEOUT)
             .context("set hang watchdog timeout")?;
-        let (hotkeys, hud) = game_ui.get_or_insert_with(|| spawn_game_ui(game_window.clone()));
+        let hotkeys = game_ui.get_or_insert_with(|| spawn_hotkeys(game_window.clone()));
         let mut first_boundary = true;
         loop {
             let msg = match conn.recv() {
@@ -307,13 +305,11 @@ fn run_ipc_loop(session: &mut Session, gdb: bool, config: Config) -> Result<Sess
                             }
                         };
                         conn.send(&cmd).context("send hotkey command")?;
-                        hud.sent(&cmd);
                     }
                     conn.send(&ClientToLib::AdvanceFrames(1))
                         .context("send advance")?;
                 }
                 other => {
-                    hud.received(&other);
                     eprintln!("[valo-client] ipc <- {other:?}");
                 }
             }
@@ -326,16 +322,12 @@ fn run_ipc_loop(session: &mut Session, gdb: bool, config: Config) -> Result<Sess
     }
 }
 
-fn spawn_game_ui(game_window: input::GameWindow) -> (mpsc::Receiver<input::HotkeyEvent>, hud::Hud) {
+fn spawn_hotkeys(game_window: input::GameWindow) -> mpsc::Receiver<input::HotkeyEvent> {
     let (hotkey_tx, hotkey_rx) = mpsc::channel::<input::HotkeyEvent>();
-    input::spawn_thread(game_window.clone(), move |ev| {
+    input::spawn_thread(game_window, move |ev| {
         let _ = hotkey_tx.send(ev);
     });
-    let overlay = overlay::spawn_thread(game_window, |ev| match ev {
-        overlay::OverlayEvent::Status(msg) => eprintln!("[valo-client] overlay: {msg}"),
-        overlay::OverlayEvent::Fatal(msg) => eprintln!("[valo-client] overlay failed: {msg}"),
-    });
-    (hotkey_rx, hud::Hud::new(overlay))
+    hotkey_rx
 }
 
 pub(crate) fn build_command(gdb: bool, program: &PathBuf, args: &[String], lib: &Path) -> Command {
