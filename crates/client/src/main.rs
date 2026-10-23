@@ -62,13 +62,9 @@ enum Cmd {
         #[arg(long, help_heading = "Runtime")]
         tui: bool,
 
-        /// Target program to execute.
-        #[arg(help_heading = None)]
-        program: PathBuf,
-
-        /// Arguments forwarded to the target program.
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true, help_heading = None)]
-        args: Vec<String>,
+        /// Target program and arguments.
+        #[arg(required = true, trailing_var_arg = true, help_heading = None)]
+        target: Vec<String>,
     },
     /// Spawn a detached target.
     Spawn {
@@ -88,7 +84,7 @@ enum Cmd {
         config: ConfigArgs,
 
         /// Target program and arguments.
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true, help_heading = None)]
+        #[arg(trailing_var_arg = true, help_heading = None)]
         target: Vec<String>,
     },
 
@@ -110,10 +106,9 @@ fn main() -> Result<ExitCode> {
             lib,
             gdb,
             tui,
-            program,
-            args,
+            target,
             config,
-        } => run(lib, gdb, tui, program, args, config),
+        } => run(lib, gdb, tui, &target, config),
         Cmd::Spawn {
             lib,
             sock,
@@ -148,10 +143,11 @@ fn run(
     lib: Option<PathBuf>,
     gdb: bool,
     use_tui: bool,
-    program: PathBuf,
-    args: Vec<String>,
+    target: &[String],
     config: ConfigArgs,
 ) -> Result<ExitCode> {
+    let (program, args) = target.split_first().expect("clap requires a target");
+    let program = PathBuf::from(program);
     let lib = resolve_lib(lib)?;
     let lib = std::fs::canonicalize(&lib)
         .with_context(|| format!("canonicalize libvalo.so path {}", lib.display()))?;
@@ -160,7 +156,7 @@ fn run(
         ensure_elf(&program)?;
     }
 
-    let mut cmd = build_command(gdb, &program, &args, &lib);
+    let mut cmd = build_command(gdb, &program, args, &lib);
     bind_mounts(&mut cmd, &config.bind)?;
     let use_gpu = !config.software_rendering;
     let config = config.config();
@@ -354,5 +350,60 @@ pub(crate) fn build_command(gdb: bool, program: &PathBuf, args: &[String], lib: 
         cmd.args(args);
         cmd.env("LD_PRELOAD", ld_preload);
         cmd
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const STEAM_COMMAND: [&str; 5] = ["steam-launch-wrapper", "--", "reaper", "--", "game"];
+
+    #[test]
+    fn run_forwards_double_dash_to_target() {
+        let cli = Cli::try_parse_from(
+            ["valo", "run", "--uncontrolled"]
+                .into_iter()
+                .chain(STEAM_COMMAND),
+        )
+        .unwrap();
+        let Cmd::Run { target, .. } = cli.command else {
+            panic!("expected run");
+        };
+        assert_eq!(target, STEAM_COMMAND);
+    }
+
+    #[test]
+    fn run_forwards_target_flags() {
+        let cli = Cli::try_parse_from(["valo", "run", "vkcube", "--present_mode", "0"]).unwrap();
+        let Cmd::Run { target, .. } = cli.command else {
+            panic!("expected run");
+        };
+        assert_eq!(target, ["vkcube", "--present_mode", "0"]);
+    }
+
+    #[test]
+    fn run_rejects_unknown_flag_before_target() {
+        let err = Cli::try_parse_from(["valo", "run", "--typo", "vkcube"])
+            .err()
+            .expect("--typo must not become the target");
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn spawn_forwards_double_dash_to_target() {
+        let cli = Cli::try_parse_from(["valo", "spawn"].into_iter().chain(STEAM_COMMAND)).unwrap();
+        let Cmd::Spawn { target, .. } = cli.command else {
+            panic!("expected spawn");
+        };
+        assert_eq!(target, STEAM_COMMAND);
+    }
+
+    #[test]
+    fn spawn_rejects_unknown_flag_before_target() {
+        let err = Cli::try_parse_from(["valo", "spawn", "--typo", "vkcube"])
+            .err()
+            .expect("--typo must not become the target");
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 }
