@@ -67,7 +67,17 @@ pub struct Session {
 pub struct LibError(pub String);
 
 impl Session {
-    pub fn spawn(mut cmd: Command, sock: &Path, use_gpu: bool) -> Result<Session> {
+    /// Spawns a target that the kernel kills when this process dies.
+    pub fn spawn(cmd: Command, sock: &Path, use_gpu: bool) -> Result<Session> {
+        Self::spawn_with(cmd, sock, use_gpu, true)
+    }
+
+    pub fn spawn_with(
+        mut cmd: Command,
+        sock: &Path,
+        use_gpu: bool,
+        parent_death_kills: bool,
+    ) -> Result<Session> {
         claim_sock(sock)?;
         let gpu = if use_gpu {
             let gpu = GpuSession::start().context("start kumquat session")?;
@@ -78,12 +88,14 @@ impl Session {
         };
         valo_launch::command::configure_target(&mut cmd, use_gpu)?;
         cmd.env("VALO_SOCK", sock);
-        // SAFETY: prctl is async-signal-safe and touches no state shared with the parent.
-        unsafe {
-            cmd.pre_exec(|| {
-                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
-                Ok(())
-            });
+        if parent_death_kills {
+            // SAFETY: prctl is async-signal-safe and touches no state shared with the parent.
+            unsafe {
+                cmd.pre_exec(|| {
+                    libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                    Ok(())
+                });
+            }
         }
         let child = cmd
             .spawn()
