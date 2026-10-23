@@ -1,10 +1,13 @@
 // TODO(ai-review): generated, not yet audited
+use std::ffi::OsString;
+use std::process::Command;
+
 use clap::{Args, ValueEnum};
 use valo_ipc::config::{
     Config, DeterminismConfig, FrameConfig, InputConfig, LogConfig, LogLevel, RandomnessConfig,
     SkipDrawMode, TimeConfig,
 };
-use valo_launch::bind::Bind;
+use valo_launch::bind::{Bind, bind_mounts};
 
 #[derive(Args)]
 #[command(next_help_heading = "Auto checkpoints")]
@@ -27,6 +30,10 @@ pub(crate) struct ConfigArgs {
     /// Disable GPU checkpoints and render in software
     #[arg(long, help_heading = "Runtime")]
     pub(crate) software_rendering: bool,
+
+    /// File name of the executable valo attaches to, if behind a wrapper
+    #[arg(long = "target", value_name = "NAME", help_heading = "Runtime")]
+    pub(crate) attach_target: Option<OsString>,
 
     /// Show the target the contents of SRC at DEST, e.g. to keep its saves away from the real ones
     #[arg(long, value_name = "SRC:DEST", help_heading = "Runtime")]
@@ -70,6 +77,15 @@ impl From<CliLogLevel> for LogLevel {
 }
 
 impl ConfigArgs {
+    /// Applies the settings that reach the target through its command rather than the IPC config.
+    pub(crate) fn apply(&self, cmd: &mut Command) -> anyhow::Result<()> {
+        bind_mounts(cmd, &self.bind)?;
+        if let Some(target) = &self.attach_target {
+            cmd.env("VALO_TARGET", target);
+        }
+        Ok(())
+    }
+
     pub(crate) fn config(&self) -> Config {
         Config {
             frames: FrameConfig {

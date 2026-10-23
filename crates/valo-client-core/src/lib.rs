@@ -1,7 +1,7 @@
 // TODO(ai-review): generated, not yet audited
 //! Session handling shared by valo's clients.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, ExitStatus};
@@ -55,6 +55,8 @@ pub struct Session {
     child: Child,
     gpu: Option<GpuSession>,
     sock: PathBuf,
+    /// `VALO_TARGET` as the target sees it.
+    target: Option<OsString>,
     conn: Option<ClientIPC>,
     game_pid: Option<u32>,
     exited: Option<ExitStatus>,
@@ -88,6 +90,7 @@ impl Session {
         };
         valo_launch::command::configure_target(&mut cmd, use_gpu)?;
         cmd.env("VALO_SOCK", sock);
+        let target = target_env(&cmd);
         if parent_death_kills {
             // SAFETY: prctl is async-signal-safe and touches no state shared with the parent.
             unsafe {
@@ -104,6 +107,7 @@ impl Session {
             child,
             gpu,
             sock: sock.to_owned(),
+            target,
             conn: None,
             game_pid: None,
             exited: None,
@@ -116,7 +120,9 @@ impl Session {
     /// or `None` when the target exited first. Connecting again replaces the
     /// connection, e.g. when gdb reruns the inferior.
     pub fn connect(&mut self, config: &Config) -> Result<Option<u32>> {
-        let Some(mut conn) = establish_or_child_exit(&self.sock, &mut self.child)? else {
+        let Some(mut conn) =
+            establish_or_child_exit(&self.sock, self.target.as_deref(), &mut self.child)?
+        else {
             return Ok(None);
         };
         let control = self.gpu.as_ref().map(GpuSession::control_for_lib);
@@ -350,7 +356,11 @@ fn claim_sock(sock: &Path) -> Result<()> {
     std::fs::remove_file(sock).with_context(|| format!("removing stale {}", sock.display()))
 }
 
-fn establish_or_child_exit(sock: &Path, child: &mut Child) -> Result<Option<ClientIPC>> {
+fn establish_or_child_exit(
+    sock: &Path,
+    target: Option<&OsStr>,
+    child: &mut Child,
+) -> Result<Option<ClientIPC>> {
     let sock = sock.to_owned();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -367,11 +377,10 @@ fn establish_or_child_exit(sock: &Path, child: &mut Child) -> Result<Option<Clie
                 }
                 if !explained && start.elapsed() >= EXPLAIN_MISSING_TARGET_AFTER {
                     explained = true;
-                    let target = std::env::var_os("VALO_TARGET");
                     let processes = stray_target::scan();
                     eprintln!(
                         "[valo-client] {}",
-                        stray_target::explain(child.id(), target.as_deref(), &processes)
+                        stray_target::explain(child.id(), target, &processes)
                     );
                 }
             }
@@ -379,6 +388,13 @@ fn establish_or_child_exit(sock: &Path, child: &mut Child) -> Result<Option<Clie
                 bail!("ipc establish thread died without result")
             }
         }
+    }
+}
+
+fn target_env(cmd: &Command) -> Option<OsString> {
+    match cmd.get_envs().find(|(key, _)| *key == "VALO_TARGET") {
+        Some((_, value)) => value.map(OsStr::to_owned),
+        None => std::env::var_os("VALO_TARGET"),
     }
 }
 
