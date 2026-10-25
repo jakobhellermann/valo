@@ -1,0 +1,93 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["libarchive-c"]
+# ///
+# TODO(ai-review): generated, not yet audited
+
+"""Download the Linux player runtime with debug symbols for a Unity version.
+
+Fetches the macOS "Linux Build Support" module (xar > gzip cpio) and extracts
+UnityPlayer.so and UnityPlayer_s.debug of the nondevelopment player.
+"""
+
+import argparse
+import json
+import sys
+import urllib.parse
+import urllib.request
+from pathlib import Path, PurePosixPath
+
+import libarchive
+
+RELEASES_API = "https://services.api.unity.com/unity/editor/release/v1/releases"
+PAYLOAD_PATH = "TargetSupport.pkg.tmp/Payload"
+PLAYER_FILES = ["UnityPlayer.so", "UnityPlayer_s.debug"]
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("version", help="Unity version, e.g. 6000.0.61f1")
+    parser.add_argument("-o", "--out", type=Path, required=True, help="output directory")
+    parser.add_argument("--backend", choices=["mono", "il2cpp"], default="mono")
+    args = parser.parse_args()
+
+    existing = [p for p in (args.out / name for name in PLAYER_FILES) if p.exists()]
+    if existing:
+        sys.exit(f"error: already exists: {', '.join(map(str, existing))}")
+
+    url = module_url(args.version, args.backend)
+    print(f"downloading {url}", file=sys.stderr)
+    with urllib.request.urlopen(url) as resp:
+        pkg = resp.read()
+
+    extract_player(read_member(pkg, PAYLOAD_PATH), args.backend, args.out)
+    print(args.out)
+
+
+def module_url(version: str, backend: str) -> str:
+    query = urllib.parse.urlencode({"version": version, "limit": 1})
+    with urllib.request.urlopen(f"{RELEASES_API}?{query}") as resp:
+        results = json.load(resp)["results"]
+    release = next((r for r in results if r["version"] == version), None)
+    if release is None:
+        sys.exit(f"error: unknown Unity version {version}")
+
+    module_id = f"linux-{backend}"
+    for download in release["downloads"]:
+        if download["platform"] != "MAC_OS":
+            continue
+        for module in download["modules"]:
+            if module["id"] == module_id:
+                return module["url"]
+    sys.exit(f"error: {version} has no macOS {module_id} module")
+
+
+def read_member(archive: bytes, name: str) -> bytes:
+    with libarchive.memory_reader(archive) as reader:
+        for entry in reader:
+            if entry.pathname == name:
+                return b"".join(entry.get_blocks())
+    raise KeyError(f"{name} not found in archive")
+
+
+def extract_player(archive: bytes, backend: str, dest: Path) -> None:
+    variation = PurePosixPath("Variations", f"linux64_player_nondevelopment_{backend}")
+    wanted = {variation / name: dest / name for name in PLAYER_FILES}
+    dest.mkdir(parents=True, exist_ok=True)
+    with libarchive.memory_reader(archive) as reader:
+        for entry in reader:
+            target = wanted.pop(PurePosixPath(entry.pathname), None)
+            if target is None:
+                continue
+            if not entry.isreg:
+                raise ValueError(f"{entry.pathname}: not a regular file")
+            with open(target, "wb") as out:
+                for block in entry.get_blocks():
+                    out.write(block)
+    if wanted:
+        raise KeyError(f"missing in payload: {', '.join(map(str, wanted))}")
+
+
+if __name__ == "__main__":
+    main()

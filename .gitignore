@@ -3,3 +3,4 @@
 /repro/*
 !/repro/*.txt
 /result*
+/.tmp

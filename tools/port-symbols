@@ -1,0 +1,310 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["capstone", "lief", "pyelftools"]
+# ///
+# TODO(ai-review): generated, not yet audited
+
+"""
+Port function symbols from a reference build onto a similar x86-64 ELF build.
+Usage: port-symbols /path/to/custom/6000.0.50f1-uum-100966-branch1/UnityPlayer.so --reference-debug /path/to/symbols/6000.0.50f1/UnityPlayer_s.debug -o UnityPlayer_s.debug
+
+Writes UnityPlayer_s.debug and UnityPlayer_s.debug.unresolved with a list of functions that couldn't be matched or were ambiguous.
+"""
+
+import argparse
+import bisect
+import multiprocessing
+import os
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+import zlib
+from collections import Counter
+from pathlib import Path
+
+import lief
+from capstone import (
+    CS_ARCH_X86,
+    CS_GRP_BRANCH_RELATIVE,
+    CS_GRP_CALL,
+    CS_GRP_JUMP,
+    CS_MODE_64,
+    Cs,
+)
+from capstone.x86 import X86_OP_MEM, X86_REG_RIP
+from elftools.dwarf.callframe import FDE
+from elftools.elf.elffile import ELFFile
+
+CHUNK = 500
+DATA_WINDOW = 16
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("target", type=Path, help="custom build")
+    parser.add_argument("reference", type=Path, help="similar build with known symbols")
+    parser.add_argument(
+        "--reference-debug",
+        type=Path,
+        help="separate debug file holding the reference's .symtab",
+    )
+    parser.add_argument(
+        "-o", "--out", type=Path, required=True, help="output debug file"
+    )
+    parser.add_argument(
+        "--window",
+        type=lambda s: int(s, 0),
+        default=0x10000,
+        help="max search distance in bytes",
+    )
+    args = parser.parse_args()
+
+    unresolved_path = args.out.with_name(args.out.name + ".unresolved")
+
+    global TARGET, REF, TARGET_RO, REF_RO, TARGET_FUNCS, WINDOW
+    TARGET = load_section(args.target, ".text")
+    REF = load_section(args.reference, ".text")
+    TARGET_RO = load_section(args.target, ".rodata")
+    REF_RO = load_section(args.reference, ".rodata")
+    TARGET_FUNCS = eh_frame_functions(args.target)
+    WINDOW = args.window
+    ref_funcs = ref_functions(args.reference_debug or args.reference, REF)
+    print(
+        f"{len(ref_funcs)} reference functions, {len(TARGET_FUNCS[0])} target FDEs",
+        file=sys.stderr,
+    )
+
+    chunks = [ref_funcs[i : i + CHUNK] for i in range(0, len(ref_funcs), CHUNK)]
+    matched = []
+    unresolved = []
+    done = 0
+    last = time.monotonic()
+    with multiprocessing.get_context("fork").Pool() as pool:
+        for res, unres in pool.imap_unordered(match_chunk, chunks):
+            matched += res
+            unresolved += unres
+            done += CHUNK
+            if time.monotonic() - last >= 2:
+                last = time.monotonic()
+                print(
+                    f"{min(done, len(ref_funcs))}/{len(ref_funcs)} functions",
+                    file=sys.stderr,
+                )
+
+    write_debug(args.target, args.out, matched)
+    with open(unresolved_path, "w") as f:
+        for reason, candidates, addr, syms in sorted(unresolved, key=lambda u: u[2]):
+            f.write(f"{reason}\t{candidates}\t{addr:#x}\t{syms[0][0]}\n")
+
+    reasons = ", ".join(
+        f"{n} {r}" for r, n in Counter(u[0] for u in unresolved).most_common()
+    )
+    print(f"matched {len(matched)}/{len(ref_funcs)} functions", file=sys.stderr)
+    if unresolved:
+        print(f"unresolved: {reasons}, see {unresolved_path}", file=sys.stderr)
+    print(args.out)
+
+
+def match_chunk(funcs: list[tuple[int, int, list]]) -> tuple[list, list]:
+    starts, sizes = TARGET_FUNCS
+    delta = None
+    out = []
+    unresolved = []
+    for addr, size, syms in funcs:
+        expected = addr + (delta or 0)
+        lo = bisect.bisect_left(starts, expected - WINDOW)
+        hi = bisect.bisect_right(starts, expected + WINDOW)
+        cands = {starts[i] for i in range(lo, hi) if sizes[i] == size}
+        cands.add(expected)
+
+        ref_shape, ref_refs = analyze(REF, addr, size)
+        hits = []
+        data_mismatch = False
+        for cand in cands:
+            target = analyze(TARGET, cand, size)
+            if target is None or target[0] != ref_shape:
+                continue
+            if all(same_data(r, t, cand - addr) for r, t in zip(ref_refs, target[1])):
+                hits.append(cand)
+            else:
+                data_mismatch = True
+
+        # identical copies only resolve at the address the running delta predicts
+        if len(hits) == 1 or (delta is not None and expected in hits):
+            pick = hits[0] if len(hits) == 1 else expected
+            delta = pick - addr
+            out.append((pick, size, syms))
+        elif hits:
+            unresolved.append(("ambiguous", len(hits), addr, syms))
+        else:
+            reason = "data-mismatch" if data_mismatch else "no-match"
+            unresolved.append((reason, 0, addr, syms))
+    return out, unresolved
+
+
+def analyze(text: tuple[int, bytes], addr: int, size: int) -> tuple[list, list] | None:
+    """Masked instruction shape and the RIP-relative targets of a function."""
+    code = code_at(text, addr, size)
+    if code is None:
+        return None
+    shape = []
+    refs = []
+    for insn in DISASM.disasm(code, addr):
+        rip = [
+            insn.address + insn.size + op.mem.disp
+            for op in insn.operands
+            if op.type == X86_OP_MEM and op.mem.base == X86_REG_RIP
+        ]
+        refs += rip
+        relative = rip or any(
+            insn.group(g) for g in (CS_GRP_JUMP, CS_GRP_CALL, CS_GRP_BRANCH_RELATIVE)
+        )
+        shape.append((insn.mnemonic, insn.size) if relative else bytes(insn.bytes))
+    return shape, refs
+
+
+def same_data(ref_addr: int, target_addr: int, text_delta: int) -> bool:
+    """Whether two RIP-relative targets hold the same .rodata contents."""
+    r = code_at(REF_RO, ref_addr, DATA_WINDOW)
+    t = code_at(TARGET_RO, target_addr, DATA_WINDOW)
+    if r is None or t is None:
+        return (r is None) == (t is None)
+    if r == t:
+        return True
+    nul = r.find(b"\0")
+    if nul > 0 and r[: nul + 1] == t[: nul + 1]:
+        return True
+    # jump table entries are code offsets relative to the table, so they shift by
+    # the difference between how far the code and the table moved
+    entry_delta = text_delta - (target_addr - ref_addr)
+    if entry_delta == 0:
+        return False
+    words = zip(struct.unpack("<4i", r), struct.unpack("<4i", t))
+    return all(tw - rw in (0, entry_delta) for rw, tw in words)
+
+
+def code_at(text: tuple[int, bytes], addr: int, size: int) -> bytes | None:
+    base, data = text
+    off = addr - base
+    if off < 0 or off + size > len(data):
+        return None
+    return data[off : off + size]
+
+
+def load_section(path: Path, name: str) -> tuple[int, bytes]:
+    with open(path, "rb") as f:
+        section = ELFFile(f).get_section_by_name(name)
+        if section is None:
+            raise ValueError(f"{path}: no {name} section")
+        return section["sh_addr"], section.data()
+
+
+def eh_frame_functions(path: Path) -> tuple[list[int], list[int]]:
+    with open(path, "rb") as f:
+        funcs = sorted(
+            (e.header["initial_location"], e.header["address_range"])
+            for e in ELFFile(f).get_dwarf_info().EH_CFI_entries()
+            if isinstance(e, FDE)
+        )
+    return [a for a, _ in funcs], [s for _, s in funcs]
+
+
+def ref_functions(debug: Path, text: tuple[int, bytes]) -> list[tuple[int, int, list]]:
+    base, data = text
+    by_range: dict[tuple[int, int], list] = {}
+    with open(debug, "rb") as f:
+        symtab = ELFFile(f).get_section_by_name(".symtab")
+        if symtab is None:
+            raise ValueError(f"{debug}: no .symtab section")
+        for sym in symtab.iter_symbols():
+            addr, size = sym["st_value"], sym["st_size"]
+            if (
+                sym["st_info"]["type"] != "STT_FUNC"
+                or size == 0
+                or not base <= addr < base + len(data)
+            ):
+                continue
+            by_range.setdefault((addr, size), []).append(
+                (sym.name, sym["st_info"]["bind"])
+            )
+    return sorted((addr, size, syms) for (addr, size), syms in by_range.items())
+
+
+def write_debug(target: Path, out: Path, matched: list[tuple[int, int, list]]) -> None:
+    binary = lief.ELF.parse(str(target))
+    text_idx = next(i for i, s in enumerate(binary.sections) if s.name == ".text")
+    existing = {s.name for s in binary.symtab_symbols}
+    binding = {
+        "STB_LOCAL": lief.ELF.Symbol.BINDING.LOCAL,
+        "STB_GLOBAL": lief.ELF.Symbol.BINDING.GLOBAL,
+        "STB_WEAK": lief.ELF.Symbol.BINDING.WEAK,
+    }
+    for addr, size, syms in sorted(matched):
+        for name, bind in syms:
+            if name in existing:
+                continue
+            sym = lief.ELF.Symbol()
+            sym.name = name
+            sym.value = addr
+            sym.size = size
+            sym.type = lief.ELF.Symbol.TYPE.FUNC
+            sym.binding = binding[bind]
+            sym.shndx = text_idx
+            binary.add_symtab_symbol(sym)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        full = os.path.join(tmp, "full.so")
+        binary.write(full)
+        subprocess.run(["objcopy", "--only-keep-debug", full, str(out)], check=True)
+
+    crc = debuglink_crc(target)
+    if crc is not None:
+        with open(out, "r+b") as f:
+            data = f.read()
+            f.write(crc_suffix(data, crc))
+
+
+def debuglink_crc(path: Path) -> int | None:
+    with open(path, "rb") as f:
+        link = ELFFile(f).get_section_by_name(".gnu_debuglink")
+        if link is None:
+            return None
+        return struct.unpack("<I", link.data()[-4:])[0]
+
+
+def crc_suffix(data: bytes, crc: int) -> bytes:
+    """4 bytes that make crc32(data + suffix) == crc, so .gnu_debuglink accepts it."""
+    # crc32 over a fixed-length suffix is affine in the suffix bits: solve over GF(2)
+    state = zlib.crc32(data)
+    base = zlib.crc32(bytes(4), state)
+    columns = [
+        zlib.crc32((1 << k).to_bytes(4, "little"), state) ^ base for k in range(32)
+    ]
+    rows = [(col, 1 << k) for k, col in enumerate(columns)]
+    want = crc ^ base
+    solution = 0
+    for bit in range(32):
+        pivot = next((r for r in rows if r[0] >> bit & 1), None)
+        if pivot is None:
+            raise ValueError("crc32 suffix system is singular")
+        rows.remove(pivot)
+        rows = [
+            (c ^ pivot[0], x ^ pivot[1]) if c >> bit & 1 else (c, x) for c, x in rows
+        ]
+        if want >> bit & 1:
+            want ^= pivot[0]
+            solution ^= pivot[1]
+    suffix = solution.to_bytes(4, "little")
+    if zlib.crc32(suffix, state) != crc:
+        raise ValueError("crc32 suffix does not reproduce the debuglink crc")
+    return suffix
+
+
+DISASM = Cs(CS_ARCH_X86, CS_MODE_64)
+DISASM.detail = True
+
+if __name__ == "__main__":
+    main()

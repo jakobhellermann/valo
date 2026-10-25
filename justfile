@@ -133,3 +133,11 @@ repro XTRACE="": clean
         display=":9"
     fi
     DISPLAY="$display" just run-hollowknight-gpu --uncontrolled
+
+port-symbols:
+    # ./tools/port-symbols "$(rabex --steam-game silk game --format json | jq .path -r)/../UnityPlayer.so" .tmp/symbols/6000.0.50f1/UnityPlayer.so --reference-debug .tmp/symbols/6000.0.50f1/UnityPlayer_s.debug -o UnityPlayer_s.debug
+
+    # initial release 1.0.28324
+    ./tools/port-symbols /tmp/steam-multiversion-viewer/1030300/1030303/7921642076658611197/UnityPlayer.so .tmp/symbols/6000.0.50f1/UnityPlayer.so --reference-debug ./.tmp/symbols/6000.0.50f1/UnityPlayer_s.debug -o .tmp/v1.0.28714-UnityPlayer_s.debug
+    # 1.0.28891
+    ./tools/port-symbols /tmp/steam-multiversion-viewer/1030300/1030303/5954103139200615141/UnityPlayer.so .tmp/symbols/6000.0.50f1/UnityPlayer.so --reference-debug ./.tmp/symbols/6000.0.50f1/UnityPlayer_s.debug -o .tmp/UnityPlayer_s.debug
