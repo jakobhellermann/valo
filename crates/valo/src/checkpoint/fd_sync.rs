@@ -309,10 +309,44 @@ pub(crate) mod keepalive {
     use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 
     use rustix::fs::Dev;
+    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
 
     use crate::checkpoint::SnapshotSlot;
+    use crate::{info, warn};
 
     pub const MAX_FDS: usize = 4096;
+
+    const MIN_NOFILE: u64 = 8192;
+
+    pub(crate) fn ensure_fd_space() {
+        let current = getrlimit(Resource::Nofile);
+        let soft = current.current.unwrap_or(u64::MAX);
+        if soft >= MIN_NOFILE {
+            return;
+        }
+
+        let hard = current.maximum.unwrap_or(u64::MAX);
+        let target = MIN_NOFILE.min(hard);
+        if target <= soft {
+            warn!(
+                Init,
+                "fd hard limit limit is {hard}, not enough space for keepalive fds at {}",
+                super::KEEPALIVE_FD_BASE
+            );
+            return;
+        }
+        if let Err(e) = setrlimit(
+            Resource::Nofile,
+            Rlimit {
+                current: Some(target),
+                maximum: current.maximum,
+            },
+        ) {
+            warn!(Init, "cannot raise soft RLIMIT_NOFILE to {target}: {e}");
+            return;
+        }
+        info!(Init, "raised soft RLIMIT_NOFILE from {soft} to {target}");
+    }
 
     pub(super) struct FdKeepalive {
         pub slot: SnapshotSlot,

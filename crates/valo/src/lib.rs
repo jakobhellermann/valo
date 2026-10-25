@@ -74,6 +74,7 @@ fn init() -> Result<()> {
     remove_ld_preload();
     home::init()?;
     log::init();
+    checkpoint::fd_sync::keepalive::ensure_fd_space();
     install_panic_hook();
     // SAFETY: since this is an initializer there is unique access
     unsafe { GlobalState::set(GlobalState::new()?) };
